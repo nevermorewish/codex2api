@@ -10,6 +10,8 @@ services:
       CODEX_PORT: "3200"
       CODEX_BIND: "0.0.0.0"
       CODEX_ALLOW_ANONYMOUS: "false"
+      ADMIN_SECRET: "de35af9702ae21dbddf720f9cc5c95549f4257d803c9d94219e99b57c0944ffd"
+      BOOTSTRAP_ALLOWED_CIDR: "203.175.14.88/32"
       CODEX_TRUSTED_PROXIES: "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
       CODEX_UPSTREAM_TRANSPORT: "http"
       USE_WEBSOCKET: "false"
@@ -27,7 +29,7 @@ services:
       DATABASE_HOST: "postgres"
       DATABASE_PORT: "5500"
       DATABASE_USER: "codex2api"
-      DATABASE_PASSWORD: "${DATABASE_PASSWORD:?DATABASE_PASSWORD must be set in .env}"
+      DATABASE_PASSWORD: "22b67bc628c1dbc0649205151150645761b776c6c3e51ecc"
       DATABASE_NAME: "codex2api"
       DATABASE_SSLMODE: "disable"
       CACHE_DRIVER: "redis"
@@ -63,7 +65,7 @@ services:
     command: ["postgres", "-p", "5500"]
     environment:
       POSTGRES_USER: "codex2api"
-      POSTGRES_PASSWORD: "${DATABASE_PASSWORD:?DATABASE_PASSWORD must be set in .env}"
+      POSTGRES_PASSWORD: "22b67bc628c1dbc0649205151150645761b776c6c3e51ecc"
       POSTGRES_DB: "codex2api"
       PGDATA: /var/lib/postgresql/data
       TZ: "Asia/Shanghai"
