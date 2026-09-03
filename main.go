@@ -330,6 +330,14 @@ func main() {
 	// 全局 RPM 限流器
 	rateLimiter := proxy.NewRateLimiter(settings.GlobalRPM)
 	adminHandler := admin.NewHandler(store, db, tc, rateLimiter, cfg.AdminSecret)
+	fallbackPool := auth.NewFallbackPool(store)
+	adminHandler.SetFallbackPool(fallbackPool)
+	fallbackLoadCtx, fallbackLoadCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := adminHandler.ReloadFallbackPool(fallbackLoadCtx); err != nil {
+		fallbackLoadCancel()
+		log.Fatalf("加载兜底账号池失败: %v", err)
+	}
+	fallbackLoadCancel()
 	// 初始化 admin handler 的连接池设置跟踪
 	adminHandler.SetPoolSizes(settings.PgMaxConns, settings.RedisPoolSize)
 	store.SetUsageProbeFunc(adminHandler.ProbeUsageSnapshot)
@@ -399,6 +407,8 @@ func main() {
 	deviceCfg := proxy.DeviceProfileConfigFromEnv(os.Getenv)
 	handler := proxy.NewHandler(store, db, cfg, deviceCfg)
 	handler.SetRuntimeCache(tc)
+	handler.SetFallbackPool(fallbackPool)
+	adminHandler.SetAPIKeyConcurrencySnapshotProvider(handler.APIKeyConcurrencySnapshot)
 
 	// 注册 WebSocket 执行函数（避免 proxy ↔ wsrelay 循环依赖）
 	proxy.WebsocketExecuteFunc = wsrelay.ExecuteRequestWebsocket

@@ -91,6 +91,8 @@ type Handler struct {
 	imageProxy                 *proxy.Handler
 	antigravitySyncAccount     func(context.Context, int64) antigravityRefreshItem
 	antigravityCapabilityProbe antigravityCapabilityExecutor
+	fallbackPool               *auth.FallbackPool
+	apiKeyConcurrencySnapshot  func() map[int64]int64
 
 	// 导入触发的用量采样队列。固定数量 worker 消费任务，避免“一账号一 goroutine”
 	// 在大文件导入时堆出成千上万个阻塞协程。
@@ -1002,6 +1004,14 @@ func (h *Handler) SetPoolSizes(pgMaxConns, redisPoolSize int) {
 	h.redisPoolSize = redisPoolSize
 }
 
+func (h *Handler) SetFallbackPool(pool *auth.FallbackPool) {
+	h.fallbackPool = pool
+}
+
+func (h *Handler) SetAPIKeyConcurrencySnapshotProvider(provider func() map[int64]int64) {
+	h.apiKeyConcurrencySnapshot = provider
+}
+
 // RegisterRoutes 注册管理 API 路由
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET("/p/img/:id", h.GetSignedImageAssetFile)
@@ -1043,6 +1053,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		}
 	})
 	api.GET("/stats", h.GetStats)
+	api.GET("/concurrency", h.GetConcurrencySnapshot)
+	api.GET("/fallback/accounts", h.ListFallbackAccounts)
+	api.POST("/fallback/accounts", h.CreateFallbackAccount)
+	api.PUT("/fallback/accounts/:id", h.UpdateFallbackAccount)
+	api.DELETE("/fallback/accounts/:id", h.DeleteFallbackAccount)
+	api.POST("/fallback/accounts/:id/test", h.TestFallbackAccount)
+	api.GET("/fallback/settings", h.GetFallbackSettings)
+	api.PUT("/fallback/settings", h.UpdateFallbackSettings)
 	api.GET("/accounts", h.ListAccounts)
 	api.GET("/accounts/analysis", h.GetAccountAnalysis)
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)

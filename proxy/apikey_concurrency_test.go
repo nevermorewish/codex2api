@@ -46,13 +46,24 @@ func TestAPIKeyConcurrencyLimiterAcquireRelease(t *testing.T) {
 	}
 }
 
-func TestAPIKeyConcurrencyLimiterBypassesUnlimited(t *testing.T) {
+func TestAPIKeyConcurrencyLimiterTracksUnlimited(t *testing.T) {
 	limiter := newAPIKeyConcurrencyLimiter()
+	releases := make([]func(), 0, 3)
 	for i := 0; i < 3; i++ {
 		release, current, ok := limiter.acquire(42, 0)
-		if !ok || release != nil || current != 0 {
-			t.Fatalf("unlimited acquire = (ok=%v, current=%d, releaseNil=%v), want bypass", ok, current, release == nil)
+		if !ok || release == nil || current != int64(i+1) {
+			t.Fatalf("unlimited acquire = (ok=%v, current=%d, releaseNil=%v), want tracked current=%d", ok, current, release == nil, i+1)
 		}
+		releases = append(releases, release)
+	}
+	if got := limiter.snapshot()[42]; got != 3 {
+		t.Fatalf("unlimited snapshot = %d, want 3", got)
+	}
+	for _, release := range releases {
+		release()
+	}
+	if _, ok := limiter.snapshot()[42]; ok {
+		t.Fatal("released unlimited key should not remain in the active snapshot")
 	}
 }
 

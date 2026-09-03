@@ -3688,3 +3688,95 @@ export interface ClaudeGlobalConfig {
   max_tool_count: number
   max_tool_schema_bytes: number
 }
+
+export interface ConcurrencyAccountRow {
+  id: number
+  name: string
+  channel: string
+  status: string
+  health_tier: string
+  group_ids: number[]
+  group_names: string[]
+  active: number
+  occupied: number
+  buffered: number
+  limit: number
+  utilization: number
+  available: boolean
+  fallback: boolean
+}
+
+export interface ConcurrencyGroupRow {
+  id: number
+  name: string
+  color: string
+  account_count: number
+  active: number
+  occupied: number
+  buffered: number
+  capacity: number
+}
+
+export interface ConcurrencyAPIKeyRow {
+  id: number
+  name: string
+  active: number
+  limit: number
+  enabled: boolean
+  expired: boolean
+}
+
+export interface ConcurrencySnapshot {
+  collected_at: string
+  global_active: number
+  queue_depth: number
+  total_active: number
+  total_occupied: number
+  capacity: number
+  accounts: ConcurrencyAccountRow[]
+  groups: ConcurrencyGroupRow[]
+  api_keys: ConcurrencyAPIKeyRow[]
+}
+
+export interface FallbackAccount {
+  id: number
+  name: string
+  protocol: 'openai_responses'
+  base_url: string
+  model: string
+  proxy_url: string
+  concurrency: number
+  enabled: boolean
+  has_api_key: boolean
+  api_key_masked: string
+  active: number
+  occupied: number
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface FallbackPolicy {
+  enabled: boolean
+  relay_count: number
+  queue_direct_fallback_threshold: number
+  oversized_request_direct_fallback_enabled: boolean
+}
+
+export interface FallbackAccountPayload {
+  name: string
+  protocol: 'openai_responses'
+  base_url: string
+  api_key?: string
+  model: string
+  proxy_url: string
+  concurrency: number
+  enabled: boolean
+}
+
+export interface FallbackTestResult {
+  success: boolean
+  status_code?: number
+  latency_ms: number
+  error?: string
+}

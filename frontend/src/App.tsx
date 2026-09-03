@@ -27,6 +27,8 @@ const PromptFilter = lazy(() => import('./pages/PromptFilter'))
 const ThemeSettings = lazy(() => import('./pages/ThemeSettings'))
 const ModelPricing = lazy(() => import('./pages/ModelPricing'))
 const PayloadRules = lazy(() => import('./pages/PayloadRules'))
+const Concurrency = lazy(() => import('./pages/Concurrency'))
+const FallbackPool = lazy(() => import('./pages/FallbackPool'))
 
 export default function App() {
   return (
@@ -65,6 +67,8 @@ function AdminApp() {
           <Route path="/accounts/invite" element={<Accounts />} />
           <Route path="/api-keys" element={<APIKeys />} />
           <Route path="/proxies" element={<Proxies />} />
+          <Route path="/concurrency" element={<Concurrency />} />
+          <Route path="/fallback-pool" element={<FallbackPool />} />
           <Route path="/images" element={<Navigate to="/images/studio" replace />} />
           <Route path="/images/:view" element={<ImageStudio />} />
           <Route path="/prompt-filter" element={<Navigate to="/prompt-filter/overview" replace />} />

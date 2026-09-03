@@ -98,6 +98,8 @@ type Account struct {
 	grokRuntimeFactsMu   sync.Mutex
 	usageObservedAt      time.Time
 	DBID                 int64 // 数据库 ID
+	Name                 string
+	ExternalFallback     bool
 	RefreshToken         string
 	SessionToken         string
 	AccessToken          string
@@ -432,6 +434,14 @@ type AccountListRuntimeSnapshot struct {
 // ID 返回数据库 ID
 func (a *Account) ID() int64 {
 	return a.DBID
+}
+
+func (a *Account) IsExternalFallback() bool {
+	return a != nil && a.ExternalFallback
+}
+
+func shouldPersistAccountState(acc *Account) bool {
+	return acc != nil && acc.DBID > 0 && !acc.IsExternalFallback()
 }
 
 // Mu 返回读写锁（供外部包安全读取字段）
@@ -5150,6 +5160,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 
 	account := &Account{
 		DBID:                         row.ID,
+		Name:                         strings.TrimSpace(row.Name),
 		CredentialGeneration:         row.CredentialGeneration,
 		CredentialFamilyID:           row.CredentialFamilyID,
 		RefreshToken:                 rt,
@@ -6434,7 +6445,7 @@ func (s *Store) BindSessionAffinityWithGuard(key string, account *Account, proxy
 }
 
 func (s *Store) bindSessionAffinity(key string, account *Account, proxyURL string) {
-	if s == nil || account == nil {
+	if s == nil || account == nil || account.IsExternalFallback() {
 		return
 	}
 	key = strings.TrimSpace(key)
@@ -7114,6 +7125,12 @@ func (s *Store) hasDispatchCandidateWithDispatch(apiKeyID int64, exclude map[int
 	return false
 }
 
+// HasDispatchCandidateWithDispatch reports whether the normal pool contains a
+// policy-compatible account, even when all matching accounts are at capacity.
+func (s *Store) HasDispatchCandidateWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) bool {
+	return s.hasDispatchCandidateWithDispatch(apiKeyID, exclude, filter, policy)
+}
+
 // HasUsageLimitedCandidateWithFilter distinguishes an exhausted account pool
 // from a genuinely empty or unhealthy pool. Matching account, API-key, model,
 // group, and egress constraints are still applied before reporting 429.
@@ -7375,6 +7392,10 @@ func (s *Store) SetSessionSlotBufferEnabled(enabled bool) {
 // sessionKey. ActiveRequests drops immediately while OccupiedRequests stays
 // unchanged until the owner reclaims the slot or the reservation expires.
 func (s *Store) ReleaseForSession(acc *Account, sessionKey string) {
+	if acc != nil && acc.IsExternalFallback() {
+		s.Release(acc)
+		return
+	}
 	if s == nil || acc == nil {
 		return
 	}
@@ -9306,6 +9327,9 @@ func (s *Store) markCooldownUntil(acc *Account, until time.Time, reason string, 
 	if updateScheduler {
 		s.fastSchedulerUpdate(acc)
 	}
+	if !shouldPersistAccountState(acc) {
+		return
+	}
 	s.setCachedAccountCooldown(acc.DBID, reason, until)
 
 	if s.db == nil {
@@ -9369,6 +9393,9 @@ func (s *Store) markCooldown(acc *Account, duration time.Duration, reason string
 	until := now.Add(duration)
 	acc.SetCooldownUntil(until, reason)
 	s.fastSchedulerUpdate(acc)
+	if !shouldPersistAccountState(acc) {
+		return
+	}
 	s.setCachedAccountCooldown(acc.DBID, reason, until)
 
 	if s.db == nil {
@@ -9484,6 +9511,9 @@ func (s *Store) MarkModelCooldownWithBackoff(acc *Account, model string, duratio
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
+	if !shouldPersistAccountState(acc) {
+		return cooldown
+	}
 	s.setCachedModelCooldown(acc.DBID, cooldown)
 
 	if s.db != nil {
@@ -9516,6 +9546,9 @@ func (s *Store) MarkModelCooldownUntil(acc *Account, model, reason string, reset
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
+	if !shouldPersistAccountState(acc) {
+		return cooldown
+	}
 	s.setCachedModelCooldown(acc.DBID, cooldown)
 
 	if s.db != nil {
@@ -9539,8 +9572,11 @@ func (s *Store) ClearModelCooldown(acc *Account, model string) {
 	if !acc.ClearModelCooldown(key) {
 		return
 	}
-	s.deleteCachedModelCooldown(acc.DBID, key)
 	s.fastSchedulerUpdate(acc)
+	if !shouldPersistAccountState(acc) {
+		return
+	}
+	s.deleteCachedModelCooldown(acc.DBID, key)
 	if s.db == nil {
 		return
 	}
@@ -9556,10 +9592,13 @@ func (s *Store) ClearAllModelCooldowns(acc *Account) int {
 		return 0
 	}
 	models := acc.ClearAllModelCooldowns()
+	s.fastSchedulerUpdate(acc)
+	if !shouldPersistAccountState(acc) {
+		return len(models)
+	}
 	for _, model := range models {
 		s.deleteCachedModelCooldown(acc.DBID, model)
 	}
-	s.fastSchedulerUpdate(acc)
 	if s.db != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -9690,6 +9729,9 @@ func (s *Store) MarkError(acc *Account, errorMsg string) {
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
+	if !shouldPersistAccountState(acc) {
+		return
+	}
 	s.deleteCachedAccountCooldown(acc.DBID)
 
 	if s.db == nil {
@@ -9730,6 +9772,9 @@ func (s *Store) ClearCooldown(acc *Account) {
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
+	if !shouldPersistAccountState(acc) {
+		return
+	}
 	s.deleteCachedAccountCooldown(acc.DBID)
 
 	if s.db == nil {
@@ -9798,6 +9843,9 @@ func (s *Store) ClearUsageLimitCooldownSince(acc *Account, observedAt time.Time)
 	acc.mu.Unlock()
 
 	s.fastSchedulerUpdate(acc)
+	if !shouldPersistAccountState(acc) {
+		return true
+	}
 	s.deleteCachedAccountCooldown(acc.DBID)
 	acc.mu.RLock()
 	status := acc.Status
@@ -9867,6 +9915,9 @@ func (s *Store) confirmResponsesAvailable(acc *Account, requestStartedAt time.Ti
 	acc.mu.Unlock()
 
 	s.fastSchedulerUpdate(acc)
+	if !shouldPersistAccountState(acc) {
+		return true
+	}
 	s.deleteCachedAccountCooldown(acc.DBID)
 	if s.db != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -9919,6 +9970,9 @@ func (s *Store) RecordManualTestSuccess(acc *Account, latency time.Duration) {
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
+	if !shouldPersistAccountState(acc) {
+		return
+	}
 	s.deleteCachedAccountCooldown(acc.DBID)
 
 	if s.db == nil {

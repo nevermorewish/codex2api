@@ -52,6 +52,7 @@ func upstreamErrorConsoleBody(body []byte) string {
 // Handler API 路由处理器
 type Handler struct {
 	store        *auth.Store
+	fallbackPool *auth.FallbackPool
 	configKeys   map[string]bool // 配置文件中的静态 key
 	db           *database.DB
 	cfg          *config.Config       // 全局配置
@@ -1198,6 +1199,12 @@ func (h *Handler) SetRuntimeCache(tc cache.TokenCache) {
 		return
 	}
 	h.cache = tc
+}
+
+func (h *Handler) SetFallbackPool(pool *auth.FallbackPool) {
+	if h != nil {
+		h.fallbackPool = pool
+	}
 }
 
 // NewHandlerWithDeviceProfile 创建处理器（带设备指纹配置）
@@ -3844,11 +3851,18 @@ func (h *Handler) Responses(c *gin.Context) {
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
 	grokQualityAttempts := 0
+	fallbackState := &fallbackRouteState{}
+	if !compactionAffinity.Known {
+		fallbackState = h.newFallbackRouteState(accountFilter, len(rawBody))
+		maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
+	}
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
-			if attempt == 0 && compactionAffinity.Known && !turnContinuationPinned {
+			if fallbackState.usingFallback() {
+				account = fallbackState.account(retryExclusions.ForSelection())
+			} else if attempt == 0 && compactionAffinity.Known && !turnContinuationPinned {
 				account = h.store.TakePreferredAccountWithDispatch(compactionAffinity.PreferredAccountID, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy)
 			}
 			if account != nil {
@@ -3857,9 +3871,14 @@ func (h *Handler) Responses(c *gin.Context) {
 				account, stickyProxyURL, affinityGuard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy)
 			} else if turnContinuationPinned {
 				account, stickyProxyURL = h.nextRetryAccountForContinuationWithDispatch(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+			} else if fallbackState.configured() {
+				account, stickyProxyURL, affinityGuard = h.nextFallbackAwareAccountWithGuard(c.Request.Context(), fallbackState, affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 			} else {
 				account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 			}
+		}
+		if account == nil && fallbackState.activateAfterPrimaryExhausted() {
+			account = fallbackState.account(retryExclusions.ForSelection())
 		}
 		if account == nil {
 			if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
@@ -3910,6 +3929,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(effectiveModel))
 			return
 		}
+		fallbackState.noteSelected(account)
 		if attempt > 0 {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 		}
@@ -3918,7 +3938,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			emitResponsesPhaseTimings(c, logModel, len(rawBody), handlerStart, bodyReadDone, validateDone, prepareDone)
 		}
 		h.AcquireAPIKeyScopeConcurrency(c, account)
-		attemptMaxRateLimitRetries := h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries)
+		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries))
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		if !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
@@ -6592,11 +6612,22 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
 	grokQualityAttempts := 0
+	fallbackState := h.newFallbackRouteState(accountFilter, len(rawBody))
+	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
-			account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+			if fallbackState.usingFallback() {
+				account = fallbackState.account(retryExclusions.ForSelection())
+			} else if fallbackState.configured() {
+				account, stickyProxyURL, affinityGuard = h.nextFallbackAwareAccountWithGuard(c.Request.Context(), fallbackState, affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+			} else {
+				account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+			}
+		}
+		if account == nil && fallbackState.activateAfterPrimaryExhausted() {
+			account = fallbackState.account(retryExclusions.ForSelection())
 		}
 		if account == nil {
 			if !claimContinuousRetryTerminal(c, continuousRetryProtocolChat) {
@@ -6623,12 +6654,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(effectiveModel))
 			return
 		}
+		fallbackState.noteSelected(account)
 		if attempt > 0 {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 		}
 
 		h.AcquireAPIKeyScopeConcurrency(c, account)
-		attemptMaxRateLimitRetries := h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries)
+		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries))
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		if !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
@@ -8190,6 +8222,9 @@ func windowMinutesToCooldown(windowMinutes float64) time.Duration {
 func SyncCodexUsageState(store *auth.Store, account *auth.Account, resp *http.Response) CodexUsageSyncResult {
 	result := CodexUsageSyncResult{}
 	if account == nil || resp == nil {
+		return result
+	}
+	if account.IsExternalFallback() {
 		return result
 	}
 	observedAt := time.Now()

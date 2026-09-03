@@ -134,6 +134,11 @@ import type {
   UpdateAccountGroupRequest,
   UpstreamChannel,
   ClaudeGlobalConfig,
+  ConcurrencySnapshot,
+  FallbackAccount,
+  FallbackAccountPayload,
+  FallbackPolicy,
+  FallbackTestResult,
 } from './types'
 
 const BASE = '/api/admin'
@@ -516,6 +521,19 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
 
 export const api = {
   getBranding: () => requestPublic<SiteBranding>('/api/branding'),
+  getConcurrency: () => request<ConcurrencySnapshot>('/concurrency'),
+  listFallbackAccounts: () => request<{ accounts: FallbackAccount[] }>('/fallback/accounts'),
+  createFallbackAccount: (data: FallbackAccountPayload) =>
+    request<{ account: FallbackAccount }>('/fallback/accounts', { method: 'POST', body: JSON.stringify(data) }),
+  updateFallbackAccount: (id: number, data: FallbackAccountPayload) =>
+    request<{ account: FallbackAccount }>(`/fallback/accounts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteFallbackAccount: (id: number) =>
+    request<MessageResponse>(`/fallback/accounts/${id}`, { method: 'DELETE' }),
+  testFallbackAccount: (id: number) =>
+    request<FallbackTestResult>(`/fallback/accounts/${id}/test`, { method: 'POST', timeoutMs: 35_000 }),
+  getFallbackSettings: () => request<FallbackPolicy>('/fallback/settings'),
+  updateFallbackSettings: (data: FallbackPolicy) =>
+    request<FallbackPolicy>('/fallback/settings', { method: 'PUT', body: JSON.stringify(data) }),
   // 公开账号自助门户:生成 OpenAI 授权链接(无鉴权)。
   generateAccountPortalAuthURL: (data: { contact_email: string }) =>
     requestAccountPortal<AccountPortalAuthURLResponse>('/api/account-portal/generate-auth-url', {
