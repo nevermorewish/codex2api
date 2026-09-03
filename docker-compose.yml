@@ -2,10 +2,10 @@ name: codex2api
 
 services:
   codex2api:
-    image: ghcr.io/james-6-23/codex2api:latest
+    image: crpi-dzjyl2rfnlfugj1m.cn-shanghai.personal.cr.aliyuncs.com/frogclaw/codex2api:latest
     container_name: codex2api
     ports:
-      - "${BIND_HOST:-0.0.0.0}:${CODEX_PORT:-8080}:${CODEX_PORT:-8080}"
+      - "${BIND_HOST:-0.0.0.0}:${CODEX_PORT:-3200}:${CODEX_PORT:-3200}"
     env_file:
       - .env
     volumes:
@@ -17,7 +17,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:$${CODEX_PORT:-8080}/health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:$${CODEX_PORT:-3200}/health >/dev/null || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -39,7 +39,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     # ports:
-    #   - "5432:5432"   # 取消注释以便本地调试
+    #   - "5500:5500"   # 取消注释以便本地调试
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-codex2api}"]
       interval: 5s
@@ -58,7 +58,7 @@ services:
     volumes:
       - redisdata:/data
     # ports:
-    #   - "6379:6379"   # 取消注释以便本地调试
+    #   - "5501:5501"   # 取消注释以便本地调试
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
