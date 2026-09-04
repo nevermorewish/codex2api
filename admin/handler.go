@@ -1173,6 +1173,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/usage/api-keys/:id/accounts", h.GetAPIKeyAccountStats)
 	api.GET("/usage/logs", h.GetUsageLogs)
 	api.GET("/usage/logs/error-summary", h.GetUsageLogsErrorSummary)
+	api.GET("/dashboard/relay-chains", h.GetRelayChains)
 	api.GET("/usage/chart-data", h.GetChartData)
 	api.DELETE("/usage/logs", h.ClearUsageLogs)
 	api.GET("/setup-hints", h.GetSetupHints)

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Activity, Gauge, KeyRound, Layers3, Search, Users } from 'lucide-react'
+import type { TFunction } from 'i18next'
+import { Activity, ArrowRight, CheckCircle2, ChevronDown, Gauge, GitBranch, KeyRound, Layers3, Search, Users, XCircle } from 'lucide-react'
 import { api } from '../api'
-import type { ConcurrencyAccountRow, ConcurrencySnapshot } from '../types'
+import type { ConcurrencyAccountRow, ConcurrencySnapshot, RelayAttempt, RelayChain } from '../types'
 import PageHeader from '../components/PageHeader'
 import StateShell from '../components/StateShell'
 import { StatTile } from '../components/StatTile'
@@ -23,6 +24,89 @@ function loadTone(row: ConcurrencyAccountRow): string {
   return 'bg-emerald-500'
 }
 
+function formatDuration(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return '-'
+  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)} s`
+  return `${Math.round(value)} ms`
+}
+
+function formatRelayTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value || '-'
+  return date.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+}
+
+function RelayChainDetails({ chain, t }: { chain: RelayChain; t: TFunction }) {
+  return (
+    <div className="border-t border-border bg-muted/15 px-4 py-4 pl-11">
+      <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-6">
+        <div className="min-w-0">
+          <div className="text-muted-foreground">{t('concurrency.relayRequestId')}</div>
+          <div className="mt-1 truncate font-mono text-foreground" title={chain.request_id}>{chain.request_id}</div>
+        </div>
+        <div>
+          <div className="text-muted-foreground">{t('concurrency.relayProtocol')}</div>
+          <div className="mt-1 font-medium uppercase text-foreground">{chain.protocol || 'openai'}</div>
+        </div>
+        <div className="min-w-0">
+          <div className="text-muted-foreground">{t('concurrency.apiKey')}</div>
+          <div className="mt-1 truncate text-foreground">{chain.api_key_name || (chain.api_key_id ? `#${chain.api_key_id}` : '-')}</div>
+        </div>
+        <div>
+          <div className="text-muted-foreground">{t('concurrency.relayResult')}</div>
+          <div className={cn('mt-1 font-medium', chain.final_ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+            {chain.final_ok ? t('concurrency.relaySuccess') : t('concurrency.relayFailed')}
+          </div>
+        </div>
+        <div>
+          <div className="text-muted-foreground">{t('concurrency.relayAttemptsLabel')}</div>
+          <div className="mt-1 font-medium tabular-nums text-foreground">{chain.attempts.length}</div>
+        </div>
+        <div>
+          <div className="text-muted-foreground">{t('concurrency.relaySwitchesLabel')}</div>
+          <div className="mt-1 font-medium tabular-nums text-foreground">{chain.switch_count}</div>
+        </div>
+      </div>
+
+      <div className="mt-4 overflow-x-auto rounded-md border border-border bg-background/50">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-16">#</TableHead>
+              <TableHead>{t('concurrency.relayAccount')}</TableHead>
+              <TableHead>{t('concurrency.relayStatusCode')}</TableHead>
+              <TableHead>{t('concurrency.relayDecision')}</TableHead>
+              <TableHead>{t('concurrency.relayDuration')}</TableHead>
+              <TableHead>{t('concurrency.relayError')}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {chain.attempts.map((attempt: RelayAttempt) => {
+              const statusOK = attempt.status_code >= 200 && attempt.status_code < 300
+              return (
+                <TableRow key={`${chain.request_id}-detail-${attempt.seq}`}>
+                  <TableCell className="tabular-nums text-muted-foreground">{attempt.seq}</TableCell>
+                  <TableCell className="max-w-56 truncate font-medium" title={attempt.account_name}>{attempt.account_name || (attempt.account_id ? `#${attempt.account_id}` : t('concurrency.unknownAccount'))}</TableCell>
+                  <TableCell className={cn('tabular-nums', statusOK ? 'text-emerald-600 dark:text-emerald-400' : attempt.status_code >= 400 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground')}>{attempt.status_code || '-'}</TableCell>
+                  <TableCell>
+                    <span className={cn('rounded border px-1.5 py-0.5 text-[11px]', attempt.decision === 'success' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : attempt.decision === 'failed' ? 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300')}>
+                      {t(`concurrency.relayDecisionValues.${attempt.decision}`, { defaultValue: attempt.decision || '-' })}
+                    </span>
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap tabular-nums text-muted-foreground">{formatDuration(attempt.duration_ms)}</TableCell>
+                  <TableCell className="max-w-72 truncate text-xs text-red-700 dark:text-red-300" title={attempt.error || undefined}>{attempt.error || '-'}</TableCell>
+                </TableRow>
+              )
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  )
+}
+
 export default function Concurrency() {
   const { t } = useTranslation()
   const [snapshot, setSnapshot] = useState<ConcurrencySnapshot | null>(null)
@@ -30,12 +114,19 @@ export default function Concurrency() {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [hideIdle, setHideIdle] = useState(false)
+  const [relayChains, setRelayChains] = useState<RelayChain[]>([])
+  const [expandedRelay, setExpandedRelay] = useState<string | null>(null)
+  const [showOnlyRelayed, setShowOnlyRelayed] = useState(false)
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true)
     try {
-      const data = await api.getConcurrency()
-      setSnapshot(data)
+      const results = await Promise.allSettled([api.getConcurrency(), api.getRelayChains(100)])
+      const concurrencyResult = results[0]
+      if (concurrencyResult.status === 'rejected') throw concurrencyResult.reason
+      setSnapshot(concurrencyResult.value)
+      const relayResult = results[1]
+      if (relayResult.status === 'fulfilled') setRelayChains(relayResult.value.chains ?? [])
       setError(null)
     } catch (err) {
       if (!quiet || !snapshot) setError(getErrorMessage(err))
@@ -73,6 +164,7 @@ export default function Concurrency() {
   const updatedAt = snapshot?.collected_at
     ? new Date(snapshot.collected_at).toLocaleTimeString()
     : '-'
+  const visibleRelayChains = showOnlyRelayed ? relayChains.filter((chain) => chain.switch_count > 0) : relayChains
 
   return (
     <div className="mx-auto w-full max-w-[1500px]">
@@ -99,6 +191,71 @@ export default function Concurrency() {
               <StatTile label={t('concurrency.occupied')} value={snapshot.total_occupied} sub={t('concurrency.bufferedCount', { count: Math.max(0, snapshot.total_occupied - snapshot.total_active) })} icon={<Users className="size-4" />} />
               <StatTile label={t('concurrency.capacity')} value={snapshot.capacity} sub={t('concurrency.usableCapacity')} icon={<Gauge className="size-4" />} />
             </div>
+
+            <section className="overflow-hidden rounded-lg border border-border bg-card/70">
+              <div className="flex flex-col gap-1 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-2">
+                  <GitBranch className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  <div>
+                    <h3 className="font-semibold text-foreground">{t('concurrency.relayChainsTitle')}</h3>
+                    <p className="text-xs text-muted-foreground">{t('concurrency.relayChainsDescription')}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-muted-foreground">{t('concurrency.relayChainsRecords', { count: visibleRelayChains.length })}</span>
+                  <button type="button" className={cn('rounded border px-2 py-1 text-xs transition-colors', showOnlyRelayed ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted/40')} onClick={() => setShowOnlyRelayed((value) => !value)}>
+                    {showOnlyRelayed ? t('concurrency.showAllRelayChains') : t('concurrency.showOnlyRelayed')}
+                  </button>
+                </div>
+              </div>
+              {visibleRelayChains.length > 0 ? (
+                <div className="divide-y divide-border">
+                  {visibleRelayChains.map((chain) => {
+                    const expanded = expandedRelay === chain.request_id
+                    return (
+                      <div key={chain.request_id} className="group">
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/35"
+                          onClick={() => setExpandedRelay(expanded ? null : chain.request_id)}
+                          aria-expanded={expanded}
+                        >
+                          <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', expanded && 'rotate-180')} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                              <span className="text-xs tabular-nums text-muted-foreground">{formatRelayTime(chain.started_at)}</span>
+                              <span className="truncate font-medium text-foreground">{chain.model || '-'}</span>
+                              <span className="rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] uppercase text-muted-foreground">{chain.protocol || 'openai'}</span>
+                            </div>
+                            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-xs text-muted-foreground">
+                              {chain.attempts.map((attempt, index) => (
+                                <span key={`${chain.request_id}-${attempt.seq}`} className="inline-flex min-w-0 items-center gap-1">
+                                  {index > 0 ? <ArrowRight className="size-3 shrink-0 text-muted-foreground/70" /> : null}
+                                  <span className="max-w-44 truncate">{attempt.account_name || (attempt.account_id ? `#${attempt.account_id}` : t('concurrency.unknownAccount'))}</span>
+                                </span>
+                              ))}
+                              {chain.attempts.length === 0 ? <span>{t('concurrency.noAttempts')}</span> : null}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+                            <span className="hidden text-xs text-muted-foreground sm:inline">{t('concurrency.relayAttempts', { count: chain.attempts.length })}</span>
+                            <span className="hidden text-xs text-muted-foreground md:inline">{t('concurrency.relaySwitches', { count: chain.switch_count })}</span>
+                            <span className={cn('inline-flex items-center gap-1 text-xs font-medium', chain.final_ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                              {chain.final_ok ? <CheckCircle2 className="size-4" /> : <XCircle className="size-4" />}
+                              <span className="hidden sm:inline">{chain.final_ok ? t('concurrency.relaySuccess') : t('concurrency.relayFailed')}</span>
+                            </span>
+                            <span className="w-14 text-right text-xs tabular-nums text-muted-foreground">{formatDuration(chain.total_ms)}</span>
+                          </div>
+                        </button>
+                        {expanded ? <RelayChainDetails chain={chain} t={t} /> : null}
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="px-4 py-10 text-center text-sm text-muted-foreground">{showOnlyRelayed && relayChains.length > 0 ? t('concurrency.noRelayedChains') : t('concurrency.noRelayChains')}</div>
+              )}
+            </section>
 
             <section className="overflow-hidden rounded-lg border border-border bg-card/70">
               <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">

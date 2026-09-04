@@ -1478,6 +1478,19 @@ func populateInternalUsageMetaFromContext(c *gin.Context, input *database.UsageL
 	if value, exists := c.Get(contextParentRequestID); exists {
 		input.ParentRequestID, _ = value.(string)
 	}
+	// Reuse the durable parent_request_id column as the request correlation
+	// field for ordinary gateway attempts. Retry rows then share one stable key
+	// and can be reconstructed into a request-level relay chain by the admin UI.
+	// Internal child requests set contextParentRequestID explicitly and retain
+	// their original parent identity.
+	if strings.TrimSpace(input.ParentRequestID) == "" {
+		if requestContext := api.GetRequestContext(c); requestContext != nil {
+			input.ParentRequestID = strings.TrimSpace(requestContext.RequestID)
+		}
+	}
+	if strings.TrimSpace(input.ParentRequestID) == "" {
+		input.ParentRequestID = strings.TrimSpace(c.GetHeader("X-Request-ID"))
+	}
 }
 
 func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInput) {

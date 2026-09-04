@@ -3753,6 +3753,29 @@ export interface ConcurrencySnapshot {
   api_keys: ConcurrencyAPIKeyRow[]
 }
 
+export interface RelayAttempt {
+  seq: number
+  account_id: number
+  account_name: string
+  status_code: number
+  error?: string
+  duration_ms: number
+  decision: string
+}
+
+export interface RelayChain {
+  request_id: string
+  model: string
+  protocol: string
+  api_key_id: number
+  api_key_name: string
+  started_at: ISODateString
+  attempts: RelayAttempt[]
+  final_ok: boolean
+  total_ms: number
+  switch_count: number
+}
+
 export interface FallbackAccount {
   id: number
   name: string
