@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"context"
+	"strings"
 
 	"github.com/codex2api/auth"
+	"github.com/gin-gonic/gin"
 )
 
 const oversizedDirectFallbackBytes = 3 << 20
@@ -15,6 +17,7 @@ type fallbackRouteState struct {
 	primaryAttempts int
 	active          bool
 	required        bool
+	sourceAccount   *auth.Account
 }
 
 func (h *Handler) newFallbackRouteState(filter auth.AccountFilter, requestBodySize ...int) *fallbackRouteState {
@@ -44,8 +47,33 @@ func (s *fallbackRouteState) noteSelected(account *auth.Account) {
 		return
 	}
 	s.primaryAttempts++
+	s.sourceAccount = account
 	if s.policy.Enabled && s.primaryAttempts >= s.policy.RelayCount {
 		s.active = true
+	}
+}
+
+// annotateFallbackRequest carries the primary account that led to a fallback
+// attempt into the request log. Fallback accounts are runtime-only and use a
+// negative ID, so the normal accounts table cannot provide this relationship.
+func (h *Handler) annotateFallbackRequest(c *gin.Context, state *fallbackRouteState, account *auth.Account) {
+	if c == nil || state == nil || account == nil || !account.IsExternalFallback() {
+		return
+	}
+	account.Mu().RLock()
+	fallbackName := strings.TrimSpace(account.Name)
+	account.Mu().RUnlock()
+	c.Set(contextFallbackAccountName, fallbackName)
+	if state.sourceAccount != nil {
+		source := state.sourceAccount
+		source.Mu().RLock()
+		sourceName := strings.TrimSpace(source.Name)
+		if sourceName == "" {
+			sourceName = strings.TrimSpace(source.Email)
+		}
+		source.Mu().RUnlock()
+		c.Set(contextSourceAccountID, source.ID())
+		c.Set(contextSourceAccountName, sourceName)
 	}
 }
 
@@ -107,6 +135,14 @@ func (h *Handler) nextFallbackAwareAccountWithGuard(
 	account, proxyURL, guard := h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, filter, policy)
 	if account != nil {
 		return account, proxyURL, guard
+	}
+	// A bound session account that is simply at its live concurrency ceiling
+	// must not make this request enter the normal availability wait.  Spill it
+	// straight to the configured external fallback, while leaving the durable
+	// affinity binding intact for the next request that can use it.
+	if state.configured() && h.store.SessionAffinityCapacityFull(affinityKey, apiKeyID, exclude, filter, policy) {
+		state.active = true
+		return state.account(exclude), "", auth.SessionAffinityGuard{}
 	}
 	if state.queueThresholdReached(h.store) {
 		state.active = true

@@ -152,6 +152,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS usage_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			account_id INTEGER DEFAULT 0,
+			fallback_account_name TEXT DEFAULT '',
+			source_account_id INTEGER DEFAULT 0,
+			source_account_name TEXT DEFAULT '',
 			credential_generation INTEGER NOT NULL DEFAULT 0,
 			client_ip TEXT DEFAULT '',
 			client_user_agent TEXT DEFAULT '',
@@ -512,6 +515,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"accounts", "deleted_at", "TIMESTAMP NULL"},
 		{"accounts", "credential_generation", "INTEGER NOT NULL DEFAULT 1"},
 		{"usage_logs", "channel", "TEXT DEFAULT ''"},
+		{"usage_logs", "fallback_account_name", "TEXT DEFAULT ''"},
+		{"usage_logs", "source_account_id", "INTEGER DEFAULT 0"},
+		{"usage_logs", "source_account_name", "TEXT DEFAULT ''"},
 		{"usage_logs", "input_tokens", "INTEGER DEFAULT 0"},
 		{"usage_logs", "output_tokens", "INTEGER DEFAULT 0"},
 		{"usage_logs", "reasoning_tokens", "INTEGER DEFAULT 0"},
@@ -939,7 +945,11 @@ func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Tim
 	`
 	args := []interface{}{startArg, endArg, bucketMinutes}
 	if channel != "" {
-		query += " AND channel = $4"
+		if channel == UpstreamChannelFallback {
+			query += " AND (channel = $4 OR account_id < 0)"
+		} else {
+			query += " AND channel = $4"
+		}
 		args = append(args, channel)
 	}
 	query += " GROUP BY 1 ORDER BY 1"
@@ -972,7 +982,11 @@ func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Tim
 		  AND TRIM(COALESCE(internal_reason, '')) = ''`
 	modelArgs := []interface{}{startArg, endArg}
 	if channel != "" {
-		modelQuery += " AND channel = $3"
+		if channel == UpstreamChannelFallback {
+			modelQuery += " AND (channel = $3 OR account_id < 0)"
+		} else {
+			modelQuery += " AND channel = $3"
+		}
 		modelArgs = append(modelArgs, channel)
 	}
 	modelQuery += " GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10"
@@ -1099,7 +1113,11 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context, rangeStart, rangeEnd time
 		args = append(args, db.timeArg(rangeEnd))
 	}
 	if channel != "" {
-		query += fmt.Sprintf(" AND channel = $%d", len(args)+1)
+		if channel == UpstreamChannelFallback {
+			query += fmt.Sprintf(" AND (channel = $%d OR account_id < 0)", len(args)+1)
+		} else {
+			query += fmt.Sprintf(" AND channel = $%d", len(args)+1)
+		}
 		args = append(args, channel)
 	}
 
@@ -1126,7 +1144,12 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context, rangeStart, rangeEnd time
 		stats.AvgFirstTokenMs = totalFirstTokenMs / float64(totalFirstTokenSamples)
 	}
 
-	rollup, err := db.loadUsageStatsRollup(ctx, channel)
+	var rollup usageStatsRollup
+	if channel == UpstreamChannelFallback {
+		rollup, err = db.loadFallbackUsageStatsRollup(ctx)
+	} else {
+		rollup, err = db.loadUsageStatsRollup(ctx, channel)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("读取用量累计汇总: %w", err)
 	}

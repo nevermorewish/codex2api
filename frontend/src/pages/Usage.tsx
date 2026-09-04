@@ -247,6 +247,11 @@ function formatUsageAPIKeyLabel(name?: string, maskedKey?: string): string {
 }
 
 function formatUsageAccountLabel(log: UsageLog): string {
+	if (log.fallback_account_name?.trim()) {
+		const fallback = log.fallback_account_name.trim()
+		const source = log.source_account_name?.trim() || (log.source_account_id ? `ID ${log.source_account_id}` : '')
+		return source ? `${fallback} ← ${source}` : fallback
+	}
   // 邮箱优先：身份账号一律显示邮箱，账号名仅作为无邮箱账号（如 relay API-key 账号）的兜底。
   // 避免 AT 导入未命名时的占位名（at-account-N 等）盖过真实邮箱身份。
   const accountEmail = log.account_email?.trim()
@@ -263,6 +268,10 @@ function formatUsageAccountLabel(log: UsageLog): string {
 }
 
 function formatUsageAccountTitle(log: UsageLog): string {
+	if (log.fallback_account_name?.trim()) {
+		const source = log.source_account_name?.trim() || (log.source_account_id ? `ID ${log.source_account_id}` : '')
+		return source ? `Fallback: ${log.fallback_account_name.trim()} · Source: ${source}` : `Fallback: ${log.fallback_account_name.trim()}`
+	}
   const accountEmail = log.account_email?.trim()
   const accountName = log.account_name?.trim()
   if (accountEmail && accountName && accountEmail !== accountName) {

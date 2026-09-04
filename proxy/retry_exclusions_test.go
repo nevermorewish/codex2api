@@ -67,6 +67,28 @@ func TestRetryAccountExclusionsHardOverridesPriorTransient(t *testing.T) {
 	}
 }
 
+func TestRetryAccountExclusionsNeverExcludeExternalFallback(t *testing.T) {
+	exclusions := newRetryAccountExclusions()
+	const fallbackID int64 = -9
+
+	// Exercise every failure classification used by the HTTP, streaming, and
+	// transport paths. A fallback account remains selectable after each one.
+	exclusions.MarkHard(fallbackID)
+	exclusions.MarkTransient(fallbackID)
+	exclusions.MarkSoft(fallbackID)
+	exclusions.MarkSoftFirstTokenTimeout(fallbackID)
+	exclusions.MarkRequestFailure(fallbackID, errors.New("upstream unavailable"), 1)
+	exclusions.MarkHTTPFailure(fallbackID, http.StatusTooManyRequests, []byte(`{"error":{"code":"rate_limit_exceeded"}}`), 1, 1)
+	exclusions.MarkStreamFailure(fallbackID, streamOutcome{failureKind: "rate_limited", logStatusCode: http.StatusTooManyRequests}, 1, 1)
+
+	if selection := exclusions.ForSelection(); len(selection) != 0 {
+		t.Fatalf("external fallback was excluded: %#v", selection)
+	}
+	if exclusions.CanContinueTransientCycle() {
+		t.Fatal("external fallback failure created a transient retry cycle")
+	}
+}
+
 func TestRetryAccountExclusionsContinuousCycleOnlyClearsTransient(t *testing.T) {
 	exclusions := newRetryAccountExclusions()
 	exclusions.MarkTransient(1)

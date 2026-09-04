@@ -209,10 +209,13 @@ const (
 )
 
 const (
-	contextAPIKeyID     = "apiKeyID"
-	contextAPIKeyName   = "apiKeyName"
-	contextAPIKeyMasked = "apiKeyMasked"
-	contextAPIKeyRow    = "apiKeyRow"
+	contextAPIKeyID            = "apiKeyID"
+	contextAPIKeyName          = "apiKeyName"
+	contextAPIKeyMasked        = "apiKeyMasked"
+	contextAPIKeyRow           = "apiKeyRow"
+	contextFallbackAccountName = "fallbackAccountName"
+	contextSourceAccountID     = "sourceAccountID"
+	contextSourceAccountName   = "sourceAccountName"
 	// contextScopeBudgetGate 存放本次请求的 scope 预算闸门（issue #439），
 	// 由 enforceAPIKeyLimits 计算一次，供账号过滤链与「无可用账号」分支复用。
 	contextScopeBudgetGate = "apiKeyScopeBudgetGate"
@@ -1402,6 +1405,9 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 	// 账号已不在池中（如刚被删除）时按 codex 兜底。
 	if input.Channel == "" && h.store != nil {
 		input.Channel = database.UpstreamChannelCodex
+		if input.AccountID < 0 || strings.TrimSpace(input.FallbackAccountName) != "" {
+			input.Channel = database.UpstreamChannelFallback
+		}
 		if input.AccountID > 0 {
 			if acc := h.store.FindByID(input.AccountID); acc != nil {
 				switch {
@@ -1471,6 +1477,22 @@ func populateInternalUsageMetaFromContext(c *gin.Context, input *database.UsageL
 }
 
 func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInput) {
+	if c != nil && input != nil {
+		if value, ok := c.Get(contextFallbackAccountName); ok {
+			input.FallbackAccountName, _ = value.(string)
+		}
+		if value, ok := c.Get(contextSourceAccountID); ok {
+			switch typed := value.(type) {
+			case int64:
+				input.SourceAccountID = typed
+			case int:
+				input.SourceAccountID = int64(typed)
+			}
+		}
+		if value, ok := c.Get(contextSourceAccountName); ok {
+			input.SourceAccountName, _ = value.(string)
+		}
+	}
 	populateAPIKeyMetaFromContext(c, input)
 	populateInternalUsageMetaFromContext(c, input)
 	populateClientIPFromRequest(c, input)
@@ -3950,6 +3972,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			return
 		}
 		fallbackState.noteSelected(account)
+		h.annotateFallbackRequest(c, fallbackState, account)
 		if attempt > 0 {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 		}
@@ -6675,6 +6698,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			return
 		}
 		fallbackState.noteSelected(account)
+		h.annotateFallbackRequest(c, fallbackState, account)
 		if attempt > 0 {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 		}
@@ -7980,6 +8004,13 @@ func usageLimitFallbackCooldown(account *auth.Account, body []byte) time.Duratio
 
 // Apply429Cooldown 统一处理 429 对账号状态的影响。
 func Apply429Cooldown(store *auth.Store, account *auth.Account, body []byte, resp *http.Response, model string) codex429Decision {
+	// Fallback accounts are deliberately fail-open. Their upstream may impose
+	// its own transient limits, but those errors must not create a local
+	// account/model cooldown that prevents the next retry from using the same
+	// configured fallback route.
+	if account == nil || account.IsExternalFallback() {
+		return codex429Decision{}
+	}
 	// Grok 上游的 429 语义（免费额度耗尽/超支限制/Retry-After）与 Codex 不同，且需要落
 	// grok_free_quota 权威快照——批量测试/连通性测试也走这里，必须同样路由到 Grok 专用映射，
 	// 否则免费额度耗尽会被误标 rate_limited 且丢失用量快照。
@@ -8064,6 +8095,9 @@ func (h *Handler) applyCooldown(account *auth.Account, statusCode int, body []by
 }
 
 func (h *Handler) applyCooldownForModel(account *auth.Account, statusCode int, body []byte, resp *http.Response, model string) codex429Decision {
+	if account == nil || account.IsExternalFallback() {
+		return codex429Decision{}
+	}
 	// Grok 上游的错误语义与 Codex 不同（免费额度耗尽/超支限制/Retry-After），单独映射。
 	if account.IsGrokAPI() {
 		return h.applyGrokCooldownForModel(account, statusCode, body, resp, model)

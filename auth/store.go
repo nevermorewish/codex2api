@@ -6026,6 +6026,25 @@ func (s *Store) tryAcquireAccount(acc *Account, limit int64, updateSchedulerOnLi
 	return acquired
 }
 
+// tryAcquireExternalFallbackAccount reserves a runtime lease without applying
+// the normal account concurrency or dispatch-count limits.  External fallback
+// credentials are an independent upstream pool; their configured concurrency
+// is informational and must not make a request wait when the upstream can
+// accept it.  The lease counters are still maintained so metrics and cleanup
+// remain balanced.
+func (s *Store) tryAcquireExternalFallbackAccount(acc *Account) bool {
+	if s == nil || acc == nil || !acc.IsExternalFallback() {
+		return false
+	}
+	if !reserveOccupiedAccountSlot(acc, int64(^uint64(0)>>1)) {
+		return false
+	}
+	now := time.Now()
+	atomic.AddInt64(&acc.TotalRequests, 1)
+	atomic.StoreInt64(&acc.LastUsedAt, now.UnixNano())
+	return true
+}
+
 // accountOccupiedRequests is a pure snapshot. All production admission paths
 // update OccupiedRequests together with ActiveRequests, so reads must never
 // "repair" the counter: a stale ActiveRequests sample written back here can
@@ -6523,6 +6542,37 @@ func (s *Store) SessionAffinityAccountID(key string) (int64, bool) {
 		return cached.accountID, true
 	}
 	return 0, false
+}
+
+// SessionAffinityCapacityFull reports whether the account currently bound to
+// a session has a usable dispatch limit but no free local slot.  A caller can
+// use this signal to spill the request immediately to an external fallback;
+// it deliberately returns false for a dead/cooldown account or an account
+// rejected by the request filter, which are handled by normal retry logic.
+func (s *Store) SessionAffinityCapacityFull(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) bool {
+	if s == nil {
+		return false
+	}
+	id, ok := s.SessionAffinityAccountID(key)
+	if !ok || id == 0 || (exclude != nil && exclude[id]) {
+		return false
+	}
+	s.mu.RLock()
+	account := s.lookupByIDLocked(id)
+	s.mu.RUnlock()
+	if account == nil || !account.dispatchableForPolicy(policy) || !s.accountAllowedForAPIKey(account, apiKeyID) {
+		return false
+	}
+	filter = s.withUsableEgressFilter(filter)
+	if filter != nil && !filter(account) {
+		return false
+	}
+	if s.accountHasBlockingCachedCooldown(account, policy) {
+		return false
+	}
+	maxConcurrency := atomic.LoadInt64(&s.maxConcurrency)
+	_, _, limit, _, available := account.fastSchedulerSnapshotForPolicy(maxConcurrency, time.Now(), policy)
+	return available && limit > 0 && accountOccupiedRequests(account) >= limit
 }
 
 // UnbindSessionAffinity removes a session binding when it still points to the failed account.
@@ -10024,7 +10074,10 @@ const transportFailureKind = "transport"
 
 // ReportRequestFailure 记录一次失败请求，用于动态调度评分
 func (s *Store) ReportRequestFailure(acc *Account, kind string, latency time.Duration) {
-	if acc == nil {
+	// Fallback accounts are runtime-only relay credentials. Their upstream
+	// failures must not lower local health or alter scheduler state; retry
+	// selection deliberately keeps them eligible for the configured budget.
+	if acc == nil || acc.IsExternalFallback() {
 		return
 	}
 

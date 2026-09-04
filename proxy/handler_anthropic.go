@@ -612,6 +612,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			return
 		}
 		fallbackState.noteSelected(account)
+		h.annotateFallbackRequest(c, fallbackState, account)
 		if attempt > 0 {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 		}

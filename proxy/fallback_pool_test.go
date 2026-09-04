@@ -269,6 +269,33 @@ func TestFallbackQueueThresholdZeroDisablesBypass(t *testing.T) {
 	}
 }
 
+func TestFallbackSpillsImmediatelyWhenAffinityAccountIsFull(t *testing.T) {
+	store := newFallbackQueueTestStore()
+	primary := store.NextExcluding(0, nil)
+	if primary == nil {
+		t.Fatal("failed to occupy primary account")
+	}
+	defer store.Release(primary)
+	const affinityKey = "affinity-capacity-full"
+	store.BindSessionAffinity(affinityKey, primary, "")
+
+	pool := newFallbackQueueTestPool(store, 0) // queue threshold must not be needed
+	handler := &Handler{store: store, fallbackPool: pool}
+	state := handler.newFallbackRouteState(nil)
+
+	started := time.Now()
+	account, _, _ := handler.nextFallbackAwareAccountWithGuard(
+		context.Background(), state, affinityKey, 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard,
+	)
+	if account == nil || !account.IsExternalFallback() {
+		t.Fatalf("full affinity account did not spill to fallback: %#v", account)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("capacity spill took %s; request should not wait for affinity slot", elapsed)
+	}
+	store.Release(account)
+}
+
 func newFallbackQueueTestStore() *auth.Store {
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1})
 	store.AddAccount(&auth.Account{

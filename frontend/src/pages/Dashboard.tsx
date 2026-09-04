@@ -137,7 +137,7 @@ export default function Dashboard() {
 
   const loadPoolRunwayData = useCallback(async () => {
     const requestedChannel = channel
-    if (!showPoolRunwayRef.current || !requestedChannel) return
+    if (!showPoolRunwayRef.current || !requestedChannel || requestedChannel === 'fallback') return
     poolAbort.current?.abort()
     const controller = new AbortController()
     poolAbort.current = controller
@@ -273,9 +273,9 @@ export default function Dashboard() {
   const errorCount = effectiveCounts?.error ?? 0
   const todayRequests = effectiveCounts?.today_requests ?? 0
   const channelBreakdown = !channel && stats?.channels
-    ? (['codex', 'grok', 'antigravity', 'claude'] as const)
+    ? (['codex', 'grok', 'antigravity', 'claude', 'fallback'] as const)
         .map((key) => ({ key, counts: stats.channels?.[key] }))
-        .filter((item): item is { key: 'codex' | 'grok' | 'antigravity' | 'claude'; counts: StatsChannelCounts } =>
+        .filter((item): item is { key: 'codex' | 'grok' | 'antigravity' | 'claude' | 'fallback'; counts: StatsChannelCounts } =>
           Boolean(item.counts && item.counts.total > 0))
     : []
 
@@ -380,13 +380,13 @@ export default function Dashboard() {
                     className="inline-flex items-center gap-1.5 rounded-full bg-muted/80 px-3 py-1 font-semibold text-foreground ring-1 ring-border/50"
                     title={t('dashboard.heroChannelTitle', {
                       // Preserve the provider identity in the tooltip for every channel.
-                      channel: key === 'claude' ? 'Claude' : key === 'grok' ? 'Grok' : key === 'antigravity' ? 'Antigravity' : 'Codex',
+                      channel: key === 'claude' ? 'Claude' : key === 'grok' ? 'Grok' : key === 'antigravity' ? 'Antigravity' : key === 'fallback' ? 'Fallback' : 'Codex',
                       available: counts.available,
                       total: counts.total,
                       requests: counts.today_requests,
                     })}
                   >
-                    <ChannelLogo channel={key} size={13} />
+                    {key === 'fallback' ? <span className="text-[11px]">{t('usage.channelFallback')}</span> : <ChannelLogo channel={key} size={13} />}
                     <span className="tabular-nums">
                       {counts.available}/{counts.total}
                     </span>

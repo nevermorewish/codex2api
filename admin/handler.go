@@ -948,6 +948,8 @@ func parseUsageChannel(c *gin.Context) string {
 		return database.UpstreamChannelAntigravity
 	case database.UpstreamChannelClaude:
 		return database.UpstreamChannelClaude
+	case database.UpstreamChannelFallback:
+		return database.UpstreamChannelFallback
 	}
 	return ""
 }
@@ -1374,6 +1376,24 @@ func (h *Handler) GetStats(c *gin.Context) {
 	}
 
 	accountCounts, channelCounts := summarizeDashboardAccounts(accounts, h.store.Accounts())
+	// Fallback accounts are runtime-only and therefore absent from accounts
+	// (the persisted primary-account rows). Keep them in the channel breakdown
+	// so the shared dashboard channel selector can show their pool health.
+	if h.fallbackPool != nil && h.fallbackPool.Policy().Enabled {
+		fallback := dashboardAccountCounts{}
+		for _, account := range h.fallbackPool.Accounts() {
+			if account == nil {
+				continue
+			}
+			fallback.total++
+			if account.IsAvailable() {
+				fallback.normal++
+			} else {
+				fallback.abnormal++
+			}
+		}
+		channelCounts[database.UpstreamChannelFallback] = fallback
+	}
 
 	todayByChannel, _ := h.db.CountTodayRequestsByChannel(ctx)
 	todayReqs := int64(0)

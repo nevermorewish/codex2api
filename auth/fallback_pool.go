@@ -202,7 +202,6 @@ func (p *FallbackPool) Acquire(exclude map[int64]bool, filter AccountFilter) *Ac
 	for attempts := 0; attempts < len(accounts); attempts++ {
 		var best *Account
 		bestLoad := int64(^uint64(0) >> 1)
-		bestLimit := int64(0)
 		for _, account := range accounts {
 			if account == nil || (exclude != nil && exclude[account.DBID]) || !account.IsAvailable() {
 				continue
@@ -210,20 +209,19 @@ func (p *FallbackPool) Acquire(exclude map[int64]bool, filter AccountFilter) *Ac
 			if filter != nil && !filter(account) {
 				continue
 			}
-			limit := account.GetDynamicConcurrencyLimit()
 			load := account.GetOccupiedRequests()
-			if limit <= 0 || load >= limit {
-				continue
-			}
-			if best == nil || load*bestLimit < bestLoad*limit ||
-				(load*bestLimit == bestLoad*limit && account.DBID > best.DBID) {
-				best, bestLoad, bestLimit = account, load, limit
+			// External fallback accounts intentionally do not participate in
+			// local concurrency admission.  Pick the least-loaded key for
+			// observability/fairness, then send immediately regardless of its
+			// configured concurrency value.
+			if best == nil || load < bestLoad || (load == bestLoad && account.DBID > best.DBID) {
+				best, bestLoad = account, load
 			}
 		}
 		if best == nil {
 			return nil
 		}
-		if p.store.tryAcquireAccount(best, bestLimit, false) {
+		if p.store.tryAcquireExternalFallbackAccount(best) {
 			return best
 		}
 	}

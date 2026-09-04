@@ -2362,7 +2362,8 @@
     "apiKeyStatsDesc": "Call volume grouped by API key.",
     "noApiKeyStats": "No API key statistics yet",
     "tableWsAcquire": "Conn Acquire",
-    "channelAll": "All"
+    "channelAll": "All",
+    "channelFallback": "Fallback"
   },
   "promptFilter": {
     "title": "Prompt Filter",

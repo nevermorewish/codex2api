@@ -3,6 +3,7 @@ package auth
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codex2api/database"
 )
@@ -36,11 +37,13 @@ func TestFallbackPoolPolicySelectionAndConcurrency(t *testing.T) {
 	if second == nil || second.ID() != -2 {
 		t.Fatalf("second selection = %#v, want least-loaded runtime account -2", second)
 	}
-	if third := pool.Acquire(nil, nil); third != nil {
-		t.Fatalf("full fallback pool selected unexpected account %d", third.ID())
+	third := pool.Acquire(nil, nil)
+	if third == nil || !third.IsExternalFallback() {
+		t.Fatal("fallback pool must continue dispatching beyond the configured local concurrency")
 	}
 	store.Release(first)
 	store.Release(second)
+	store.Release(third)
 }
 
 func TestFallbackPoolWildcardMappingAndReloadPreservesLease(t *testing.T) {
@@ -81,6 +84,28 @@ func TestFallbackPoolHonorsExclusionsAndFilter(t *testing.T) {
 		t.Fatalf("filtered selection = %#v, want -2", account)
 	}
 	store.Release(account)
+}
+
+func TestFallbackAccountFailureDoesNotChangeLocalHealth(t *testing.T) {
+	store := NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2})
+	pool := NewFallbackPool(store)
+	pool.Replace(testFallbackConfigs()[:1])
+	account := pool.Accounts()[0]
+
+	store.ReportRequestFailure(account, "server", time.Second)
+
+	if !account.IsAvailable() {
+		account.Mu().RLock()
+		status := account.Status
+		account.Mu().RUnlock()
+		t.Fatalf("fallback account became unavailable after failure: status=%v", status)
+	}
+	account.Mu().RLock()
+	streak := account.FailureStreak
+	account.Mu().RUnlock()
+	if streak != 0 {
+		t.Fatalf("fallback failure was recorded in local health: streak=%d", streak)
+	}
 }
 
 func TestFallbackPoolWhitelistModelsAndUnrestrictedEmptyList(t *testing.T) {

@@ -120,8 +120,16 @@ func newRetryAccountExclusions() *retryAccountExclusions {
 	}
 }
 
+// External fallback accounts use negative runtime IDs (see auth.FallbackPool).
+// They are deliberately retryable: a failure from the fallback upstream must
+// not make the only fallback account disappear from the rest of this request.
+// The normal retry budgets still cap how many times it is called.
+func isExternalFallbackAccountID(accountID int64) bool {
+	return accountID < 0
+}
+
 func (r *retryAccountExclusions) MarkHard(accountID int64) {
-	if r == nil || accountID == 0 {
+	if r == nil || accountID == 0 || isExternalFallbackAccountID(accountID) {
 		return
 	}
 	r.hard[accountID] = true
@@ -134,7 +142,7 @@ func (r *retryAccountExclusions) MarkHard(accountID int64) {
 // Unlike a hard exclusion, it may be cleared after every candidate has seen a
 // recoverable transport, overload, or rate-limit failure in continuous mode.
 func (r *retryAccountExclusions) MarkTransient(accountID int64) {
-	if r == nil || accountID == 0 {
+	if r == nil || accountID == 0 || isExternalFallbackAccountID(accountID) {
 		return
 	}
 	if r.hard[accountID] {
@@ -155,6 +163,9 @@ func (r *retryAccountExclusions) MarkTransportFailure(accountID int64, retryLimi
 // been promoted to unlimited by the policy even though the legacy transport
 // classifier only sees a generic dial error.
 func (r *retryAccountExclusions) MarkRequestFailure(accountID int64, err error, retryLimit int, policies ...database.ContinuousRetryPolicy) {
+	if isExternalFallbackAccountID(accountID) {
+		return
+	}
 	if isExplicitUpstreamCyberPolicyError(err) {
 		r.MarkHard(accountID)
 		return
@@ -183,6 +194,9 @@ func (r *retryAccountExclusions) MarkRequestFailure(accountID int64, err error, 
 // the lifetime of the request, while allowing genuinely recoverable failures
 // to participate in another pool cycle when continuous retry is enabled.
 func (r *retryAccountExclusions) MarkHTTPFailure(accountID int64, statusCode int, body []byte, generalLimit, rateLimit int, policies ...database.ContinuousRetryPolicy) {
+	if isExternalFallbackAccountID(accountID) {
+		return
+	}
 	if isExplicitUpstreamCyberPolicy(body) {
 		r.MarkHard(accountID)
 		return
@@ -208,6 +222,9 @@ func (r *retryAccountExclusions) MarkStreamFailure(accountID int64, outcome stre
 }
 
 func (r *retryAccountExclusions) MarkStreamFailureForEvent(accountID int64, outcome streamOutcome, eventType string, generalLimit, rateLimit int, policies ...database.ContinuousRetryPolicy) {
+	if isExternalFallbackAccountID(accountID) {
+		return
+	}
 	failureKind := strings.ToLower(strings.TrimSpace(outcome.failureKind))
 	if failureKind == "cyber_policy" || isExplicitUpstreamCyberPolicy(outcome.failurePayload) {
 		r.MarkHard(accountID)
@@ -294,7 +311,7 @@ func (r *retryAccountExclusions) MarkSoftFirstTokenTimeout(accountID int64) {
 // MarkSoft 把账号加入本次请求的软排除集：调度选号时跳过它，但账号池试完后由
 // ResetSoft 清空重来，不会永久搁置请求。用于"重试时暂时避开该账号但不惩罚它"。
 func (r *retryAccountExclusions) MarkSoft(accountID int64) {
-	if r == nil || accountID == 0 {
+	if r == nil || accountID == 0 || isExternalFallbackAccountID(accountID) {
 		return
 	}
 	if r.hard[accountID] || r.transient[accountID] {

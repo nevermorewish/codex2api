@@ -3,9 +3,9 @@ import { useTranslation } from "react-i18next";
 import ChannelLogo from "./ChannelLogo";
 import { cn } from "@/lib/utils";
 
-// 仪表盘/用量页共用的上游渠道过滤（全部/Codex/Grok/Antigravity/Claude）。
+// 仪表盘/用量页共用的上游渠道过滤（全部/Codex/Grok/Antigravity/Claude/兜底）。
 // 选择持久化到 localStorage，两页共享同一份状态键。
-export type UsageChannel = "" | "codex" | "grok" | "antigravity" | "claude";
+export type UsageChannel = "" | "codex" | "grok" | "antigravity" | "claude" | "fallback";
 
 const USAGE_CHANNEL_KEY = "codex2api:usage:channel";
 
@@ -13,7 +13,7 @@ export function useUsageChannel(): [UsageChannel, (next: UsageChannel) => void] 
   const [channel, setChannel] = useState<UsageChannel>(() => {
     try {
       const raw = window.localStorage.getItem(USAGE_CHANNEL_KEY);
-      if (raw === "codex" || raw === "grok" || raw === "antigravity" || raw === "claude") return raw;
+      if (raw === "codex" || raw === "grok" || raw === "antigravity" || raw === "claude" || raw === "fallback") return raw;
     } catch {
       // ignore
     }
@@ -49,6 +49,7 @@ export default function ChannelFilter({
     { key: "grok", label: "Grok", logo: "grok" },
     { key: "antigravity", label: "Antigravity", logo: "antigravity" },
     { key: "claude", label: "Claude", logo: "claude" },
+    { key: "fallback", label: t("usage.channelFallback") },
   ];
   const activeIndex = Math.max(
     0,
@@ -57,14 +58,14 @@ export default function ChannelFilter({
   return (
     <div
       className={cn(
-        "relative grid grid-cols-5 items-center rounded-lg border border-border bg-muted/40 p-0.5",
+        "relative grid grid-cols-6 items-center rounded-lg border border-border bg-muted/40 p-0.5",
         className,
       )}
     >
-      {/* 滑块指示器：等宽五格，translateX 过渡到选中项 */}
+      {/* 滑块指示器：等宽六格，translateX 过渡到选中项 */}
       <span
         aria-hidden
-        className="absolute inset-y-0.5 left-0.5 w-[calc((100%-4px)/5)] rounded-md bg-background shadow-sm transition-transform duration-300 ease-out"
+        className="absolute inset-y-0.5 left-0.5 w-[calc((100%-4px)/6)] rounded-md bg-background shadow-sm transition-transform duration-300 ease-out"
         style={{ transform: `translateX(${activeIndex * 100}%)` }}
       />
       {options.map(({ key, label, logo }) => (

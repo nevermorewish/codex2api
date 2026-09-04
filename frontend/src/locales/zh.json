@@ -2362,7 +2362,8 @@
     "apiKeyStatsDesc": "按 API 密钥统计调用量。",
     "noApiKeyStats": "暂无密钥统计",
     "tableWsAcquire": "取得连接",
-    "channelAll": "全部"
+    "channelAll": "全部",
+    "channelFallback": "兜底"
   },
   "promptFilter": {
     "title": "Prompt 检查",

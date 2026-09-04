@@ -249,8 +249,11 @@ const (
 	minUsageLogFlushIntervalSeconds     = 1
 	maxUsageLogFlushIntervalSeconds     = 300
 
-	postgresMaxBindParams       = 65535
+	postgresMaxBindParams = 65535
+	// Kept at the historical value for compatibility with package tests and
+	// callers; fallback attribution columns are counted separately below.
 	usageLogInsertColumnCount   = 52
+	usageLogInsertValueCount    = 55
 	maxUsageLogInsertRowsPerSQL = 1000
 
 	// usageLogBufferHardLimit 内存缓冲的硬上限。PG 长时间不可用时（维护、主从切换、
@@ -298,6 +301,9 @@ func NormalizeUsageLogFlushIntervalSeconds(n int) int {
 type usageLogEntry struct {
 	StoreUsageLog          bool
 	AccountID              int64
+	FallbackAccountName    string
+	SourceAccountID        int64
+	SourceAccountName      string
 	CredentialGeneration   int64
 	Channel                string
 	ClientIP               string
@@ -745,6 +751,27 @@ func (db *DB) loadUsageStatsRollup(ctx context.Context, channel string) (usageSt
 	return result, err
 }
 
+// loadFallbackUsageStatsRollup keeps historical runtime fallback rows visible
+// even when they predate the explicit fallback channel and were persisted with
+// an empty or legacy channel value. Fallback accounts use negative runtime IDs.
+func (db *DB) loadFallbackUsageStatsRollup(ctx context.Context) (usageStatsRollup, error) {
+	var result usageStatsRollup
+	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0),
+		COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cached_tokens), 0),
+		COALESCE(SUM(CASE WHEN cached_tokens > 0 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN first_token_ms > 0 THEN first_token_ms ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN first_token_ms > 0 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(account_billed), 0), COALESCE(SUM(user_billed), 0)
+		FROM usage_logs
+		WHERE status_code <> 499 AND TRIM(COALESCE(internal_reason, '')) = ''
+		  AND (TRIM(COALESCE(channel, '')) = $1 OR account_id < 0)`, UpstreamChannelFallback).Scan(
+		&result.TotalRequests, &result.TotalTokens, &result.PromptTokens, &result.CompletionTokens,
+		&result.CachedTokens, &result.CacheHitRequests, &result.FirstTokenMsSum, &result.FirstTokenSamples,
+		&result.TotalAccountBilled, &result.TotalUserBilled)
+	return result, err
+}
+
 func applyUsageStatsRollupWithExec(ctx context.Context, execer sqlExecer, batch []usageLogEntry) error {
 	if execer == nil || len(batch) == 0 {
 		return nil
@@ -1121,6 +1148,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	CREATE TABLE IF NOT EXISTS usage_logs (
 		id             SERIAL PRIMARY KEY,
 		account_id     INT DEFAULT 0,
+		fallback_account_name VARCHAR(255) DEFAULT '',
+		source_account_id BIGINT DEFAULT 0,
+		source_account_name VARCHAR(255) DEFAULT '',
 		endpoint       VARCHAR(100) DEFAULT '',
 		model          VARCHAR(100) DEFAULT '',
 		prompt_tokens  INT DEFAULT 0,
@@ -1185,6 +1215,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	-- ensureUsageLogsGenerationIndex 在启动后用 CREATE INDEX CONCURRENTLY 在线构建。
 	-- 上游渠道（codex/grok），写入时按调度账号固化，供仪表盘/用量分渠道聚合
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS channel VARCHAR(16) DEFAULT '';
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS fallback_account_name VARCHAR(255) DEFAULT '';
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS source_account_id BIGINT DEFAULT 0;
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS source_account_name VARCHAR(255) DEFAULT '';
 	ALTER TABLE usage_logs ALTER COLUMN reasoning_effort TYPE VARCHAR(100);
 	ALTER TABLE usage_logs ALTER COLUMN service_tier TYPE VARCHAR(100);
 	ALTER TABLE usage_logs ALTER COLUMN requested_service_tier TYPE VARCHAR(100);
@@ -1723,6 +1756,7 @@ const (
 	UpstreamChannelGrok        = "grok"
 	UpstreamChannelAntigravity = "antigravity"
 	UpstreamChannelClaude      = "claude"
+	UpstreamChannelFallback    = "fallback"
 )
 
 // ResolveUpstreamChannel 归一 Key 的上游渠道限定；未知值一律视为不限（auto）。
@@ -4027,6 +4061,9 @@ type UsageLog struct {
 	ImageSize              string    `json:"image_size"`
 	AccountName            string    `json:"account_name"`
 	AccountEmail           string    `json:"account_email"`
+	FallbackAccountName    string    `json:"fallback_account_name,omitempty"`
+	SourceAccountID        int64     `json:"source_account_id,omitempty"`
+	SourceAccountName      string    `json:"source_account_name,omitempty"`
 	CreatedAt              time.Time `json:"created_at"`
 	AccountBilled          float64   `json:"account_billed"`
 	UserBilled             float64   `json:"user_billed"`
@@ -4130,6 +4167,9 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 	db.logBuf = append(db.logBuf, usageLogEntry{
 		StoreUsageLog:          storeUsageLog,
 		AccountID:              log.AccountID,
+		FallbackAccountName:    clampUsageLogText(log.FallbackAccountName, usageLogAPIKeyNameMaxLen),
+		SourceAccountID:        log.SourceAccountID,
+		SourceAccountName:      clampUsageLogText(log.SourceAccountName, usageLogAPIKeyNameMaxLen),
 		CredentialGeneration:   log.CredentialGeneration,
 		Channel:                clampUsageLogText(log.Channel, usageLogChannelMaxLen),
 		ClientIP:               clampUsageLogText(log.ClientIP, usageLogShortTextMaxLen),
@@ -4195,7 +4235,10 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 
 // UsageLogInput 日志写入参数
 type UsageLogInput struct {
-	AccountID int64
+	AccountID           int64
+	FallbackAccountName string
+	SourceAccountID     int64
+	SourceAccountName   string
 	// CredentialGeneration attributes internally-generated Grok traffic to the
 	// credential snapshot that issued it. Zero is legacy/unscoped traffic.
 	CredentialGeneration int64
@@ -4546,20 +4589,20 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 	logsToStore := storedUsageLogs(batch)
 	if len(logsToStore) > 0 {
 		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
+			`INSERT INTO usage_logs (account_id, fallback_account_name, source_account_id, source_account_name, credential_generation, channel, client_ip, endpoint, model, effective_model, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
 				  input_tokens, output_tokens, reasoning_tokens, first_token_ms, ws_acquire_ms, reasoning_effort, inbound_endpoint, upstream_endpoint, stream, compact, has_compaction_history, cached_tokens, cache_write_5m_tokens, cache_write_1h_tokens, service_tier,
 				  requested_service_tier, actual_service_tier, billing_service_tier,
 				  api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
 				  is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
 				  client_user_agent, upstream_user_agent, user_agent_overridden, internal_reason, parent_request_id, prompt_policy_incident_id)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52)`)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55)`)
 		if err != nil {
 			return fmt.Errorf("准备语句: %w", err)
 		}
 		defer stmt.Close()
 
 		for _, e := range logsToStore {
-			if _, err := stmt.ExecContext(ctx, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
+			if _, err := stmt.ExecContext(ctx, e.AccountID, e.FallbackAccountName, e.SourceAccountID, e.SourceAccountName, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
 				e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.FirstTokenMs, e.WsAcquireMs, e.ReasoningEffort, e.InboundEndpoint, e.UpstreamEndpoint, e.Stream, e.Compact, e.HasCompactionHistory, e.CachedTokens, e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.ServiceTier,
 				e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
 				e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
@@ -4601,7 +4644,7 @@ func (db *DB) batchInsertLogs(ctx context.Context, batch []usageLogEntry) error 
 
 	logsToStore := storedUsageLogs(batch)
 	maxRowsPerBatch := maxUsageLogInsertRowsPerSQL
-	if paramSafeRows := postgresMaxBindParams / usageLogInsertColumnCount; paramSafeRows > 0 && maxRowsPerBatch > paramSafeRows {
+	if paramSafeRows := postgresMaxBindParams / usageLogInsertValueCount; paramSafeRows > 0 && maxRowsPerBatch > paramSafeRows {
 		maxRowsPerBatch = paramSafeRows
 	}
 
@@ -4640,25 +4683,25 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, execer sqlExecer, batch 
 
 	// 使用 COPY 或批量 VALUES 优化插入性能
 	valueStrings := make([]string, 0, len(batch))
-	valueArgs := make([]interface{}, 0, len(batch)*usageLogInsertColumnCount)
+	valueArgs := make([]interface{}, 0, len(batch)*usageLogInsertValueCount)
 	argIdx := 1
 
 	for _, e := range batch {
-		placeholders := make([]string, usageLogInsertColumnCount)
+		placeholders := make([]string, usageLogInsertValueCount)
 		for i := range placeholders {
 			placeholders[i] = fmt.Sprintf("$%d", argIdx+i)
 		}
 		valueStrings = append(valueStrings, "("+strings.Join(placeholders, ", ")+")")
-		valueArgs = append(valueArgs, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
+		valueArgs = append(valueArgs, e.AccountID, e.FallbackAccountName, e.SourceAccountID, e.SourceAccountName, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
 			e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.FirstTokenMs, e.WsAcquireMs, e.ReasoningEffort, e.InboundEndpoint, e.UpstreamEndpoint, e.Stream, e.Compact, e.HasCompactionHistory, e.CachedTokens, e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.ServiceTier,
 			e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
 			e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
 			e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
 			e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID))
-		argIdx += usageLogInsertColumnCount
+		argIdx += usageLogInsertValueCount
 	}
 
-	query := fmt.Sprintf(`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
+	query := fmt.Sprintf(`INSERT INTO usage_logs (account_id, fallback_account_name, source_account_id, source_account_name, credential_generation, channel, client_ip, endpoint, model, effective_model, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
 		input_tokens, output_tokens, reasoning_tokens, first_token_ms, ws_acquire_ms, reasoning_effort, inbound_endpoint, upstream_endpoint, stream, compact, has_compaction_history, cached_tokens, cache_write_5m_tokens, cache_write_1h_tokens, service_tier,
 		requested_service_tier, actual_service_tier, billing_service_tier,
 		api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
@@ -4797,7 +4840,7 @@ type TrafficSnapshot struct {
 // 当 rangeStart 为零值时回落到"今日"(本地 0 点起),与历史行为一致;
 // 当传入显式区间时,today_* 字段语义变为"该区间内的统计",total_* 字段始终是全量累计。
 // rangeEnd 为零值表示"至今"。
-// GetUsageStats 聚合用量统计。channel 非空（codex/grok/antigravity/claude）时按渠道过滤；
+// GetUsageStats 聚合用量统计。channel 非空（codex/grok/antigravity/claude/fallback）时按渠道过滤；
 // 渠道视图下的「累计」只覆盖现存 usage_logs（清空日志前的 baseline 无渠道维度，不计入）。
 func (db *DB) GetUsageStats(ctx context.Context, rangeStart, rangeEnd time.Time, channel string) (*UsageStats, error) {
 	return db.getUsageStats(ctx, rangeStart, rangeEnd, channel, true)
@@ -4830,7 +4873,11 @@ func (db *DB) getUsageStats(ctx context.Context, rangeStart, rangeEnd time.Time,
 		args = append(args, rangeEnd)
 	}
 	if channel != "" {
-		endClause += fmt.Sprintf(" AND channel = $%d", len(args)+1)
+		if channel == UpstreamChannelFallback {
+			endClause += fmt.Sprintf(" AND (channel = $%d OR account_id < 0)", len(args)+1)
+		} else {
+			endClause += fmt.Sprintf(" AND channel = $%d", len(args)+1)
+		}
 		args = append(args, channel)
 	}
 
@@ -4871,7 +4918,12 @@ func (db *DB) getUsageStats(ctx context.Context, rangeStart, rangeEnd time.Time,
 		return nil, err
 	}
 
-	rollup, err := db.loadUsageStatsRollup(ctx, channel)
+	var rollup usageStatsRollup
+	if channel == UpstreamChannelFallback {
+		rollup, err = db.loadFallbackUsageStatsRollup(ctx)
+	} else {
+		rollup, err = db.loadUsageStatsRollup(ctx, channel)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("读取用量累计汇总: %w", err)
 	}
@@ -4923,11 +4975,11 @@ func (db *DB) CountTodayRequestsByChannel(ctx context.Context) (map[string]int64
 	now := time.Now()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	rows, err := db.conn.QueryContext(ctx, `
-		SELECT COALESCE(channel, ''), COUNT(*)
+		SELECT CASE WHEN account_id < 0 THEN $2 ELSE COALESCE(channel, '') END, COUNT(*)
 		FROM usage_logs
 		WHERE created_at >= $1 AND status_code <> 499
 		  AND TRIM(COALESCE(internal_reason, '')) = ''
-		GROUP BY 1`, db.timeArg(todayStart))
+		GROUP BY 1`, db.timeArg(todayStart), UpstreamChannelFallback)
 	if err != nil {
 		return nil, err
 	}
@@ -4955,7 +5007,11 @@ func (db *DB) usageStatsTimeWhere(column string, rangeStart, rangeEnd time.Time,
 		args = append(args, db.timeArg(rangeEnd))
 	}
 	if channel = strings.TrimSpace(channel); channel != "" {
-		where += fmt.Sprintf(" AND channel = $%d", len(args)+1)
+		if channel == UpstreamChannelFallback {
+			where += fmt.Sprintf(" AND (channel = $%d OR account_id < 0)", len(args)+1)
+		} else {
+			where += fmt.Sprintf(" AND channel = $%d", len(args)+1)
+		}
 		args = append(args, channel)
 	}
 	return where, args
@@ -5215,6 +5271,7 @@ func (db *DB) ListRecentUsageLogs(ctx context.Context, limit int) ([]*UsageLog, 
 	            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 	            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
 	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''),
+	            COALESCE(u.fallback_account_name, ''), COALESCE(u.source_account_id, 0), COALESCE(u.source_account_name, ''),
 	            COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at
 	           FROM usage_logs u
 	           LEFT JOIN accounts a ON u.account_id = a.id
@@ -5237,7 +5294,7 @@ func (db *DB) ListRecentUsageLogs(ctx context.Context, limit int) ([]*UsageLog, 
 			&l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize, &l.AccountBilled, &l.UserBilled,
 			&l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage, &l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel,
 			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID,
-			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
+			&l.FallbackAccountName, &l.SourceAccountID, &l.SourceAccountName, &credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
@@ -5366,7 +5423,11 @@ func (db *DB) GetChartAggregation(ctx context.Context, start, end time.Time, buc
 	}
 	channelClause := ""
 	if channel != "" {
-		channelClause = " AND channel = $4"
+		if channel == UpstreamChannelFallback {
+			channelClause = " AND (channel = $4 OR account_id < 0)"
+		} else {
+			channelClause = " AND channel = $4"
+		}
 	}
 	result := &ChartAggregation{}
 
@@ -5688,6 +5749,7 @@ func (db *DB) ListUsageLogsByTimeRange(ctx context.Context, start, end time.Time
 	            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 	            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
 	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''),
+	            COALESCE(u.fallback_account_name, ''), COALESCE(u.source_account_id, 0), COALESCE(u.source_account_name, ''),
 	            COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at
 	           FROM usage_logs u
 	           LEFT JOIN accounts a ON u.account_id = a.id
@@ -5711,7 +5773,7 @@ func (db *DB) ListUsageLogsByTimeRange(ctx context.Context, start, end time.Time
 			&l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize, &l.AccountBilled, &l.UserBilled,
 			&l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage, &l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel,
 			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID,
-			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
+			&l.FallbackAccountName, &l.SourceAccountID, &l.SourceAccountName, &credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
@@ -5779,6 +5841,8 @@ func (db *DB) buildUsageLogWhere(f UsageLogFilter) (string, []interface{}) {
 		p := addArg("%" + f.Email + "%")
 		parts = append(parts, fmt.Sprintf(`(
 			LOWER(COALESCE(u.client_ip, '')) LIKE LOWER(%[1]s)
+			OR LOWER(COALESCE(u.fallback_account_name, '')) LIKE LOWER(%[1]s)
+			OR LOWER(COALESCE(u.source_account_name, '')) LIKE LOWER(%[1]s)
 			OR u.account_id IN (
 				SELECT search_accounts.id
 				FROM accounts search_accounts
@@ -5849,7 +5913,11 @@ func (db *DB) buildUsageLogWhere(f UsageLogFilter) (string, []interface{}) {
 	}
 	if channel := strings.TrimSpace(f.Channel); channel != "" {
 		p := addArg(channel)
-		parts = append(parts, fmt.Sprintf(`COALESCE(u.channel, '') = %s`, p))
+		if channel == UpstreamChannelFallback {
+			parts = append(parts, fmt.Sprintf(`(COALESCE(u.channel, '') = %s OR u.account_id < 0)`, p))
+		} else {
+			parts = append(parts, fmt.Sprintf(`COALESCE(u.channel, '') = %s`, p))
+		}
 	}
 	if f.Query != "" {
 		p := addArg("%" + f.Query + "%")
@@ -5862,7 +5930,9 @@ func (db *DB) buildUsageLogWhere(f UsageLogFilter) (string, []interface{}) {
 				OR LOWER(COALESCE(u.upstream_endpoint, '')) LIKE LOWER(%[1]s)
 				OR LOWER(COALESCE(u.api_key_name, '')) LIKE LOWER(%[1]s)
 				OR LOWER(COALESCE(u.api_key_masked, '')) LIKE LOWER(%[1]s)
-				OR LOWER(COALESCE(u.client_ip, '')) LIKE LOWER(%[1]s)
+			OR LOWER(COALESCE(u.client_ip, '')) LIKE LOWER(%[1]s)
+			OR LOWER(COALESCE(u.fallback_account_name, '')) LIKE LOWER(%[1]s)
+			OR LOWER(COALESCE(u.source_account_name, '')) LIKE LOWER(%[1]s)
 				OR u.account_id IN (
 					SELECT search_accounts.id
 					FROM accounts search_accounts
@@ -5953,7 +6023,8 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 			            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 			            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
 			            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''),
-			            COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at,
+	                    COALESCE(u.fallback_account_name, ''), COALESCE(u.source_account_id, 0), COALESCE(u.source_account_name, ''),
+	                    COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at,
 	            COUNT(*) OVER() AS total_count
 	           FROM usage_logs u
 	           LEFT JOIN accounts a ON u.account_id = a.id
@@ -5975,7 +6046,7 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 			&l.ServiceTier, &l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier, &l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize,
 			&l.AccountBilled, &l.UserBilled, &l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage,
 			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID,
-			&credentialRaw, &l.AccountName, &createdAtRaw, &result.Total); err != nil {
+			&l.FallbackAccountName, &l.SourceAccountID, &l.SourceAccountName, &credentialRaw, &l.AccountName, &createdAtRaw, &result.Total); err != nil {
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
@@ -6009,6 +6080,7 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 			COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 			COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.channel, ''),
 			COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''),
+			COALESCE(u.fallback_account_name, ''), COALESCE(u.source_account_id, 0), COALESCE(u.source_account_name, ''),
 			COALESCE(CAST(a.credentials AS TEXT), '{}'), COALESCE(a.name, ''), u.created_at
 		FROM usage_logs u
 		LEFT JOIN accounts a ON u.account_id = a.id
@@ -6030,7 +6102,7 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 			&l.ServiceTier, &l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier, &l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize,
 			&l.AccountBilled, &l.UserBilled, &l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage,
 			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID,
-			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
+			&l.FallbackAccountName, &l.SourceAccountID, &l.SourceAccountName, &credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)

@@ -3089,6 +3089,9 @@ export interface UsageLog {
   image_size: string
   account_name: string
   account_email: string
+  fallback_account_name?: string
+  source_account_id?: number
+  source_account_name?: string
   created_at: ISODateString
   account_billed: number
   user_billed: number
