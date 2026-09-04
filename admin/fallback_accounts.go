@@ -22,11 +22,14 @@ import (
 )
 
 type fallbackAccountResponse struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Protocol    string    `json:"protocol"`
-	BaseURL     string    `json:"base_url"`
-	Model       string    `json:"model"`
+	ID       int64    `json:"id"`
+	Name     string   `json:"name"`
+	Protocol string   `json:"protocol"`
+	BaseURL  string   `json:"base_url"`
+	Models   []string `json:"models"`
+	// Model is emitted only for legacy single-model rows so older clients can
+	// continue to display accounts created before the whitelist field existed.
+	Model       string    `json:"model,omitempty"`
 	ProxyURL    string    `json:"proxy_url"`
 	Concurrency int       `json:"concurrency"`
 	Enabled     bool      `json:"enabled"`
@@ -40,25 +43,27 @@ type fallbackAccountResponse struct {
 }
 
 type createFallbackAccountRequest struct {
-	Name        string `json:"name"`
-	Protocol    string `json:"protocol"`
-	BaseURL     string `json:"base_url"`
-	APIKey      string `json:"api_key"`
-	Model       string `json:"model"`
-	ProxyURL    string `json:"proxy_url"`
-	Concurrency int    `json:"concurrency"`
-	Enabled     *bool  `json:"enabled"`
+	Name        string   `json:"name"`
+	Protocol    string   `json:"protocol"`
+	BaseURL     string   `json:"base_url"`
+	APIKey      string   `json:"api_key"`
+	Models      []string `json:"models"`
+	Model       string   `json:"model"` // legacy compatibility
+	ProxyURL    string   `json:"proxy_url"`
+	Concurrency int      `json:"concurrency"`
+	Enabled     *bool    `json:"enabled"`
 }
 
 type updateFallbackAccountRequest struct {
-	Name        *string `json:"name"`
-	Protocol    *string `json:"protocol"`
-	BaseURL     *string `json:"base_url"`
-	APIKey      *string `json:"api_key"`
-	Model       *string `json:"model"`
-	ProxyURL    *string `json:"proxy_url"`
-	Concurrency *int    `json:"concurrency"`
-	Enabled     *bool   `json:"enabled"`
+	Name        *string   `json:"name"`
+	Protocol    *string   `json:"protocol"`
+	BaseURL     *string   `json:"base_url"`
+	APIKey      *string   `json:"api_key"`
+	Models      *[]string `json:"models"`
+	Model       *string   `json:"model"` // legacy compatibility
+	ProxyURL    *string   `json:"proxy_url"`
+	Concurrency *int      `json:"concurrency"`
+	Enabled     *bool     `json:"enabled"`
 }
 
 func fallbackConfigs(rows []*database.FallbackAccountRow) []auth.FallbackAccountConfig {
@@ -69,7 +74,7 @@ func fallbackConfigs(rows []*database.FallbackAccountRow) []auth.FallbackAccount
 		}
 		configs = append(configs, auth.FallbackAccountConfig{
 			ID: row.ID, Name: row.Name, BaseURL: row.BaseURL, APIKey: row.APIKey,
-			Model: row.Model, ProxyURL: row.ProxyURL, Concurrency: row.Concurrency, Enabled: row.Enabled,
+			Models: row.Models, Model: row.Model, ProxyURL: row.ProxyURL, Concurrency: row.Concurrency, Enabled: row.Enabled,
 		})
 	}
 	return configs
@@ -139,8 +144,24 @@ func normalizeFallbackAccount(row *database.FallbackAccountRow, requireAPIKey bo
 		return errors.New("api_key is required")
 	}
 	row.Model = strings.TrimSpace(row.Model)
-	if row.Model == "" || len(row.Model) > 200 {
-		return errors.New("model is required and must be at most 200 characters")
+	if len(row.Models) == 0 && row.Model != "" {
+		// Requests from older clients still send a single model. Keep it in the
+		// compatibility field; the runtime will preserve its wildcard behavior.
+		if len(row.Model) > 200 {
+			return errors.New("model must be at most 200 characters")
+		}
+	} else {
+		row.Models = auth.NormalizeOpenAIResponsesModels(row.Models)
+		for _, model := range row.Models {
+			if len(model) > 200 {
+				return errors.New("model must be at most 200 characters")
+			}
+			if err := security.ValidateModelName(model); err != nil {
+				return fmt.Errorf("invalid model name: %w", err)
+			}
+		}
+		// A whitelist configuration supersedes the legacy fixed-model field.
+		row.Model = ""
 	}
 	row.ProxyURL = strings.TrimSpace(row.ProxyURL)
 	if err := validateFallbackProxyURL(row.ProxyURL); err != nil {
@@ -165,9 +186,13 @@ func (h *Handler) fallbackRuntimeByID(id int64) *auth.Account {
 }
 
 func (h *Handler) fallbackResponse(row *database.FallbackAccountRow) fallbackAccountResponse {
+	models := row.Models
+	if models == nil {
+		models = []string{}
+	}
 	result := fallbackAccountResponse{
 		ID: row.ID, Name: row.Name, Protocol: row.Protocol, BaseURL: row.BaseURL,
-		Model: row.Model, ProxyURL: row.ProxyURL, Concurrency: row.Concurrency,
+		Models: append([]string(nil), models...), Model: row.Model, ProxyURL: row.ProxyURL, Concurrency: row.Concurrency,
 		Enabled: row.Enabled, HasAPIKey: strings.TrimSpace(row.APIKey) != "",
 		APIKeyMask: security.MaskAPIKey(row.APIKey), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
@@ -205,7 +230,7 @@ func (h *Handler) CreateFallbackAccount(c *gin.Context) {
 	}
 	row := &database.FallbackAccountRow{
 		Name: req.Name, Protocol: req.Protocol, BaseURL: req.BaseURL, APIKey: req.APIKey,
-		Model: req.Model, ProxyURL: req.ProxyURL, Concurrency: req.Concurrency, Enabled: enabled,
+		Models: req.Models, Model: req.Model, ProxyURL: req.ProxyURL, Concurrency: req.Concurrency, Enabled: enabled,
 	}
 	if err := normalizeFallbackAccount(row, true); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -263,8 +288,12 @@ func (h *Handler) UpdateFallbackAccount(c *gin.Context) {
 	if req.APIKey != nil && strings.TrimSpace(*req.APIKey) != "" {
 		row.APIKey = *req.APIKey
 	}
-	if req.Model != nil {
+	if req.Models != nil {
+		row.Models = append([]string(nil), (*req.Models)...)
+		row.Model = ""
+	} else if req.Model != nil {
 		row.Model = *req.Model
+		row.Models = nil
 	}
 	if req.ProxyURL != nil {
 		row.ProxyURL = *req.ProxyURL
@@ -338,13 +367,21 @@ func (h *Handler) TestFallbackAccount(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load fallback account"})
 		return
 	}
+	model := strings.TrimSpace(row.Model)
+	if len(row.Models) > 0 {
+		model = row.Models[0]
+	}
+	if model == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fallback account model whitelist is empty; add at least one model before testing"})
+		return
+	}
 	body, _ := json.Marshal(map[string]interface{}{
-		"model": row.Model, "input": "Reply with OK.", "max_output_tokens": 32, "stream": false,
+		"model": model, "input": "Reply with OK.", "max_output_tokens": 32, "stream": false,
 	})
 	account := &auth.Account{
 		DBID: -row.ID, Name: row.Name, ExternalFallback: true,
 		UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: row.BaseURL, APIKey: row.APIKey,
-		Models: []string{row.Model}, ProxyURL: row.ProxyURL,
+		Models: []string{model}, ProxyURL: row.ProxyURL,
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()

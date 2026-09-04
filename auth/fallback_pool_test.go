@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/codex2api/database"
@@ -80,4 +81,54 @@ func TestFallbackPoolHonorsExclusionsAndFilter(t *testing.T) {
 		t.Fatalf("filtered selection = %#v, want -2", account)
 	}
 	store.Release(account)
+}
+
+func TestFallbackPoolWhitelistModelsAndUnrestrictedEmptyList(t *testing.T) {
+	store := NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 20})
+	pool := NewFallbackPool(store)
+	pool.Replace([]FallbackAccountConfig{
+		{ID: 1, Name: "limited", BaseURL: "https://one.example", APIKey: "sk-one", Models: []string{"gpt-a", "gpt-b"}, Concurrency: 2, Enabled: true},
+		{ID: 2, Name: "all", BaseURL: "https://two.example", APIKey: "sk-two", Models: []string{}, Concurrency: 2, Enabled: true},
+	})
+	pool.SetPolicy(FallbackPolicy{Enabled: true, RelayCount: 1})
+	accounts := pool.Accounts()
+	var limited, unrestricted *Account
+	for _, account := range accounts {
+		if account.ID() == -1 {
+			limited = account
+		} else if account.ID() == -2 {
+			unrestricted = account
+		}
+	}
+	if limited == nil || unrestricted == nil {
+		t.Fatalf("fallback accounts = %#v", accounts)
+	}
+	if limited.ModelMapping != `{"gpt-a":"gpt-a","gpt-b":"gpt-b"}` {
+		t.Fatalf("whitelist mapping = %q", limited.ModelMapping)
+	}
+	if unrestricted.ModelMapping != `{}` {
+		t.Fatalf("empty whitelist mapping = %q", unrestricted.ModelMapping)
+	}
+	if !fallbackAccountSupportsModelForTest(limited, "gpt-a") || fallbackAccountSupportsModelForTest(limited, "gpt-c") {
+		t.Fatal("limited fallback model whitelist was not enforced")
+	}
+	if !fallbackAccountSupportsModelForTest(unrestricted, "gpt-c") {
+		t.Fatal("empty fallback model whitelist should allow the requested model")
+	}
+}
+
+func fallbackAccountSupportsModelForTest(account *Account, model string) bool {
+	if account == nil || strings.TrimSpace(model) == "" {
+		return false
+	}
+	models := account.OpenAIResponsesModels()
+	if len(models) == 0 {
+		return true
+	}
+	for _, candidate := range models {
+		if strings.EqualFold(strings.TrimSpace(candidate), strings.TrimSpace(model)) {
+			return true
+		}
+	}
+	return false
 }

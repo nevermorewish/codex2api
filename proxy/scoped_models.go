@@ -247,6 +247,20 @@ func (h *Handler) scopedModelRecords(ctx context.Context, row *database.APIKeyRo
 		}
 	}
 
+	if h.fallbackPool != nil && h.fallbackPool.Policy().Enabled {
+		// Fallback accounts are global (not attached to an API key), so expose
+		// their explicit allowlists to every scoped model catalog. Empty means
+		// unrestricted and therefore has no finite set to enumerate.
+		for _, account := range h.fallbackPool.Accounts() {
+			if account == nil || !account.IsExternalFallback() {
+				continue
+			}
+			for _, model := range account.OpenAIResponsesModels() {
+				addScopedModel(records, model, modelBackingRelay, time.Time{}, false)
+			}
+		}
+	}
+
 	// Antigravity-only keys intentionally expose exactly the native logical
 	// surface. Global/OpenAI aliases and synthesized effort aliases belong to
 	// other providers and would make Cockpit's catalog diverge again.

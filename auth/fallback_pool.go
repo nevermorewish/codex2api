@@ -10,10 +10,13 @@ import (
 )
 
 type FallbackAccountConfig struct {
-	ID          int64
-	Name        string
-	BaseURL     string
-	APIKey      string
+	ID      int64
+	Name    string
+	BaseURL string
+	APIKey  string
+	// Models is the model allowlist. An empty list means no model restriction.
+	Models []string
+	// Model is kept for legacy configurations that used a single fixed model.
 	Model       string
 	ProxyURL    string
 	Concurrency int
@@ -70,8 +73,22 @@ func (p *FallbackPool) Policy() FallbackPolicy {
 	return defaultFallbackPolicy()
 }
 
+// fallbackModelMapping preserves the legacy fixed-model wildcard mapping.
 func fallbackModelMapping(model string) string {
 	raw, _ := json.Marshal(map[string]string{"*": strings.TrimSpace(model)})
+	return string(raw)
+}
+
+func fallbackWhitelistModelMapping(models []string) string {
+	mapping := make(map[string]string, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		mapping[model] = model
+	}
+	raw, _ := json.Marshal(mapping)
 	return string(raw)
 }
 
@@ -85,8 +102,18 @@ func (p *FallbackPool) Replace(configs []FallbackAccountConfig) {
 	next := make(map[int64]*Account, len(configs))
 	for _, config := range configs {
 		if config.ID <= 0 || strings.TrimSpace(config.BaseURL) == "" ||
-			strings.TrimSpace(config.APIKey) == "" || strings.TrimSpace(config.Model) == "" {
+			strings.TrimSpace(config.APIKey) == "" {
 			continue
+		}
+		models := NormalizeOpenAIResponsesModels(config.Models)
+		legacyModel := strings.TrimSpace(config.Model)
+		legacyFixed := len(models) == 0 && legacyModel != ""
+		if legacyFixed {
+			models = []string{legacyModel}
+		}
+		modelMapping := fallbackWhitelistModelMapping(models)
+		if legacyFixed {
+			modelMapping = fallbackModelMapping(legacyModel)
 		}
 		limit := int64(config.Concurrency)
 		if limit < 1 {
@@ -107,7 +134,7 @@ func (p *FallbackPool) Replace(configs []FallbackAccountConfig) {
 		configChanged := account.Name != strings.TrimSpace(config.Name) ||
 			account.BaseURL != strings.TrimRight(strings.TrimSpace(config.BaseURL), "/") ||
 			account.APIKey != strings.TrimSpace(config.APIKey) ||
-			account.ModelMapping != fallbackModelMapping(config.Model) ||
+			account.ModelMapping != modelMapping ||
 			account.ProxyURL != strings.TrimSpace(config.ProxyURL) ||
 			account.BaseConcurrencyOverride == nil || *account.BaseConcurrencyOverride != limit
 		wasDisabled := atomic.LoadInt32(&account.Disabled) != 0
@@ -115,8 +142,8 @@ func (p *FallbackPool) Replace(configs []FallbackAccountConfig) {
 		account.UpstreamType = UpstreamOpenAIResponses
 		account.BaseURL = strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 		account.APIKey = strings.TrimSpace(config.APIKey)
-		account.Models = []string{strings.TrimSpace(config.Model)}
-		account.ModelMapping = fallbackModelMapping(config.Model)
+		account.Models = models
+		account.ModelMapping = modelMapping
 		account.ProxyURL = strings.TrimSpace(config.ProxyURL)
 		account.Email = account.BaseURL
 		account.PlanType = "api"

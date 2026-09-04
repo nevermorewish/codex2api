@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { CheckCircle2, LifeBuoy, Loader2, Pencil, Play, Plus, Save, Trash2, XCircle } from 'lucide-react'
+import { CheckCircle2, LifeBuoy, Loader2, Pencil, Play, Plus, RefreshCw, Save, Trash2, XCircle } from 'lucide-react'
 import { api } from '../api'
 import type { FallbackAccount, FallbackAccountPayload, FallbackPolicy } from '../types'
 import PageHeader from '../components/PageHeader'
@@ -14,10 +14,11 @@ import { useToast } from '../hooks/useToast'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { getErrorMessage } from '../utils/error'
 import { cn } from '@/lib/utils'
+import ChipInput from '../components/ChipInput'
 
 const emptyForm: FallbackAccountPayload = {
   name: '', protocol: 'openai_responses', base_url: 'https://api.openai.com', api_key: '',
-  model: '', proxy_url: '', concurrency: 10, enabled: true,
+  models: [], proxy_url: '', concurrency: 10, enabled: true,
 }
 
 export default function FallbackPool() {
@@ -38,6 +39,8 @@ export default function FallbackPool() {
   const [form, setForm] = useState<FallbackAccountPayload>(emptyForm)
   const [savingAccount, setSavingAccount] = useState(false)
   const [testingID, setTestingID] = useState<number | null>(null)
+  const [modelOptions, setModelOptions] = useState<string[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -57,16 +60,40 @@ export default function FallbackPool() {
 
   const openCreate = () => {
     setForm({ ...emptyForm })
+    setModelOptions([])
     setEditing(null)
   }
 
   const openEdit = (account: FallbackAccount) => {
     setForm({
       name: account.name, protocol: 'openai_responses', base_url: account.base_url,
-      api_key: '', model: account.model, proxy_url: account.proxy_url,
+      api_key: '', models: account.models?.length ? [...account.models] : (account.model ? [account.model] : []), proxy_url: account.proxy_url,
       concurrency: account.concurrency, enabled: account.enabled,
     })
+    setModelOptions(account.models?.length ? [...account.models] : (account.model ? [account.model] : []))
     setEditing(account)
+  }
+
+  const syncModels = async () => {
+    if (!form.base_url.trim() || !form.api_key?.trim()) {
+      showToast(t('fallback.modelsSyncNeedsKey'), 'error')
+      return
+    }
+    setModelsLoading(true)
+    try {
+      const result = await api.fetchOpenAIResponsesModels({
+        base_url: form.base_url,
+        api_key: form.api_key,
+        proxy_url: form.proxy_url,
+      })
+      const models = Array.from(new Set([...(modelOptions ?? []), ...(result.models ?? [])])).sort((a, b) => a.localeCompare(b))
+      setModelOptions(models)
+      showToast(t('fallback.modelsSyncDone', { count: result.models?.length ?? 0 }))
+    } catch (err) {
+      showToast(getErrorMessage(err), 'error')
+    } finally {
+      setModelsLoading(false)
+    }
   }
 
   const savePolicy = async () => {
@@ -83,7 +110,7 @@ export default function FallbackPool() {
   }
 
   const saveAccount = async () => {
-    if (!form.name.trim() || !form.base_url.trim() || !form.model.trim() || (!editing && !form.api_key?.trim())) {
+    if (!form.name.trim() || !form.base_url.trim() || (!editing && !form.api_key?.trim())) {
       showToast(t('fallback.requiredFields'), 'error')
       return
     }
@@ -109,7 +136,7 @@ export default function FallbackPool() {
     try {
       await api.updateFallbackAccount(account.id, {
         name: account.name, protocol: 'openai_responses', base_url: account.base_url,
-        model: account.model, proxy_url: account.proxy_url, concurrency: account.concurrency, enabled,
+        models: account.models ?? (account.model ? [account.model] : []), proxy_url: account.proxy_url, concurrency: account.concurrency, enabled,
       })
       setAccounts((current) => current.map((item) => item.id === account.id ? { ...item, enabled } : item))
     } catch (err) {
@@ -205,7 +232,7 @@ export default function FallbackPool() {
                     <TableRow key={account.id}>
                       <TableCell><div className="font-medium text-foreground">{account.name}</div><div className="text-xs text-muted-foreground">#{account.id} · {account.api_key_masked}</div></TableCell>
                       <TableCell><div className="max-w-72 truncate font-mono text-xs" title={account.base_url}>{account.base_url}</div>{account.proxy_url ? <div className="mt-1 max-w-72 truncate text-[11px] text-muted-foreground" title={account.proxy_url}>{t('fallback.proxy')}: {account.proxy_url}</div> : null}</TableCell>
-                      <TableCell className="font-mono text-xs">{account.model}</TableCell>
+                      <TableCell className="font-mono text-xs"><div title={(account.models ?? (account.model ? [account.model] : [])).join(', ')}>{account.models?.length ? account.models.join(', ') : t('fallback.modelsAll')}</div></TableCell>
                       <TableCell className="text-right tabular-nums">{account.occupied}/{account.concurrency}</TableCell>
                       <TableCell><span className={cn('inline-flex items-center gap-1.5 text-xs font-medium', account.status === 'ready' ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')}>{account.status === 'ready' ? <CheckCircle2 className="size-3.5" /> : <XCircle className="size-3.5" />}{account.status || t('fallback.notLoaded')}</span></TableCell>
                       <TableCell><Switch checked={account.enabled} onCheckedChange={(enabled) => void toggleAccount(account, enabled)} aria-label={t('fallback.enabled')} /></TableCell>
@@ -236,7 +263,11 @@ export default function FallbackPool() {
           <label className="grid gap-1.5 text-sm font-medium">{t('fallback.name')}<Input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder={t('fallback.namePlaceholder')} /></label>
           <label className="grid gap-1.5 text-sm font-medium">{t('fallback.baseURL')}<Input value={form.base_url} onChange={(event) => setForm((current) => ({ ...current, base_url: event.target.value }))} placeholder="https://api.openai.com" /></label>
           <label className="grid gap-1.5 text-sm font-medium">{editing ? t('fallback.replaceAPIKey') : t('fallback.apiKey')}<Input type="password" autoComplete="new-password" value={form.api_key ?? ''} onChange={(event) => setForm((current) => ({ ...current, api_key: event.target.value }))} placeholder={editing ? t('fallback.keepAPIKey') : 'sk-...'} />{editing ? <span className="text-xs font-normal text-muted-foreground">{t('fallback.keepAPIKeyHint')}</span> : null}</label>
-          <label className="grid gap-1.5 text-sm font-medium">{t('fallback.model')}<Input value={form.model} onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))} placeholder="gpt-5.4" /><span className="text-xs font-normal text-muted-foreground">{t('fallback.modelHint')}</span></label>
+          <div className="grid gap-1.5 text-sm font-medium">
+            <div className="flex items-center justify-between gap-2"><span>{t('fallback.model')}</span><Button type="button" variant="outline" size="sm" onClick={() => void syncModels()} disabled={modelsLoading || !form.api_key?.trim()}><RefreshCw className={cn('size-3.5', modelsLoading && 'animate-spin')} />{modelsLoading ? t('fallback.modelsSyncing') : t('fallback.modelsSync')}</Button></div>
+            <ChipInput value={form.models} onChange={(models) => setForm((current) => ({ ...current, models }))} options={modelOptions} disabled={savingAccount || modelsLoading} placeholder={t('fallback.modelsPlaceholder')} />
+            <span className="text-xs font-normal text-muted-foreground">{t('fallback.modelHint')}</span>
+          </div>
           <div className="grid gap-4 sm:grid-cols-[1fr_140px]">
             <label className="grid gap-1.5 text-sm font-medium">{t('fallback.proxyURL')}<Input value={form.proxy_url} onChange={(event) => setForm((current) => ({ ...current, proxy_url: event.target.value }))} placeholder="socks5://127.0.0.1:1080" /></label>
             <label className="grid gap-1.5 text-sm font-medium">{t('fallback.concurrency')}<Input type="number" min={1} max={1000} value={form.concurrency} onChange={(event) => setForm((current) => ({ ...current, concurrency: Math.max(1, Math.min(1000, Number(event.target.value) || 1)) }))} /></label>

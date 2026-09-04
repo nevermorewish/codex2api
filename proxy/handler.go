@@ -527,6 +527,12 @@ func relayAccountSupportsModel(account *auth.Account, model string) bool {
 	if account.IsGrokAPI() {
 		return grokAccountSupportsVisibleModel(account, model)
 	}
+	// External fallback accounts use the same semantics as the Kimi model
+	// selector: a non-empty Models list is a whitelist, while an empty list
+	// leaves the requested model untouched and accepts it as-is.
+	if account.IsExternalFallback() && len(account.OpenAIResponsesModels()) == 0 {
+		return strings.TrimSpace(model) != ""
+	}
 	if account.SupportsOpenAIResponsesModel(model) {
 		return true
 	}
@@ -581,6 +587,20 @@ func (h *Handler) modelSupportedByAccountMapping(model string) bool {
 		mappedModel, ok := resolveAccountModelMapping(account, model)
 		if ok && mappedModel != "" && relayAccountSupportsModel(account, mappedModel) {
 			return true
+		}
+	}
+	if h.fallbackPool != nil && h.fallbackPool.Policy().Enabled {
+		for _, account := range h.fallbackPool.Accounts() {
+			if account == nil || !account.IsExternalFallback() {
+				continue
+			}
+			if len(account.OpenAIResponsesModels()) == 0 && strings.TrimSpace(model) != "" {
+				return true
+			}
+			mappedModel, ok := resolveAccountModelMapping(account, model)
+			if ok && mappedModel != "" && relayAccountSupportsModel(account, mappedModel) {
+				return true
+			}
 		}
 	}
 	return false
@@ -8631,6 +8651,26 @@ func (h *Handler) supportedModelIDs(ctx context.Context) []string {
 			}
 			seen[key] = struct{}{}
 			models = append(models, rule.From)
+		}
+	}
+	if h != nil && h.fallbackPool != nil && h.fallbackPool.Policy().Enabled {
+		// External fallback accounts are global, but explicit allowlists should
+		// remain visible in /v1/models. An empty list cannot be enumerated.
+		for _, account := range h.fallbackPool.Accounts() {
+			if account == nil || !account.IsExternalFallback() {
+				continue
+			}
+			for _, model := range account.OpenAIResponsesModels() {
+				key := strings.ToLower(strings.TrimSpace(model))
+				if key == "" {
+					continue
+				}
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				models = append(models, model)
+			}
 		}
 	}
 	return models

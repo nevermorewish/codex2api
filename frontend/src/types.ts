@@ -3743,7 +3743,10 @@ export interface FallbackAccount {
   name: string
   protocol: 'openai_responses'
   base_url: string
-  model: string
+  /** Explicit model allowlist; an empty list accepts the requested model. */
+  models: string[]
+  /** Legacy single-model response field kept for older servers. */
+  model?: string
   proxy_url: string
   concurrency: number
   enabled: boolean
@@ -3768,7 +3771,9 @@ export interface FallbackAccountPayload {
   protocol: 'openai_responses'
   base_url: string
   api_key?: string
-  model: string
+  models: string[]
+  /** Legacy payload field accepted by older servers. */
+  model?: string
   proxy_url: string
   concurrency: number
   enabled: boolean

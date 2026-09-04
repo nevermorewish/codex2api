@@ -13,12 +13,17 @@ import (
 const FallbackProtocolOpenAIResponses = "openai_responses"
 
 type FallbackAccountRow struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Protocol    string    `json:"protocol"`
-	BaseURL     string    `json:"base_url"`
-	APIKey      string    `json:"-"`
-	Model       string    `json:"model"`
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Protocol string `json:"protocol"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"-"`
+	// Models is the public model allowlist. An empty list means that the
+	// fallback account accepts the requested model as-is.
+	Models []string `json:"models"`
+	// Model is retained as a compatibility field for fallback rows created by
+	// older versions. New callers should use Models.
+	Model       string    `json:"model,omitempty"`
 	ProxyURL    string    `json:"proxy_url"`
 	Concurrency int       `json:"concurrency"`
 	Enabled     bool      `json:"enabled"`
@@ -100,12 +105,28 @@ func (db *DB) ensureFallbackAccountsSchema(ctx context.Context) error {
 	return err
 }
 
+// encodeFallbackCredentials preserves the pre-whitelist helper signature for
+// callers compiled against older releases. New code should use
+// encodeFallbackCredentialsForModels.
 func encodeFallbackCredentials(baseURL, apiKey, model string) ([]byte, error) {
-	return json.Marshal(encryptSensitiveCredentials(map[string]interface{}{
+	return encodeFallbackCredentialsForModels(baseURL, apiKey, nil, model)
+}
+
+func encodeFallbackCredentialsForModels(baseURL, apiKey string, models []string, legacyModel string) ([]byte, error) {
+	credentials := map[string]interface{}{
 		"base_url": strings.TrimSpace(baseURL),
 		"api_key":  strings.TrimSpace(apiKey),
-		"model":    strings.TrimSpace(model),
-	}))
+	}
+	if len(models) > 0 {
+		credentials["models"] = models
+	} else if strings.TrimSpace(legacyModel) != "" {
+		// Preserve the old wire format so an untouched legacy account keeps its
+		// historical wildcard behavior until it is edited as a whitelist.
+		credentials["model"] = strings.TrimSpace(legacyModel)
+	} else {
+		credentials["models"] = []string{}
+	}
+	return json.Marshal(encryptSensitiveCredentials(credentials))
 }
 
 func scanFallbackAccount(scanner interface{ Scan(...interface{}) error }) (*FallbackAccountRow, error) {
@@ -120,7 +141,20 @@ func scanFallbackAccount(scanner interface{ Scan(...interface{}) error }) (*Fall
 	credentials := decodeCredentials(credentialsRaw)
 	row.BaseURL, _ = credentials["base_url"].(string)
 	row.APIKey, _ = credentials["api_key"].(string)
+	if rawModels, ok := credentials["models"].([]interface{}); ok {
+		row.Models = make([]string, 0, len(rawModels))
+		for _, rawModel := range rawModels {
+			if model, ok := rawModel.(string); ok && strings.TrimSpace(model) != "" {
+				row.Models = append(row.Models, strings.TrimSpace(model))
+			}
+		}
+	} else if rawModels, ok := credentials["models"].([]string); ok {
+		row.Models = append([]string(nil), rawModels...)
+	}
 	row.Model, _ = credentials["model"].(string)
+	if len(row.Models) == 0 && strings.TrimSpace(row.Model) == "" {
+		row.Models = []string{}
+	}
 	var err error
 	row.CreatedAt, err = parseDBTimeValue(createdRaw)
 	if err != nil {
@@ -164,7 +198,7 @@ func (db *DB) CreateFallbackAccount(ctx context.Context, row *FallbackAccountRow
 	if row == nil {
 		return nil, errors.New("fallback account is required")
 	}
-	credentials, err := encodeFallbackCredentials(row.BaseURL, row.APIKey, row.Model)
+	credentials, err := encodeFallbackCredentialsForModels(row.BaseURL, row.APIKey, row.Models, row.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +231,7 @@ func (db *DB) UpdateFallbackAccount(ctx context.Context, row *FallbackAccountRow
 	if row == nil || row.ID <= 0 {
 		return nil, errors.New("valid fallback account is required")
 	}
-	credentials, err := encodeFallbackCredentials(row.BaseURL, row.APIKey, row.Model)
+	credentials, err := encodeFallbackCredentialsForModels(row.BaseURL, row.APIKey, row.Models, row.Model)
 	if err != nil {
 		return nil, err
 	}
