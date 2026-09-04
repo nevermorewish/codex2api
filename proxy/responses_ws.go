@@ -644,7 +644,15 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		attemptIdentity := ruleIdentity.WithSelectedAccount(account, h.store)
 		upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
 		lastUpstreamCancel = upstreamCancel
-		ttftGuard := newFirstTokenTimeoutGuard(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact), upstreamCancel)
+		feishuWatch := newFeishuFirstTokenWatch(upstreamCtx, database.UsageLogInput{
+			Endpoint: "/v1/responses", Model: logModel, Stream: true, ViaWebsocket: true,
+		}, feishuFirstTokenTimeoutForAttempt(start))
+		ttftGuard := newFirstTokenTimeoutGuardWithHooks(
+			firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact),
+			upstreamCancel,
+			func() { feishuWatch.MarkProgress() },
+			func() { feishuWatch.Stop() },
+		)
 		useWebsocket := !wsHTTPFallback.ForceHTTP()
 		// 生图请求改走 HTTP 上游（客户端仍是 WS）：WebSocket 上游传输大体积
 		// 图片数据会卡死（issue #220）；自然语言生图意图也需保留图片工具（issue #288）。

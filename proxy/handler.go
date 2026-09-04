@@ -1424,6 +1424,10 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 	// 过载熔断统计（仅 Codex 渠道，需在渠道固化之后）。
 	h.noteOverloadOutcome(input)
 	_ = h.db.InsertUsageLog(context.Background(), input)
+	// Feishu notifications are deliberately dispatched after the in-memory log
+	// enqueue and in their own goroutine, so a slow/unavailable Feishu API can
+	// never delay the client response.
+	NotifyFeishuForUsage(input)
 }
 
 func (h *Handler) populateUsageCredentialGeneration(input *database.UsageLogInput) {
@@ -4035,7 +4039,15 @@ func (h *Handler) Responses(c *gin.Context) {
 			lastUpstreamCancel = upstreamCancel
 			ttftGuard := (*firstTokenTimeoutGuard)(nil)
 			if isStream {
-				ttftGuard = newFirstTokenTimeoutGuard(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact), upstreamCancel)
+				feishuWatch := newFeishuFirstTokenWatch(upstreamCtx, database.UsageLogInput{
+					Endpoint: "/v1/responses", Model: logModel, Stream: true,
+				}, feishuFirstTokenTimeoutForAttempt(start))
+				ttftGuard = newFirstTokenTimeoutGuardWithHooks(
+					firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact),
+					upstreamCancel,
+					func() { feishuWatch.MarkProgress() },
+					func() { feishuWatch.Stop() },
+				)
 			}
 			stopTTFTGuard := func() {
 				if ttftGuard != nil {
@@ -4797,7 +4809,15 @@ func (h *Handler) Responses(c *gin.Context) {
 		attemptIdentity := ruleIdentity.WithSelectedAccount(account, h.store)
 		upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
 		lastUpstreamCancel = upstreamCancel
-		ttftGuard := newFirstTokenTimeoutGuard(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact), upstreamCancel)
+		feishuWatch := newFeishuFirstTokenWatch(upstreamCtx, database.UsageLogInput{
+			Endpoint: "/v1/responses", Model: logModel, Stream: isStream, ViaWebsocket: useWebsocket,
+		}, feishuFirstTokenTimeoutForAttempt(start))
+		ttftGuard := newFirstTokenTimeoutGuardWithHooks(
+			firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact),
+			upstreamCancel,
+			func() { feishuWatch.MarkProgress() },
+			func() { feishuWatch.Stop() },
+		)
 		// WebSocket 上游下剥离自动注入的图片工具，防止模型自主生图产生大体积
 		// 数据卡死 WS 流（issue #220）。显式生图请求已在上面强制走 HTTP。
 		upstreamBody := codexBody
@@ -6775,7 +6795,14 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		upstreamCtx, upstreamCancel := newDrainableUpstreamContext(c.Request.Context(), upstreamDrainTimeout)
 		upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
 		lastUpstreamCancel = upstreamCancel
-		ttftGuard := newFirstTokenTimeoutGuard(currentFirstTokenTimeout(), upstreamCancel)
+		feishuWatch := newFeishuFirstTokenWatch(upstreamCtx, database.UsageLogInput{
+			Endpoint: "/v1/chat/completions", Model: logModel, Stream: isStream, ViaWebsocket: useWebsocket,
+		}, feishuFirstTokenTimeoutForAttempt(start))
+		ttftGuard := newFirstTokenTimeoutGuardWithHooks(
+			currentFirstTokenTimeout(), upstreamCancel,
+			func() { feishuWatch.MarkProgress() },
+			func() { feishuWatch.Stop() },
+		)
 		var resp *http.Response
 		var reqErr error
 		if account.IsAntigravityAPI() {

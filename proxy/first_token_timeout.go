@@ -9,25 +9,39 @@ import (
 )
 
 type firstTokenTimeoutGuard struct {
-	timeout time.Duration
-	cancel  context.CancelFunc
-	timer   *time.Timer
-	fired   atomic.Bool
-	once    sync.Once
+	timeout    time.Duration
+	cancel     context.CancelFunc
+	timer      *time.Timer
+	fired      atomic.Bool
+	once       sync.Once
+	onProgress func()
+	onStop     func()
 }
 
 func newFirstTokenTimeoutGuard(timeout time.Duration, cancel context.CancelFunc) *firstTokenTimeoutGuard {
-	if timeout <= 0 || cancel == nil {
+	return newFirstTokenTimeoutGuardWithHooks(timeout, cancel, nil, nil)
+}
+
+// newFirstTokenTimeoutGuardWithHooks is the lifecycle-aware variant used by
+// auxiliary monitors (such as Feishu first-token alerts). The existing
+// constructor intentionally remains unchanged for callers that only need the
+// upstream cancellation guard.
+func newFirstTokenTimeoutGuardWithHooks(timeout time.Duration, cancel context.CancelFunc, onProgress, onStop func()) *firstTokenTimeoutGuard {
+	if cancel == nil || (timeout <= 0 && onProgress == nil && onStop == nil) {
 		return nil
 	}
 	guard := &firstTokenTimeoutGuard{
-		timeout: timeout,
-		cancel:  cancel,
+		timeout:    timeout,
+		cancel:     cancel,
+		onProgress: onProgress,
+		onStop:     onStop,
 	}
-	guard.timer = time.AfterFunc(timeout, func() {
-		guard.fired.Store(true)
-		cancel()
-	})
+	if timeout > 0 {
+		guard.timer = time.AfterFunc(timeout, func() {
+			guard.fired.Store(true)
+			cancel()
+		})
+	}
 	return guard
 }
 
@@ -39,12 +53,18 @@ func (g *firstTokenTimeoutGuard) Stop() {
 		if g.timer != nil {
 			g.timer.Stop()
 		}
+		if g.onStop != nil {
+			g.onStop()
+		}
 	})
 }
 
 func (g *firstTokenTimeoutGuard) MarkEvent(eventType string) {
 	if g == nil || !isFirstTokenEvent(eventType) {
 		return
+	}
+	if g.onProgress != nil {
+		g.onProgress()
 	}
 	g.Stop()
 }
@@ -53,12 +73,18 @@ func (g *firstTokenTimeoutGuard) MarkPayload(data []byte) {
 	if g == nil || !isFirstTokenPayload(data) {
 		return
 	}
+	if g.onProgress != nil {
+		g.onProgress()
+	}
 	g.Stop()
 }
 
 func (g *firstTokenTimeoutGuard) MarkFirstToken() {
 	if g == nil {
 		return
+	}
+	if g.onProgress != nil {
+		g.onProgress()
 	}
 	g.Stop()
 }
@@ -71,6 +97,9 @@ func (g *firstTokenTimeoutGuard) MarkFirstToken() {
 func (g *firstTokenTimeoutGuard) MarkProgress(eventType string) {
 	if g == nil || isPreContentLifecycleEvent(eventType) {
 		return
+	}
+	if g.onProgress != nil {
+		g.onProgress()
 	}
 	g.Stop()
 }

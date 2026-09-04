@@ -129,6 +129,57 @@ func TestSQLiteSessionSlotBufferSettingsRoundtrip(t *testing.T) {
 	}
 }
 
+func TestSQLiteFeishuConfigRoundtripAndDefault(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "feishu-config.db"))
+	if err != nil {
+		t.Fatalf("New(sqlite): %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	settings := &SystemSettings{
+		MaxConcurrency:  2,
+		TestConcurrency: 1,
+		TestModel:       "gpt-5.4",
+		FeishuConfig:    `{"enabled":true,"app_id":"cli_demo","app_secret":"secret","chat_ids":"oc_demo","error_codes":"503","first_token_timeout_seconds":45}`,
+	}
+	if err := db.UpdateSystemSettings(ctx, settings); err != nil {
+		t.Fatalf("UpdateSystemSettings: %v", err)
+	}
+	got, err := db.GetSystemSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSystemSettings: %v", err)
+	}
+	if got == nil || got.FeishuConfig != settings.FeishuConfig {
+		t.Fatalf("feishu config = %q, want %q", got.FeishuConfig, settings.FeishuConfig)
+	}
+
+	settings.FeishuConfig = `{"enabled":true,"app_id":"cli_demo"}`
+	if err := db.UpdateSystemSettings(ctx, settings); err != nil {
+		t.Fatalf("UpdateSystemSettings(default): %v", err)
+	}
+	got, err = db.GetSystemSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSystemSettings(default): %v", err)
+	}
+	if got == nil || got.FeishuConfig != settings.FeishuConfig {
+		t.Fatalf("default feishu config = %q, want %q", got.FeishuConfig, settings.FeishuConfig)
+	}
+
+	// A partial settings write from a background/admin path must not clear a
+	// channel configuration it did not edit.
+	if err := db.UpdateSystemSettings(ctx, &SystemSettings{SiteName: "partial update"}); err != nil {
+		t.Fatalf("UpdateSystemSettings(partial): %v", err)
+	}
+	got, err = db.GetSystemSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSystemSettings(partial): %v", err)
+	}
+	if got == nil || got.FeishuConfig != settings.FeishuConfig {
+		t.Fatalf("partial update erased feishu config = %q, want %q", got.FeishuConfig, settings.FeishuConfig)
+	}
+}
+
 func TestSQLiteModelsListReadLimitRoundTripAndFullUpdatePreservesValue(t *testing.T) {
 	db, err := New("sqlite", filepath.Join(t.TempDir(), "models-list-limit.db"))
 	if err != nil {

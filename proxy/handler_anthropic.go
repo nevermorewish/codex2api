@@ -672,7 +672,14 @@ func (h *Handler) Messages(c *gin.Context) {
 		attemptIdentity := ruleIdentity.WithSelectedAccount(account, h.store)
 		upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
 		lastUpstreamCancel = upstreamCancel
-		ttftGuard := newFirstTokenTimeoutGuard(currentFirstTokenTimeout(), upstreamCancel)
+		feishuWatch := newFeishuFirstTokenWatch(upstreamCtx, database.UsageLogInput{
+			Endpoint: "/v1/messages", Model: model, Stream: isStream, ViaWebsocket: useWebsocket,
+		}, feishuFirstTokenTimeoutForAttempt(start))
+		ttftGuard := newFirstTokenTimeoutGuardWithHooks(
+			currentFirstTokenTimeout(), upstreamCancel,
+			func() { feishuWatch.MarkProgress() },
+			func() { feishuWatch.Stop() },
+		)
 		var resp *http.Response
 		var reqErr error
 		if account.IsClaudeOAuth() {

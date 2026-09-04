@@ -1962,6 +1962,13 @@ export interface SystemSettings {
   stream_flush_interval_ms: number
   first_token_mode: 'strict' | 'loose' | string
   first_token_timeout_seconds: number
+  feishu_alert_enabled: boolean
+  feishu_app_id: string
+  feishu_app_secret?: string
+  feishu_app_secret_configured?: boolean
+  feishu_chat_ids: string
+  feishu_alert_error_codes: string
+  feishu_first_token_timeout_seconds: number
   first_token_excludes_ws_acquire: boolean
   billing_tier_policy: 'actual' | 'requested' | string
   models_list_read_max_bytes: number

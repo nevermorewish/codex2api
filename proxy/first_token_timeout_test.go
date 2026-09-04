@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +39,18 @@ func TestFirstTokenTimeoutGuardStopsOnFirstTokenEvent(t *testing.T) {
 	}
 	if guard.TimedOut() {
 		t.Fatal("guard TimedOut() = true, want false")
+	}
+}
+
+func TestFirstTokenTimeoutGuardHooksRunWithoutUpstreamTimeout(t *testing.T) {
+	var progress, stopped atomic.Bool
+	guard := newFirstTokenTimeoutGuardWithHooks(0, func() {}, func() { progress.Store(true) }, func() { stopped.Store(true) })
+	if guard == nil {
+		t.Fatal("hook-only guard is nil")
+	}
+	guard.MarkProgress("response.output_text.delta")
+	if !progress.Load() || !stopped.Load() {
+		t.Fatalf("hooks progress=%v stopped=%v, want both true", progress.Load(), stopped.Load())
 	}
 }
 

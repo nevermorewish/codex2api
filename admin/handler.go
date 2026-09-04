@@ -8940,6 +8940,12 @@ type settingsResponse struct {
 	StreamFlushIntervalMS              int                              `json:"stream_flush_interval_ms"`
 	FirstTokenMode                     string                           `json:"first_token_mode"`
 	FirstTokenTimeoutSeconds           int                              `json:"first_token_timeout_seconds"`
+	FeishuAlertEnabled                 bool                             `json:"feishu_alert_enabled"`
+	FeishuAppID                        string                           `json:"feishu_app_id"`
+	FeishuAppSecretConfigured          bool                             `json:"feishu_app_secret_configured"`
+	FeishuChatIDs                      string                           `json:"feishu_chat_ids"`
+	FeishuAlertErrorCodes              string                           `json:"feishu_alert_error_codes"`
+	FeishuFirstTokenTimeoutSeconds     int                              `json:"feishu_first_token_timeout_seconds"`
 	BillingTierPolicy                  string                           `json:"billing_tier_policy"`
 	ModelsListReadMaxBytes             int64                            `json:"models_list_read_max_bytes"`
 	ShowFullUsageNumbers               bool                             `json:"show_full_usage_numbers"`
@@ -9105,6 +9111,12 @@ type updateSettingsReq struct {
 	StreamFlushIntervalMS               *int                             `json:"stream_flush_interval_ms"`
 	FirstTokenMode                      *string                          `json:"first_token_mode"`
 	FirstTokenTimeoutSeconds            *int                             `json:"first_token_timeout_seconds"`
+	FeishuAlertEnabled                  *bool                            `json:"feishu_alert_enabled"`
+	FeishuAppID                         *string                          `json:"feishu_app_id"`
+	FeishuAppSecret                     *string                          `json:"feishu_app_secret"`
+	FeishuChatIDs                       *string                          `json:"feishu_chat_ids"`
+	FeishuAlertErrorCodes               *string                          `json:"feishu_alert_error_codes"`
+	FeishuFirstTokenTimeoutSeconds      *int                             `json:"feishu_first_token_timeout_seconds"`
 	BillingTierPolicy                   *string                          `json:"billing_tier_policy"`
 	ModelsListReadMaxBytes              *int64                           `json:"models_list_read_max_bytes"`
 	ShowFullUsageNumbers                *bool                            `json:"show_full_usage_numbers"`
@@ -9770,6 +9782,10 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		}
 	}
 	runtimeCfg := proxy.CurrentRuntimeSettings()
+	feishuCfg := proxy.ParseFeishuAlertConfig(runtimeCfg.FeishuConfig)
+	if dbSettings != nil && strings.TrimSpace(dbSettings.FeishuConfig) != "" {
+		feishuCfg = proxy.ParseFeishuAlertConfig(dbSettings.FeishuConfig)
+	}
 	autoResetCreditsEnabled := runtimeCfg.AutoResetCreditsEnabled
 	autoResetCreditsBeforeExpiryMin := runtimeCfg.AutoResetCreditsBeforeExpiryMin
 	autoActivate5hWindowEnabled := runtimeCfg.AutoActivate5hWindowEnabled
@@ -9935,6 +9951,12 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		StreamFlushIntervalMS:               runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenMode:                      runtimeCfg.FirstTokenMode,
 		FirstTokenTimeoutSeconds:            runtimeCfg.FirstTokenTimeoutSec,
+		FeishuAlertEnabled:                  feishuCfg.Enabled,
+		FeishuAppID:                         feishuCfg.AppID,
+		FeishuAppSecretConfigured:           feishuCfg.AppSecret != "",
+		FeishuChatIDs:                       feishuCfg.ChatIDs,
+		FeishuAlertErrorCodes:               feishuCfg.ErrorCodes,
+		FeishuFirstTokenTimeoutSeconds:      feishuCfg.FirstTokenTimeoutSeconds,
 		BillingTierPolicy:                   runtimeCfg.BillingTierPolicy,
 		ModelsListReadMaxBytes:              runtimeCfg.ModelsListReadMaxBytes,
 		ShowFullUsageNumbers:                showFullUsageNumbers,
@@ -10322,6 +10344,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 	hasAdminSecret := strings.TrimSpace(currentAdminSecret) != "" || strings.TrimSpace(h.adminSecretEnv) != ""
 	runtimeCfg := proxy.CurrentRuntimeSettings()
+	feishuCfg := proxy.ParseFeishuAlertConfig(runtimeCfg.FeishuConfig)
+	if existingSettings != nil && strings.TrimSpace(existingSettings.FeishuConfig) != "" {
+		feishuCfg = proxy.ParseFeishuAlertConfig(existingSettings.FeishuConfig)
+	}
 	previousAutoResetCreditsEnabled := runtimeCfg.AutoResetCreditsEnabled
 	previousAutoResetCreditsBeforeExpiryMin := runtimeCfg.AutoResetCreditsBeforeExpiryMin
 	previousAutoActivate5hWindowEnabled := runtimeCfg.AutoActivate5hWindowEnabled
@@ -10994,6 +11020,39 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.FirstTokenTimeoutSec = *req.FirstTokenTimeoutSeconds
 		log.Printf("设置已更新: first_token_timeout_seconds = %d", runtimeCfg.FirstTokenTimeoutSec)
 	}
+	if req.FeishuAlertEnabled != nil || req.FeishuAppID != nil || req.FeishuAppSecret != nil || req.FeishuChatIDs != nil || req.FeishuAlertErrorCodes != nil || req.FeishuFirstTokenTimeoutSeconds != nil {
+		if req.FeishuAlertEnabled != nil {
+			feishuCfg.Enabled = *req.FeishuAlertEnabled
+		}
+		if req.FeishuAppID != nil {
+			feishuCfg.AppID = strings.TrimSpace(*req.FeishuAppID)
+		}
+		if req.FeishuAppSecret != nil && strings.TrimSpace(*req.FeishuAppSecret) != "" {
+			feishuCfg.AppSecret = strings.TrimSpace(*req.FeishuAppSecret)
+		}
+		if req.FeishuChatIDs != nil {
+			feishuCfg.ChatIDs = strings.TrimSpace(*req.FeishuChatIDs)
+		}
+		if req.FeishuAlertErrorCodes != nil {
+			feishuCfg.ErrorCodes = strings.TrimSpace(*req.FeishuAlertErrorCodes)
+		}
+		if req.FeishuFirstTokenTimeoutSeconds != nil {
+			if *req.FeishuFirstTokenTimeoutSeconds < 1 || *req.FeishuFirstTokenTimeoutSeconds > 86400 {
+				writeError(c, http.StatusBadRequest, "feishu_first_token_timeout_seconds must be between 1 and 86400 seconds")
+				return
+			}
+			feishuCfg.FirstTokenTimeoutSeconds = *req.FeishuFirstTokenTimeoutSeconds
+		}
+		feishuCfg = proxy.NormalizeFeishuAlertConfig(feishuCfg)
+	}
+	runtimeCfg.FeishuConfig = proxy.EncodeFeishuAlertConfig(feishuCfg)
+	// Feishu settings are handled after the main runtime snapshot update below
+	// in this large partial-settings handler, so publish this field explicitly
+	// to make the change effective without restarting the process.
+	runtimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
+		current.FeishuConfig = runtimeCfg.FeishuConfig
+		return current
+	})
 	if req.BillingTierPolicy != nil {
 		runtimeCfg.BillingTierPolicy = proxy.NormalizeBillingTierPolicy(*req.BillingTierPolicy)
 		log.Printf("设置已更新: billing_tier_policy = %s", runtimeCfg.BillingTierPolicy)
@@ -11732,6 +11791,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		StreamFlushIntervalMS:               runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenMode:                      runtimeCfg.FirstTokenMode,
 		FirstTokenTimeoutSeconds:            runtimeCfg.FirstTokenTimeoutSec,
+		FeishuAlertEnabled:                  feishuCfg.Enabled,
+		FeishuAppID:                         feishuCfg.AppID,
+		FeishuAppSecretConfigured:           feishuCfg.AppSecret != "",
+		FeishuChatIDs:                       feishuCfg.ChatIDs,
+		FeishuAlertErrorCodes:               feishuCfg.ErrorCodes,
+		FeishuFirstTokenTimeoutSeconds:      feishuCfg.FirstTokenTimeoutSeconds,
 		BillingTierPolicy:                   runtimeCfg.BillingTierPolicy,
 		ModelsListReadMaxBytes:              runtimeCfg.ModelsListReadMaxBytes,
 		ShowFullUsageNumbers:                showFullUsageNumbers,

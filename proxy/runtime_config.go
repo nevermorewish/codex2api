@@ -143,6 +143,10 @@ type RuntimeSettings struct {
 	// 连接池后，等待其上在途 stream 收尾的上限（分钟，默认 30，范围 1-240）。
 	// 超时则强制关闭，保证异常挂死的 stream 不会把连接永久留住（issue #446）。
 	UTLSShutdownTimeoutMin int
+	// FeishuConfig is the normalized JSON representation of the optional
+	// Feishu alert channel. Keeping it in the runtime snapshot makes settings
+	// changes effective immediately on every request worker.
+	FeishuConfig string
 }
 
 // UTLSShutdownTimeout 返回 uTLS 连接优雅关闭的等待上限。
@@ -194,6 +198,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		CodexCLIVersionSyncIntervalHours: 12,
 		AutoResetCreditsBeforeExpiryMin:  60,
 		UTLSShutdownTimeoutMin:           database.NormalizeUTLSShutdownTimeoutMinutes(0),
+		FeishuConfig:                     EncodeFeishuAlertConfig(FeishuAlertConfig{}),
 	}
 }
 
@@ -378,6 +383,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.AutoResetCreditsBeforeExpiryMin = settings.AutoResetCreditsBeforeExpiryMin
 		next.AutoActivate5hWindowEnabled = settings.AutoActivate5hWindowEnabled
 		next.UTLSShutdownTimeoutMin = settings.UTLSShutdownTimeoutMinutes
+		next.FeishuConfig = settings.FeishuConfig
 		// Payload 重写规则不进 RuntimeSettings（编译后独立存放），此处顺带完成启动种子。
 		if err := SetPayloadRulesJSON(settings.PayloadRules); err != nil {
 			log.Printf("payload_rules 配置解析失败，已忽略: %v", err)
