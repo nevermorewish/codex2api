@@ -365,7 +365,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	}
 
 	if len(rawBody) > security.MaxRequestBodySize {
-		apiErr = api.NewAPIError(api.ErrCodeInvalidRequest, "请求体过大", api.ErrorTypeInvalidRequest)
+		apiErr = api.NewAPIError(api.ErrCodeInvalidRequest, "请求上下文过长，请使用 /compact 压缩上下文，或新建会话后重试", api.ErrorTypeInvalidRequest)
 		_ = writeResponsesWSError(conn, apiErr)
 		return newResponsesWSCloseError(websocket.CloseMessageTooBig, apiErr.Message, apiErr)
 	}
@@ -1546,7 +1546,7 @@ func normalizeResponsesWebSocketClientPayload(raw []byte) ([]byte, string, *api.
 		return nil, "", api.NewAPIError(api.ErrCodeInvalidRequest, "empty websocket request payload", api.ErrorTypeInvalidRequest)
 	}
 	if len(trimmed) > security.MaxRequestBodySize {
-		return nil, "", api.NewAPIError(api.ErrCodeInvalidRequest, "请求体过大", api.ErrorTypeInvalidRequest)
+		return nil, "", api.NewAPIError(api.ErrCodeInvalidRequest, "请求上下文过长，请使用 /compact 压缩上下文，或新建会话后重试", api.ErrorTypeInvalidRequest)
 	}
 	if !gjson.ValidBytes(trimmed) {
 		return nil, "", api.NewAPIError(api.ErrCodeInvalidRequest, "invalid websocket request payload", api.ErrorTypeInvalidRequest)

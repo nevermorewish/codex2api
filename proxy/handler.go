@@ -3743,7 +3743,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	// 检查请求体大小
 	if len(rawBody) > security.MaxRequestBodySize {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
-			"error": gin.H{"message": "请求体过大", "type": "invalid_request_error"},
+			"error": gin.H{"message": "请求上下文过长，请使用 /compact 压缩上下文，或新建会话后重试", "type": "invalid_request_error"},
 		})
 		return
 	}
@@ -5728,7 +5728,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 
 	if len(rawBody) > security.MaxRequestBodySize {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
-			"error": gin.H{"message": "请求体过大", "type": "invalid_request_error"},
+			"error": gin.H{"message": "请求上下文过长，请使用 /compact 压缩上下文，或新建会话后重试", "type": "invalid_request_error"},
 		})
 		return
 	}
@@ -6546,7 +6546,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// 检查请求体大小
 	if len(rawBody) > security.MaxRequestBodySize {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
-			"error": gin.H{"message": "请求体过大", "type": "invalid_request_error"},
+			"error": gin.H{"message": "请求上下文过长，请使用 /compact 压缩上下文，或新建会话后重试", "type": "invalid_request_error"},
 		})
 		return
 	}

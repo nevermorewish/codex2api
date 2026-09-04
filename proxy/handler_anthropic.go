@@ -449,7 +449,7 @@ func (h *Handler) Messages(c *gin.Context) {
 
 	// 检查请求体大小
 	if len(rawBody) > security.MaxRequestBodySize {
-		rejectAnthropicMessagesRequest(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Request body too large")
+		rejectAnthropicMessagesRequest(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Request context is too large. Use /compact to reduce the context or start a new conversation, then retry.")
 		return
 	}
 	// Keep the ingress body immutable for NewAPI signature verification, but

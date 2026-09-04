@@ -88,7 +88,7 @@ func RequestSizeLimiter(maxSize int64) gin.HandlerFunc {
 		if int64(len(body)) > limit {
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
 				"error": gin.H{
-					"message": "请求体过大",
+					"message": "请求上下文过长，请使用 /compact 压缩上下文，或新建会话后重试",
 					"type":    "invalid_request_error",
 					"code":    "request_too_large",
 				},
