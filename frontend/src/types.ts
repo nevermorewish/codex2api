@@ -3689,6 +3689,11 @@ export interface ClaudeGlobalConfig {
   max_tool_schema_bytes: number
 }
 
+export interface FetchFallbackAccountModelsRequest {
+  base_url?: string
+  proxy_url?: string
+}
+
 export interface ConcurrencyAccountRow {
   id: number
   name: string

@@ -406,6 +406,71 @@ func (h *Handler) TestFallbackAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// FetchFallbackAccountModels discovers models using the API key already stored
+// for a fallback account. The key is never returned to the browser; this keeps
+// the edit form's "leave blank to keep current key" behavior compatible with
+// model discovery.
+func (h *Handler) FetchFallbackAccountModels(c *gin.Context) {
+	id, ok := parseFallbackAccountID(c)
+	if !ok {
+		return
+	}
+	row, err := h.db.GetFallbackAccount(c.Request.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "fallback account not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load fallback account"})
+		return
+	}
+	if row.Protocol != database.FallbackProtocolOpenAIResponses {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "only the openai_responses protocol is currently supported"})
+		return
+	}
+	if strings.TrimSpace(row.APIKey) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fallback account API key is not configured"})
+		return
+	}
+
+	// The form may have unsaved Base URL or proxy edits. Accept those values for
+	// discovery while falling back to the persisted settings when omitted.
+	var req struct {
+		BaseURL  string `json:"base_url"`
+		ProxyURL string `json:"proxy_url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	baseURL := strings.TrimSpace(req.BaseURL)
+	if baseURL == "" {
+		baseURL = row.BaseURL
+	}
+	baseURL, err = auth.NormalizeOpenAIResponsesBaseURL(baseURL)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	proxyURL := strings.TrimSpace(req.ProxyURL)
+	if proxyURL == "" {
+		proxyURL = row.ProxyURL
+	}
+	if err := validateFallbackProxyURL(proxyURL); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	defer cancel()
+	models, err := fetchOpenAIResponsesModelIDs(ctx, baseURL, row.APIKey, proxyURL, nil)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"models": models, "base_url": baseURL})
+}
+
 func (h *Handler) GetFallbackSettings(c *gin.Context) {
 	policy, err := h.db.GetFallbackPolicy(c.Request.Context())
 	if err != nil {

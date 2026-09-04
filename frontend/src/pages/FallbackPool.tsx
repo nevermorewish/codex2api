@@ -75,17 +75,24 @@ export default function FallbackPool() {
   }
 
   const syncModels = async () => {
-    if (!form.base_url.trim() || !form.api_key?.trim()) {
+    const apiKey = form.api_key?.trim() ?? ''
+    const canUseStoredKey = Boolean(editing && !apiKey && editing.has_api_key)
+    if (!form.base_url.trim() || (!apiKey && !canUseStoredKey)) {
       showToast(t('fallback.modelsSyncNeedsKey'), 'error')
       return
     }
     setModelsLoading(true)
     try {
-      const result = await api.fetchOpenAIResponsesModels({
-        base_url: form.base_url,
-        api_key: form.api_key,
-        proxy_url: form.proxy_url,
-      })
+      const result = editing && !apiKey
+        ? await api.fetchFallbackAccountModels(editing.id, {
+            base_url: form.base_url,
+            proxy_url: form.proxy_url,
+          })
+        : await api.fetchOpenAIResponsesModels({
+            base_url: form.base_url,
+            api_key: apiKey,
+            proxy_url: form.proxy_url,
+          })
       const models = Array.from(new Set([...(modelOptions ?? []), ...(result.models ?? [])])).sort((a, b) => a.localeCompare(b))
       setModelOptions(models)
       showToast(t('fallback.modelsSyncDone', { count: result.models?.length ?? 0 }))
@@ -264,7 +271,7 @@ export default function FallbackPool() {
           <label className="grid gap-1.5 text-sm font-medium">{t('fallback.baseURL')}<Input value={form.base_url} onChange={(event) => setForm((current) => ({ ...current, base_url: event.target.value }))} placeholder="https://api.openai.com" /></label>
           <label className="grid gap-1.5 text-sm font-medium">{editing ? t('fallback.replaceAPIKey') : t('fallback.apiKey')}<Input type="password" autoComplete="new-password" value={form.api_key ?? ''} onChange={(event) => setForm((current) => ({ ...current, api_key: event.target.value }))} placeholder={editing ? t('fallback.keepAPIKey') : 'sk-...'} />{editing ? <span className="text-xs font-normal text-muted-foreground">{t('fallback.keepAPIKeyHint')}</span> : null}</label>
           <div className="grid gap-1.5 text-sm font-medium">
-            <div className="flex items-center justify-between gap-2"><span>{t('fallback.model')}</span><Button type="button" variant="outline" size="sm" onClick={() => void syncModels()} disabled={modelsLoading || !form.api_key?.trim()}><RefreshCw className={cn('size-3.5', modelsLoading && 'animate-spin')} />{modelsLoading ? t('fallback.modelsSyncing') : t('fallback.modelsSync')}</Button></div>
+            <div className="flex items-center justify-between gap-2"><span>{t('fallback.model')}</span><Button type="button" variant="outline" size="sm" onClick={() => void syncModels()} disabled={modelsLoading || (!form.api_key?.trim() && !(editing?.has_api_key ?? false))}><RefreshCw className={cn('size-3.5', modelsLoading && 'animate-spin')} />{modelsLoading ? t('fallback.modelsSyncing') : t('fallback.modelsSync')}</Button></div>
             <ChipInput value={form.models} onChange={(models) => setForm((current) => ({ ...current, models }))} options={modelOptions} disabled={savingAccount || modelsLoading} placeholder={t('fallback.modelsPlaceholder')} />
             <span className="text-xs font-normal text-muted-foreground">{t('fallback.modelHint')}</span>
           </div>

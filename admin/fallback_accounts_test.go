@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -90,6 +91,51 @@ func TestCreateFallbackAccountRequiresAPIKey(t *testing.T) {
 	handler.CreateFallbackAccount(testContext)
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "api_key is required") {
 		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestFetchFallbackAccountModelsUsesStoredAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-stored" {
+			t.Fatalf("Authorization = %q, want Bearer sk-stored", got)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-stored"},{"id":"gpt-stored-2"}]}`))
+	}))
+	defer server.Close()
+
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "fallback-models.db"))
+	if err != nil {
+		t.Fatalf("database.New: %v", err)
+	}
+	defer db.Close()
+	_, err = db.CreateFallbackAccount(context.Background(), &database.FallbackAccountRow{
+		Name: "stored-key", Protocol: database.FallbackProtocolOpenAIResponses,
+		BaseURL: server.URL, APIKey: "sk-stored", Models: []string{"gpt-old"},
+		Concurrency: 1, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateFallbackAccount: %v", err)
+	}
+
+	handler := &Handler{db: db}
+	recorder, testContext := fallbackAdminTestContext(http.MethodPost, "/api/admin/fallback/accounts/1/models", []byte(`{}`))
+	testContext.Params = gin.Params{{Key: "id", Value: "1"}}
+	handler.FetchFallbackAccountModels(testContext)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Models []string `json:"models"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !reflect.DeepEqual(response.Models, []string{"gpt-stored", "gpt-stored-2"}) {
+		t.Fatalf("models = %#v", response.Models)
 	}
 }
 

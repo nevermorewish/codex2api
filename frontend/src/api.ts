@@ -60,6 +60,7 @@ import type {
   CreatePromptFilterNewAPIBindingRequest,
   FetchOpenAIResponsesModelsRequest,
   FetchOpenAIResponsesModelsResponse,
+  FetchFallbackAccountModelsRequest,
   CreateImageJobPayload,
   HealthResponse,
   ImageAssetsResponse,
@@ -641,6 +642,8 @@ export const api = {
     request<CreateAccountResponse>('/accounts/openai-responses', { method: 'POST', body: JSON.stringify(data) }),
   fetchOpenAIResponsesModels: (data: FetchOpenAIResponsesModelsRequest) =>
     request<FetchOpenAIResponsesModelsResponse>('/accounts/openai-responses/models', { method: 'POST', body: JSON.stringify(data) }),
+  fetchFallbackAccountModels: (id: number, data: FetchFallbackAccountModelsRequest = {}) =>
+    request<FetchOpenAIResponsesModelsResponse>(`/fallback/accounts/${id}/models`, { method: 'POST', body: JSON.stringify(data) }),
   updateOpenAIResponsesAccount: (id: number, data: UpdateOpenAIResponsesAccountRequest) =>
     request<MessageResponse>(`/accounts/${id}/openai-responses`, { method: 'PATCH', body: JSON.stringify(data) }),
   getOpenAIResponsesBalance: (id: number, signal?: AbortSignal, force = false) =>

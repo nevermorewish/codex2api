@@ -1058,6 +1058,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/fallback/accounts", h.CreateFallbackAccount)
 	api.PUT("/fallback/accounts/:id", h.UpdateFallbackAccount)
 	api.DELETE("/fallback/accounts/:id", h.DeleteFallbackAccount)
+	api.POST("/fallback/accounts/:id/models", h.FetchFallbackAccountModels)
 	api.POST("/fallback/accounts/:id/test", h.TestFallbackAccount)
 	api.GET("/fallback/settings", h.GetFallbackSettings)
 	api.PUT("/fallback/settings", h.UpdateFallbackSettings)
