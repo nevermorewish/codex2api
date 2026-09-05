@@ -43,21 +43,21 @@ type relayChainResponse struct {
 // attempt index, so this works for both PostgreSQL and SQLite and survives a
 // process restart.
 func (h *Handler) GetRelayChains(c *gin.Context) {
-	limit := 100
-	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+	page := 1
+	if raw := strings.TrimSpace(c.Query("page")); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-			limit = n
+			page = n
 		}
 	}
-	if limit > 500 {
-		limit = 500
+	const pageSize = 20
+	if page > int(^uint(0)>>1)/pageSize {
+		writeError(c, http.StatusBadRequest, "page is too large")
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	// A request can produce several attempt rows. Fetch a bounded multiple so
-	// the requested number of chains remains useful under failover-heavy load.
-	logs, err := h.db.ListRecentUsageLogs(ctx, minInt(limit*8, 5000))
+	logs, total, err := h.db.ListRelayChainLogs(ctx, page, pageSize)
 	if err != nil {
 		writeInternalError(c, err)
 		return
@@ -68,6 +68,7 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 		logs      []*database.UsageLog
 	}
 	groups := make(map[string]*chainRows)
+	order := make(map[string]int)
 	for _, logRow := range logs {
 		if logRow == nil {
 			continue
@@ -86,6 +87,7 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 		}
 		group := groups[requestID]
 		if group == nil {
+			order[requestID] = len(order)
 			group = &chainRows{requestID: requestID}
 			groups[requestID] = group
 		}
@@ -186,11 +188,8 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 		chain.StartedAt = first.CreatedAt.Add(-time.Duration(first.DurationMs) * time.Millisecond)
 		chains = append(chains, chain)
 	}
-	sort.Slice(chains, func(i, j int) bool { return chains[i].StartedAt.After(chains[j].StartedAt) })
-	if len(chains) > limit {
-		chains = chains[:limit]
-	}
-	c.JSON(http.StatusOK, gin.H{"chains": chains})
+	sort.Slice(chains, func(i, j int) bool { return order[chains[i].RequestID] < order[chains[j].RequestID] })
+	c.JSON(http.StatusOK, gin.H{"chains": chains, "total": total, "page": page, "page_size": pageSize})
 }
 
 func relayAccountKey(row *database.UsageLog, accountName string) string {

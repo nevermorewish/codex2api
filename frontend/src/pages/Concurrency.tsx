@@ -6,12 +6,15 @@ import { api } from '../api'
 import type { ConcurrencyAccountRow, ConcurrencySnapshot, RelayAttempt, RelayChain } from '../types'
 import PageHeader from '../components/PageHeader'
 import StateShell from '../components/StateShell'
+import Pagination from '../components/Pagination'
 import { StatTile } from '../components/StatTile'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { getErrorMessage } from '../utils/error'
 import { cn } from '@/lib/utils'
+
+const RELAY_PAGE_SIZE = 20
 
 function utilizationWidth(value: number): string {
   return `${Math.max(0, Math.min(100, value))}%`
@@ -41,7 +44,7 @@ function formatRelayTime(value: string): string {
 function RelayChainDetails({ chain, t }: { chain: RelayChain; t: TFunction }) {
   return (
     <div className="border-t border-border bg-muted/15 px-4 py-4 pl-11">
-      <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-3">
         <div className="min-w-0">
           <div className="text-muted-foreground">{t('concurrency.relayRequestId')}</div>
           <div className="mt-1 truncate font-mono text-foreground" title={chain.request_id}>{chain.request_id}</div>
@@ -116,24 +119,62 @@ export default function Concurrency() {
   const [hideIdle, setHideIdle] = useState(false)
   const [relayChains, setRelayChains] = useState<RelayChain[]>([])
   const [expandedRelay, setExpandedRelay] = useState<string | null>(null)
-  const [showOnlyRelayed, setShowOnlyRelayed] = useState(false)
+  const [relayPage, setRelayPage] = useState(1)
+  const [relayTotal, setRelayTotal] = useState(0)
+  const [relayLoading, setRelayLoading] = useState(true)
+  const [relayError, setRelayError] = useState<string | null>(null)
+  const [relayRefresh, setRelayRefresh] = useState(0)
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true)
     try {
-      const results = await Promise.allSettled([api.getConcurrency(), api.getRelayChains(100)])
-      const concurrencyResult = results[0]
-      if (concurrencyResult.status === 'rejected') throw concurrencyResult.reason
-      setSnapshot(concurrencyResult.value)
-      const relayResult = results[1]
-      if (relayResult.status === 'fulfilled') setRelayChains(relayResult.value.chains ?? [])
+      setSnapshot(await api.getConcurrency())
       setError(null)
     } catch (err) {
-      if (!quiet || !snapshot) setError(getErrorMessage(err))
+      setError(getErrorMessage(err))
     } finally {
       if (!quiet) setLoading(false)
     }
-  }, [snapshot])
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    let inFlight = false
+    setRelayLoading(true)
+    setExpandedRelay(null)
+    const load = async () => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        const result = await api.getRelayChains(relayPage)
+        if (!active) return
+        const lastPage = Math.max(1, Math.ceil(result.total / RELAY_PAGE_SIZE))
+        if (relayPage > lastPage) {
+          setRelayPage(lastPage)
+          return
+        }
+        setRelayChains(result.chains ?? [])
+        setRelayTotal(result.total)
+        setRelayError(null)
+      } catch (err) {
+        if (active) setRelayError(getErrorMessage(err))
+      } finally {
+        inFlight = false
+        if (active) setRelayLoading(false)
+      }
+    }
+    void load()
+    const poll = () => {
+      if (document.visibilityState === 'visible') void load()
+    }
+    const timer = window.setInterval(poll, 2000)
+    document.addEventListener('visibilitychange', poll)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', poll)
+    }
+  }, [relayPage, relayRefresh])
 
   useEffect(() => {
     void refresh(false)
@@ -164,14 +205,13 @@ export default function Concurrency() {
   const updatedAt = snapshot?.collected_at
     ? new Date(snapshot.collected_at).toLocaleTimeString()
     : '-'
-  const visibleRelayChains = showOnlyRelayed ? relayChains.filter((chain) => chain.switch_count > 0) : relayChains
 
   return (
-    <div className="mx-auto w-full max-w-[1500px]">
+    <div className="mx-auto w-full max-w-[1800px]">
       <PageHeader
         title={t('concurrency.title')}
         description={t('concurrency.description')}
-        onRefresh={() => void refresh(false)}
+        onRefresh={() => { void refresh(false); setRelayRefresh((value) => value + 1) }}
         actionMeta={t('concurrency.updatedAt', { time: updatedAt })}
       />
       <StateShell
@@ -192,8 +232,9 @@ export default function Concurrency() {
               <StatTile label={t('concurrency.capacity')} value={snapshot.capacity} sub={t('concurrency.usableCapacity')} icon={<Gauge className="size-4" />} />
             </div>
 
-            <section className="overflow-hidden rounded-lg border border-border bg-card/70">
-              <div className="flex flex-col gap-1 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="grid items-start gap-5 lg:grid-cols-2">
+            <section className="min-w-0" aria-label={t('concurrency.relayChainsTitle')}>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border py-3">
                 <div className="flex items-start gap-2">
                   <GitBranch className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                   <div>
@@ -202,29 +243,27 @@ export default function Concurrency() {
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="text-xs text-muted-foreground">{t('concurrency.relayChainsRecords', { count: visibleRelayChains.length })}</span>
-                  <button type="button" className={cn('rounded border px-2 py-1 text-xs transition-colors', showOnlyRelayed ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted/40')} onClick={() => setShowOnlyRelayed((value) => !value)}>
-                    {showOnlyRelayed ? t('concurrency.showAllRelayChains') : t('concurrency.showOnlyRelayed')}
-                  </button>
+                  <span className="text-xs text-muted-foreground">{t('concurrency.relayChainsRecords', { count: relayTotal })}</span>
                 </div>
               </div>
-              {visibleRelayChains.length > 0 ? (
+              <StateShell loading={relayLoading} error={relayError} onRetry={() => setRelayRefresh((value) => value + 1)}>
+              {relayChains.length > 0 ? (
                 <div className="divide-y divide-border">
-                  {visibleRelayChains.map((chain) => {
+                  {relayChains.map((chain) => {
                     const expanded = expandedRelay === chain.request_id
                     return (
                       <div key={chain.request_id} className="group">
                         <button
                           type="button"
-                          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/35"
+                          className="flex w-full flex-wrap items-center gap-2 px-2 py-3 text-left transition-colors hover:bg-muted/35"
                           onClick={() => setExpandedRelay(expanded ? null : chain.request_id)}
                           aria-expanded={expanded}
                         >
                           <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', expanded && 'rotate-180')} />
-                          <div className="min-w-0 flex-1">
+                          <div className="min-w-0 flex-1 basis-40">
                             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                               <span className="text-xs tabular-nums text-muted-foreground">{formatRelayTime(chain.started_at)}</span>
-                              <span className="truncate font-medium text-foreground">{chain.model || '-'}</span>
+                              <span className="min-w-0 break-all font-medium text-foreground">{chain.model || '-'}</span>
                               <span className="rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] uppercase text-muted-foreground">{chain.protocol || 'openai'}</span>
                             </div>
                             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-xs text-muted-foreground">
@@ -237,9 +276,8 @@ export default function Concurrency() {
                               {chain.attempts.length === 0 ? <span>{t('concurrency.noAttempts')}</span> : null}
                             </div>
                           </div>
-                          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+                          <div className="ml-auto flex shrink-0 items-center gap-2">
                             <span className="hidden text-xs text-muted-foreground sm:inline">{t('concurrency.relayAttempts', { count: chain.attempts.length })}</span>
-                            <span className="hidden text-xs text-muted-foreground md:inline">{t('concurrency.relaySwitches', { count: chain.switch_count })}</span>
                             <span className={cn('inline-flex items-center gap-1 text-xs font-medium', chain.final_ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
                               {chain.final_ok ? <CheckCircle2 className="size-4" /> : <XCircle className="size-4" />}
                               <span className="hidden sm:inline">{chain.final_ok ? t('concurrency.relaySuccess') : t('concurrency.relayFailed')}</span>
@@ -253,18 +291,20 @@ export default function Concurrency() {
                   })}
                 </div>
               ) : (
-                <div className="px-4 py-10 text-center text-sm text-muted-foreground">{showOnlyRelayed && relayChains.length > 0 ? t('concurrency.noRelayedChains') : t('concurrency.noRelayChains')}</div>
+                <div className="px-4 py-10 text-center text-sm text-muted-foreground">{t('concurrency.noRelayChains')}</div>
               )}
+              </StateShell>
+              <Pagination page={relayPage} totalPages={Math.ceil(relayTotal / RELAY_PAGE_SIZE)} totalItems={relayTotal} pageSize={RELAY_PAGE_SIZE} onPageChange={setRelayPage} />
             </section>
 
-            <section className="overflow-hidden rounded-lg border border-border bg-card/70">
-              <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <section className="min-w-0" aria-label={t('concurrency.accountsTitle')}>
+              <div className="flex flex-col gap-3 border-b border-border py-3">
                 <div>
                   <h3 className="font-semibold text-foreground">{t('concurrency.accountsTitle')}</h3>
                   <p className="text-xs text-muted-foreground">{t('concurrency.accountsCount', { visible: accounts.length, total: snapshot.accounts.length })}</p>
                 </div>
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <label className="relative min-w-0 sm:w-64">
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="relative min-w-0 flex-1 basis-40">
                     <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                     <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('concurrency.searchPlaceholder')} className="pl-8" />
                   </label>
@@ -279,9 +319,7 @@ export default function Concurrency() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t('concurrency.account')}</TableHead>
-                      <TableHead>{t('concurrency.channel')}</TableHead>
-                      <TableHead>{t('concurrency.groups')}</TableHead>
-                      <TableHead className="min-w-52">{t('concurrency.pressure')}</TableHead>
+                      <TableHead className="min-w-28">{t('concurrency.pressure')}</TableHead>
                       <TableHead className="text-right">{t('concurrency.active')}</TableHead>
                       <TableHead className="text-right">{t('concurrency.occupied')}</TableHead>
                       <TableHead className="text-right">{t('concurrency.limit')}</TableHead>
@@ -292,16 +330,16 @@ export default function Concurrency() {
                       <TableRow key={`${row.fallback ? 'f' : 'a'}-${row.id}`}>
                         <TableCell>
                           <div className="min-w-36">
-                            <div className="font-medium text-foreground">{row.name}</div>
+                            <div className="max-w-48 truncate font-medium text-foreground" title={row.name}>{row.name}</div>
                             <div className="text-xs text-muted-foreground">#{row.id} · {row.status}</div>
+                            <div className="mt-1 flex max-w-48 items-center gap-1.5 text-xs text-muted-foreground">
+                              <span className={cn('shrink-0', row.fallback && 'text-amber-700 dark:text-amber-300')}>
+                                {t(`concurrency.channels.${row.channel}`, { defaultValue: row.channel })}
+                              </span>
+                              <span className="truncate" title={row.group_names.join(', ')}>{row.group_names.join(', ') || '-'}</span>
+                            </div>
                           </div>
                         </TableCell>
-                        <TableCell>
-                          <span className={cn('inline-flex rounded border px-2 py-0.5 text-xs font-medium', row.fallback ? 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'border-border bg-muted/50 text-muted-foreground')}>
-                            {t(`concurrency.channels.${row.channel}`, { defaultValue: row.channel })}
-                          </span>
-                        </TableCell>
-                        <TableCell className="max-w-56 text-xs text-muted-foreground">{row.group_names.join(', ') || '-'}</TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
@@ -317,12 +355,13 @@ export default function Concurrency() {
                       </TableRow>
                     ))}
                     {accounts.length === 0 ? (
-                      <TableRow><TableCell colSpan={7} className="h-24 text-center text-muted-foreground">{t('concurrency.noAccounts')}</TableCell></TableRow>
+                      <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">{t('concurrency.noAccounts')}</TableCell></TableRow>
                     ) : null}
                   </TableBody>
                 </Table>
               </div>
             </section>
+            </div>
 
             <div className="grid gap-5 xl:grid-cols-2">
               <section className="overflow-hidden rounded-lg border border-border bg-card/70">
