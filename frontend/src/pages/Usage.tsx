@@ -333,12 +333,13 @@ function formatTokenPricePerMillion(value?: number | null): string {
 
 function isFastTier(tier?: string | null): boolean {
   const normalized = (tier || '').trim().toLowerCase()
-  return normalized === 'fast' || normalized === 'priority'
+  return normalized === 'fast' || normalized === 'priority' || normalized === 'ultrafast'
 }
 
 function formatServiceTierLabel(t: ReturnType<typeof useTranslation>['t'], tier?: string | null): string {
   const normalized = (tier || '').trim().toLowerCase()
   if (!normalized) return '-'
+  if (normalized === 'ultrafast') return 'Ultrafast'
   if (isFastTier(normalized)) return t('usage.billingTierFast')
   if (normalized === 'default') return t('usage.billingTierStandard')
   return normalized
@@ -1027,7 +1028,7 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
       ? t('usage.userAgentOverridden')
       : t('usage.userAgentPreserved')
 
-  if (!hasAudit) {
+  if (!hasAudit && !log.request_id && !log.upstream_request_id) {
     return (
       <div className="font-mono text-[11px] text-muted-foreground" title={t('usage.userAgentNotRecorded')}>
         UA: -
@@ -1037,6 +1038,7 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
 
   const content = (
     <div className={`${mobile ? 'w-full' : 'w-[260px] max-w-[28vw]'} space-y-1 font-mono text-[11px] leading-relaxed`}>
+      {log.request_id ? <div className="truncate text-muted-foreground" title={`Request ID: ${log.request_id}`}>ID: {log.request_id}</div> : null}
       <div className="flex min-w-0 items-center gap-1.5" title={t('usage.clientUserAgent')}>
         <span className="w-4 shrink-0 font-sans font-semibold text-muted-foreground">C</span>
         <span className="min-w-0 truncate text-foreground/80">{clientUserAgent || '-'}</span>
@@ -1081,6 +1083,9 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
             <div className="font-semibold text-background/70">{t('usage.upstreamUserAgent')}</div>
             <div className="mt-0.5 break-all font-mono leading-relaxed">{upstreamLabel}</div>
           </div>
+          {log.request_id ? <div className="break-all font-mono">Request ID: {log.request_id}</div> : null}
+          {log.upstream_request_id ? <div className="break-all font-mono">Upstream ID: {log.upstream_request_id}</div> : null}
+          {log.upstream_proxy_name ? <div className="break-all">Proxy: {log.upstream_proxy_name}{log.upstream_proxy_id ? ` (#${log.upstream_proxy_id})` : ''}</div> : null}
           <div className="font-semibold">{statusLabel}</div>
           {log.via_websocket ? (
             <div className="leading-relaxed text-background/70">{t('usage.userAgentWebSocketHint')}</div>
@@ -2635,7 +2640,7 @@ export default function Usage() {
                               className="gap-0.5 border-transparent bg-blue-500/12 text-[11px] font-semibold text-blue-600 dark:bg-blue-500/20 dark:text-blue-400"
                             >
                               <Zap className="size-3" />
-                              Fast
+                              {formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}
                             </Badge>
                           ) : null}
                           {visibleColumns.type && <StreamBadge stream={log.stream} />}
@@ -2855,7 +2860,7 @@ export default function Usage() {
                                 title={`${t('usage.billingTier')}: ${formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}`}
                               >
                                 <Zap className="size-3" />
-                                Fast
+                                {formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}
                               </Badge>
                             )}
                           </div>

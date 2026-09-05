@@ -172,6 +172,7 @@ export interface GrokPlanInfo {
 }
 
 export interface AccountRow {
+  upstream_request_id_header?: string | null
   detail_loaded?: boolean
   id: number
   name: string
@@ -1295,6 +1296,7 @@ export interface GrokBatchImportResponse {
 }
 
 export interface UpdateAccountSchedulerRequest {
+  upstream_request_id_header?: string | null
   score_bias_override?: number | null
   base_concurrency_override?: number | null
   skip_warm_tier?: boolean
@@ -1594,6 +1596,7 @@ export interface OpsOverviewResponse {
     max_bytes: number
     high_water_bytes: number
     largest_entry_bytes: number
+    shared_payload_bytes?: number
     local_hits: number
     local_misses: number
     remote_hits: number
@@ -3075,6 +3078,10 @@ export interface APIKeyAccountStatsResponse {
 }
 
 export interface UsageLog {
+  request_id?: string
+  upstream_request_id?: string
+  upstream_proxy_id?: number
+  upstream_proxy_name?: string
   id: number
   account_id: number
   // 上游渠道(codex/grok),写入时固化;历史行回填,可能为空
@@ -3314,6 +3321,30 @@ export interface APIKeyScopeSummaryItem {
   skip_requests?: number
 }
 
+export interface APIKeyModelRequestLimit {
+  /** Stable backend-generated identity; omit when adding a rule. */
+  id?: string
+  model: string
+  window: 'week'
+  max_requests: number
+  timezone: string
+  /** ISO weekday: Monday = 1, Sunday = 7. */
+  reset_weekday: number
+  reset_time: string
+}
+
+export interface APIKeyModelRequestUsage {
+  rule_id: string
+  model: string
+  window: 'week'
+  limit: number
+  used: number
+  remaining: number
+  window_start: ISODateString
+  reset_at: ISODateString
+  timezone: string
+}
+
 export interface APIKeyLimits {
   model_allow?: string[]
   model_deny?: string[]
@@ -3339,6 +3370,8 @@ export interface APIKeyLimits {
   allow_live?: boolean
   /** 分组 / 账号维度的用量预算（issue #439）。 */
   scope_limits?: APIKeyScopeLimit[]
+  /** Fixed weekly request budgets shared by models matching each rule. */
+  model_request_limits?: APIKeyModelRequestLimit[]
 }
 
 export interface APIKeyWindowUsage {
@@ -3541,6 +3574,7 @@ export interface PublicAPIKeyUsageResponse {
   key: PublicAPIKeyUsageKey
   range: PublicAPIKeyUsageRange
   usage: PublicAPIKeyUsageReport
+  model_request_usage?: APIKeyModelRequestUsage[]
 }
 
 export interface CreateAPIKeyResponse {

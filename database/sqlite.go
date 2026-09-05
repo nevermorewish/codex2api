@@ -215,6 +215,22 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS api_key_model_request_counters (
+			api_key_id INTEGER NOT NULL,
+			rule_id TEXT NOT NULL,
+			window_start INTEGER NOT NULL,
+			reset_at INTEGER NOT NULL,
+			used_requests INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (api_key_id, rule_id, window_start)
+		);`,
+		`CREATE TABLE IF NOT EXISTS api_key_model_request_ledger (
+			api_key_id INTEGER NOT NULL,
+			rule_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			window_start INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (api_key_id, rule_id, request_id)
+		);`,
 		`CREATE TABLE IF NOT EXISTS api_key_scope_counters (
 			api_key_id INTEGER NOT NULL,
 			scope_type TEXT NOT NULL,
@@ -363,6 +379,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					oauth_model_cooldown_seconds INTEGER NOT NULL DEFAULT 300,
 					oauth_model_cooldown_backoff_enabled INTEGER NOT NULL DEFAULT 1
 				);`,
+		modelCapabilitiesSchema,
 		`CREATE TABLE IF NOT EXISTS model_registry (
 			id TEXT PRIMARY KEY,
 			enabled INTEGER DEFAULT 1,
@@ -549,6 +566,10 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"usage_logs", "user_agent_overridden", "INTEGER DEFAULT 0"},
 		{"usage_logs", "internal_reason", "TEXT DEFAULT ''"},
 		{"usage_logs", "parent_request_id", "TEXT DEFAULT ''"},
+		{"usage_logs", "request_id", "TEXT DEFAULT ''"},
+		{"usage_logs", "upstream_request_id", "TEXT DEFAULT ''"},
+		{"usage_logs", "upstream_proxy_id", "INTEGER DEFAULT 0"},
+		{"usage_logs", "upstream_proxy_name", "TEXT DEFAULT ''"},
 		{"usage_logs", "image_count", "INTEGER DEFAULT 0"},
 		{"usage_logs", "image_width", "INTEGER DEFAULT 0"},
 		{"usage_logs", "image_height", "INTEGER DEFAULT 0"},
@@ -784,6 +805,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_accounts_created_id ON accounts(created_at, id);`,
 		`CREATE INDEX IF NOT EXISTS idx_accounts_updated_id ON accounts(updated_at, id);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_logs_request_id ON usage_logs(request_id) WHERE request_id <> '';`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_logs_upstream_request_id ON usage_logs(upstream_request_id) WHERE upstream_request_id <> '';`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_account_id ON usage_logs(account_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_account_created_at ON usage_logs(account_id, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_account_generation_created_at ON usage_logs(account_id, credential_generation, created_at);`,

@@ -1191,6 +1191,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PATCH("/keys/:id", h.UpdateAPIKey)
 	api.POST("/keys/:id/reset-quota", h.ResetAPIKeyQuota)
 	api.GET("/keys/:id/scope-usage", h.GetAPIKeyScopeUsage)
+	api.GET("/keys/:id/model-request-usage", h.GetAPIKeyModelRequestUsage)
 	api.GET("/keys-scope-summary", h.GetAPIKeysScopeSummary)
 	api.POST("/keys/:id/scope-quota/reset", h.ResetAPIKeyScopeQuota)
 	api.DELETE("/keys/:id", h.DeleteAPIKey)
@@ -1573,22 +1574,23 @@ func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
 // ==================== Accounts ====================
 
 type accountResponse struct {
-	DetailLoaded          bool   `json:"detail_loaded,omitempty"`
-	ID                    int64  `json:"id"`
-	Name                  string `json:"name"`
-	Email                 string `json:"email"`
-	EmailDomain           string `json:"email_domain,omitempty"`
-	ChatGPTAccountID      string `json:"chatgpt_account_id,omitempty"`
-	TokenWorkspaceID      string `json:"token_workspace_id,omitempty"`
-	WorkspaceIDOverride   string `json:"workspace_id_override,omitempty"`
-	EffectiveWorkspaceID  string `json:"effective_workspace_id,omitempty"`
-	PlanType              string `json:"plan_type"`
-	SubscriptionExpiresAt string `json:"subscription_expires_at,omitempty"`
-	Status                string `json:"status"`
-	ErrorMessage          string `json:"error_message,omitempty"`
-	ATOnly                bool   `json:"at_only"`
-	CreditEnabled         bool   `json:"credit_enabled"`
-	CreditSkipUsageWindow bool   `json:"credit_skip_usage_window"`
+	UpstreamRequestIDHeader string `json:"upstream_request_id_header"`
+	DetailLoaded            bool   `json:"detail_loaded,omitempty"`
+	ID                      int64  `json:"id"`
+	Name                    string `json:"name"`
+	Email                   string `json:"email"`
+	EmailDomain             string `json:"email_domain,omitempty"`
+	ChatGPTAccountID        string `json:"chatgpt_account_id,omitempty"`
+	TokenWorkspaceID        string `json:"token_workspace_id,omitempty"`
+	WorkspaceIDOverride     string `json:"workspace_id_override,omitempty"`
+	EffectiveWorkspaceID    string `json:"effective_workspace_id,omitempty"`
+	PlanType                string `json:"plan_type"`
+	SubscriptionExpiresAt   string `json:"subscription_expires_at,omitempty"`
+	Status                  string `json:"status"`
+	ErrorMessage            string `json:"error_message,omitempty"`
+	ATOnly                  bool   `json:"at_only"`
+	CreditEnabled           bool   `json:"credit_enabled"`
+	CreditSkipUsageWindow   bool   `json:"credit_skip_usage_window"`
 	// UsingCredits 是与 Status 并列的独立信号：用量窗口已打满但积分顶着，
 	// 状态仍是 active（可调度），前端据此在状态徽章旁并列一个「使用积分」徽章。
 	UsingCredits                  bool                        `json:"using_credits,omitempty"`
@@ -2060,6 +2062,7 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 }
 
 type updateAccountSchedulerReq struct {
+	UpstreamRequestIDHeader json.RawMessage `json:"upstream_request_id_header"`
 	ScoreBiasOverride       json.RawMessage `json:"score_bias_override"`
 	BaseConcurrencyOverride json.RawMessage `json:"base_concurrency_override"`
 	SkipWarmTier            json.RawMessage `json:"skip_warm_tier"`
@@ -2214,7 +2217,14 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if codexFingerprintMode.Set {
 		codexFingerprintMode.Value = auth.NormalizeCodexFingerprintMode(codexFingerprintMode.Value)
 	}
+	requestIDHeader, err := parseOptionalStringField(req.UpstreamRequestIDHeader, "upstream_request_id_header", auth.ValidateUpstreamRequestIDHeader)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
 	credentialUpdates := make(map[string]interface{})
+	if requestIDHeader.Set {
+		credentialUpdates[auth.UpstreamRequestIDHeaderCredentialKey] = strings.TrimSpace(requestIDHeader.Value)
+	}
 	if customHeaders.Set {
 		credentialUpdates["custom_headers"] = cloneCustomHeaders(customHeaders.Values)
 	}
@@ -2632,6 +2642,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.ProxyURL.Set {
 		h.store.ApplyAccountProxyURL(id, update.ProxyURL.Value)
+	}
+	if value, ok := update.CredentialUpdates[auth.UpstreamRequestIDHeaderCredentialKey].(string); ok {
+		h.store.ApplyAccountUpstreamRequestIDHeader(id, value)
 	}
 	if update.CustomHeaders.Set {
 		h.store.ApplyAccountCustomHeaders(id, update.CustomHeaders.Values)
@@ -8050,18 +8063,20 @@ func parseUsageLogsFilter(c *gin.Context, startTime, endTime time.Time) (databas
 	}
 
 	filter := database.UsageLogFilter{
-		Start:     startTime,
-		End:       endTime,
-		Page:      1,
-		PageSize:  20,
-		Email:     strings.TrimSpace(c.Query("email")),
-		Model:     strings.TrimSpace(c.Query("model")),
-		Endpoint:  strings.TrimSpace(c.Query("endpoint")),
-		APIKeyID:  apiKeyID,
-		AccountID: accountID,
-		ErrorKind: strings.TrimSpace(c.Query("error_kind")),
-		Query:     strings.TrimSpace(c.Query("q")),
-		Channel:   parseUsageChannel(c),
+		RequestID:         strings.TrimSpace(c.Query("request_id")),
+		UpstreamRequestID: strings.TrimSpace(c.Query("upstream_request_id")),
+		Start:             startTime,
+		End:               endTime,
+		Page:              1,
+		PageSize:          20,
+		Email:             strings.TrimSpace(c.Query("email")),
+		Model:             strings.TrimSpace(c.Query("model")),
+		Endpoint:          strings.TrimSpace(c.Query("endpoint")),
+		APIKeyID:          apiKeyID,
+		AccountID:         accountID,
+		ErrorKind:         strings.TrimSpace(c.Query("error_kind")),
+		Query:             strings.TrimSpace(c.Query("q")),
+		Channel:           parseUsageChannel(c),
 	}
 
 	if pageStr := c.Query("page"); pageStr != "" {
@@ -8434,6 +8449,11 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 	var limits database.APIKeyLimits
 	if req.Limits != nil {
 		limits = sanitizeAPIKeyLimits(*req.Limits)
+		limits.ModelRequestLimits, err = normalizeAdminAPIKeyModelRequestLimits(req.Limits.ModelRequestLimits, nil)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
 		if err := h.validateAPIKeyGroupIDs(ctx, limits.NoAffinityGroupIDs, "limits.no_affinity_group_ids"); err != nil {
 			writeError(c, http.StatusBadRequest, err.Error())
 			return
@@ -8598,6 +8618,11 @@ func (h *Handler) UpdateAPIKey(c *gin.Context) {
 	}
 	if req.Limits != nil {
 		update.Limits = sanitizeAPIKeyLimits(*req.Limits)
+		update.Limits.ModelRequestLimits, err = normalizeAdminAPIKeyModelRequestLimits(req.Limits.ModelRequestLimits, row.Limits.ModelRequestLimits)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
 		if err := h.validateAPIKeyGroupIDs(ctx, update.Limits.NoAffinityGroupIDs, "limits.no_affinity_group_ids"); err != nil {
 			writeError(c, http.StatusBadRequest, err.Error())
 			return
@@ -8623,7 +8648,11 @@ func (h *Handler) UpdateAPIKey(c *gin.Context) {
 		h.db.InvalidateScopeQuotaKeyCache()
 	}
 	h.invalidateAPIKeyRuntimeCaches(ctx, row.Key)
-	writeMessage(c, http.StatusOK, "API Key 已更新")
+	savedLimits := row.Limits
+	if update.LimitsSet {
+		savedLimits = update.Limits
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "API Key 已更新", "limits": savedLimits})
 }
 
 // sanitizeAPIKeyLimits 把请求体里来的 limits 归一:负值置 0,空白模型名过滤,字符串小写。
@@ -8671,6 +8700,7 @@ func sanitizeAPIKeyLimits(in database.APIKeyLimits) database.APIKeyLimits {
 		AllowLive:              in.AllowLive,
 		UpstreamChannel:        in.ResolveUpstreamChannel(),
 		ScopeLimits:            database.NormalizeAPIKeyScopeLimits(in.ScopeLimits),
+		ModelRequestLimits:     in.ModelRequestLimits,
 	}
 	// 归一后旧 bool 与新 policy 保持一致，避免两处配置漂移。
 	out.DisableImageGeneration = out.ImageGenerationPolicy == database.ImageGenerationPolicyBlock
