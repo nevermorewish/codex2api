@@ -30,6 +30,8 @@ const ModelPricing = lazy(() => import('./pages/ModelPricing'))
 const PayloadRules = lazy(() => import('./pages/PayloadRules'))
 const Concurrency = lazy(() => import('./pages/Concurrency'))
 const FallbackPool = lazy(() => import('./pages/FallbackPool'))
+const ErrorAnalysis = lazy(() => import('./pages/ErrorAnalysis'))
+const RobotMonitor = lazy(() => import('./pages/RobotMonitor'))
 
 export default function App() {
   return (
@@ -71,6 +73,8 @@ function AdminApp() {
           <Route path="/proxies" element={<Proxies />} />
           <Route path="/concurrency" element={<Concurrency />} />
           <Route path="/fallback-pool" element={<FallbackPool />} />
+          <Route path="/error-analysis" element={<ErrorAnalysis />} />
+          <Route path="/robot-monitor" element={<RobotMonitor />} />
           <Route path="/images" element={<Navigate to="/images/studio" replace />} />
           <Route path="/images/:view" element={<ImageStudio />} />
           <Route path="/prompt-filter" element={<Navigate to="/prompt-filter/overview" replace />} />

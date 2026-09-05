@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { Activity, ArrowRight, CheckCircle2, ChevronDown, Gauge, GitBranch, KeyRound, Layers3, Search, Users, XCircle } from 'lucide-react'
+import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from 'recharts'
 import { api } from '../api'
 import type { ConcurrencyAccountRow, ConcurrencySnapshot, RelayAttempt, RelayChain } from '../types'
 import PageHeader from '../components/PageHeader'
@@ -124,6 +125,7 @@ export default function Concurrency() {
   const [relayLoading, setRelayLoading] = useState(true)
   const [relayError, setRelayError] = useState<string | null>(null)
   const [relayRefresh, setRelayRefresh] = useState(0)
+  const [requestTrend, setRequestTrend] = useState<Array<{ bucket: string; requests: number; fallback: number }>>([])
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true)
@@ -191,6 +193,23 @@ export default function Concurrency() {
       document.removeEventListener('visibilitychange', poll)
     }
   }, [refresh])
+
+  useEffect(() => {
+    let active = true
+    const load = async () => {
+      const now = new Date()
+      const start = new Date(now); start.setHours(0, 0, 0, 0)
+      const params = { start: start.toISOString(), end: now.toISOString(), bucketMinutes: 60 }
+      try {
+        const [all, fallback] = await Promise.all([api.getChartData(params), api.getChartData({ ...params, channel: 'fallback' })])
+        if (!active) return
+        const fallbackByBucket = new Map((fallback.timeline ?? []).map((p) => [p.bucket, p.requests]))
+        setRequestTrend((all.timeline ?? []).map((p) => ({ bucket: new Date(p.bucket).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), requests: p.requests, fallback: fallbackByBucket.get(p.bucket) ?? 0 })))
+      } catch { if (active) setRequestTrend([]) }
+    }
+    void load(); const timer = window.setInterval(load, 30000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [])
 
   const accounts = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -362,6 +381,24 @@ export default function Concurrency() {
               </div>
             </section>
             </div>
+
+            <section className="rounded-lg border border-border bg-card/70 p-4">
+              <h3 className="font-semibold text-foreground">{t('concurrency.requestTrendTitle')}</h3>
+              <p className="mt-1 text-xs text-muted-foreground">{t('concurrency.requestTrendDescription')}</p>
+              <div className="mt-3 h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={requestTrend} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                    <CartesianGrid vertical={false} stroke="var(--color-border)" strokeDasharray="4 4" />
+                    <XAxis dataKey="bucket" tick={{ fontSize: 11 }} />
+                    <YAxis allowDecimals={false} width={42} />
+                    <Tooltip />
+                    <Legend />
+                    <Line type="monotone" dataKey="requests" name={t('concurrency.requestTrendRequests')} stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="fallback" name={t('concurrency.requestTrendFallback')} stroke="hsl(36 90% 55%)" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
 
             <div className="grid gap-5 xl:grid-cols-2">
               <section className="overflow-hidden rounded-lg border border-border bg-card/70">

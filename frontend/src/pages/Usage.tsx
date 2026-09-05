@@ -1815,18 +1815,20 @@ export default function Usage() {
   // 仅加载轻量统计（秒级）—— 联动同页 timeRange,与下方请求记录的范围保持一致
   const loadStats = useCallback(async () => {
     const { start, end } = resolveRangeISO(timeRange, customRange)
-    const [stats, settings] = await Promise.all([
+    const [stats, settings, fallbackStats] = await Promise.all([
       api.getUsageStats({ start, end, channel: channel || undefined }),
       api.getSettings().catch((): SystemSettings | null => null),
+      api.getUsageStats({ start, end, channel: 'fallback' }).catch((): UsageStats | null => null),
     ])
-    return { stats, settings }
+    return { stats, settings, fallbackStats }
   }, [timeRange, customRange, channel])
 
   const { data, loading, error, reload, reloadSilently } = useDataLoader<{
     stats: UsageStats | null
     settings: SystemSettings | null
+    fallbackStats: UsageStats | null
   }>({
-    initialData: { stats: null, settings: null },
+    initialData: { stats: null, settings: null, fallbackStats: null },
     load: loadStats,
   })
 
@@ -1950,7 +1952,7 @@ export default function Usage() {
     persistAnalysisVisibility(showAnalysis)
   }, [showAnalysis])
 
-  const { stats, settings } = data
+  const { stats, settings, fallbackStats } = data
   const showFullUsageNumbers = settings?.show_full_usage_numbers ?? false
   const totalPages = Math.max(1, Math.ceil(logsTotal / pageSize))
   const currentPage = Math.min(page, totalPages)
@@ -2109,6 +2111,17 @@ export default function Usage() {
                 <span className="text-[hsl(var(--success))]">● {t('usage.success')}: {formatTokens(successRequests, showFullUsageNumbers)}</span>
                 <span>● {t('usage.cumulative')}: {formatTokens(cumulativeRequests, showFullUsageNumbers)}</span>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card className="min-w-0 py-0">
+            <CardContent className={usageStatCardContentClass}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold uppercase text-muted-foreground">{t('usage.fallbackRequests')}</span>
+                <div className="flex size-9 items-center justify-center rounded-lg bg-amber-500/12 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300"><Route className="size-4" /></div>
+              </div>
+              <div className={usageStatValueClass}>{formatTokens(fallbackStats?.today_requests ?? 0, showFullUsageNumbers)}</div>
+              <div className="text-[11px] text-muted-foreground leading-snug">{t('usage.fallbackRequestsDesc')}</div>
             </CardContent>
           </Card>
 

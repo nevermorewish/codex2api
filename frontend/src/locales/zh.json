@@ -16,11 +16,17 @@
     "images": "生图工作台",
     "promptFilter": "Prompt 检查",
     "modelPricing": "模型定价",
-    "payloadRules": "请求体重写"
+    "payloadRules": "请求体重写",
+    "errorAnalysis": "错误分析",
+    "robotMonitor": "机器人监控"
   },
   "concurrency": {
     "title": "实时并发",
     "description": "查看账号、分组与 API 密钥的进程内实时并发占用。",
+    "requestTrendTitle": "当日请求分布",
+    "requestTrendDescription": "按小时统计实时请求数与兜底请求数。",
+    "requestTrendRequests": "实时请求数",
+    "requestTrendFallback": "兜底请求数",
     "updatedAt": "更新时间：{{time}}",
     "loading": "正在加载并发快照",
     "loadFailed": "并发快照加载失败",
@@ -2228,6 +2234,8 @@
     "todayCost": "今日",
     "accountCost": "账号",
     "rpmDesc": "每分钟请求数",
+    "fallbackRequests": "兜底池请求数",
+    "fallbackRequestsDesc": "当前时间范围内的兜底请求",
     "tpmDesc": "每分钟 Token 数",
     "errorRateCard": "错误率",
     "avgLatencyInline": "平均延迟: {{value}}ms",

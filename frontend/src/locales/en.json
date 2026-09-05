@@ -16,11 +16,17 @@
     "images": "Images",
     "promptFilter": "Prompt Filter",
     "modelPricing": "Model Pricing",
-    "payloadRules": "Payload Rules"
+    "payloadRules": "Payload Rules",
+    "errorAnalysis": "Error Analysis",
+    "robotMonitor": "Bot Monitor"
   },
   "concurrency": {
     "title": "Live Concurrency",
     "description": "Inspect process-local concurrency for accounts, groups, and API keys in real time.",
+    "requestTrendTitle": "Today's request distribution",
+    "requestTrendDescription": "Hourly real-time and fallback request counts.",
+    "requestTrendRequests": "Real-time requests",
+    "requestTrendFallback": "Fallback requests",
     "updatedAt": "Updated: {{time}}",
     "loading": "Loading concurrency snapshot",
     "loadFailed": "Failed to load concurrency snapshot",
@@ -2228,6 +2234,8 @@
     "todayCost": "Today",
     "accountCost": "Account",
     "rpmDesc": "Requests per minute",
+    "fallbackRequests": "Fallback pool requests",
+    "fallbackRequestsDesc": "Fallback requests in the selected range",
     "tpmDesc": "Tokens per minute",
     "errorRateCard": "Error Rate",
     "avgLatencyInline": "Avg Latency: {{value}}ms",
