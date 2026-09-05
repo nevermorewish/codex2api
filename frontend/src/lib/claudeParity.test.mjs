@@ -78,6 +78,15 @@ test('model pricing exposes Anthropic source and distinct cache write fields', (
   assert.match(types, /cache_write_1h/)
 })
 
+test('model catalog refresh button refreshes every channel, not only Claude', () => {
+  const pricing = readFileSync(new URL('../pages/ModelPricing.tsx', import.meta.url), 'utf8')
+  assert.match(pricing, /\/models\/refresh-all\?stream=1/)
+  assert.match(pricing, /readModelRefreshSSE/)
+  assert.doesNotMatch(pricing, /api\.refreshAllClaudeModels\(\)/)
+  assert.match(pricing, /catalogRefreshChannelFailed/)
+  assert.match(types, /RefreshAllModelsResponse/)
+})
+
 test('Claude settings expose client platform and version policy controls', () => {
   assert.match(settings, /clientPlatform|client_platform/)
   assert.match(settings, /versionPolicy|version_policy/)
@@ -92,6 +101,7 @@ test('Claude account editor exposes per-account client policy overrides', () => 
   assert.match(claude, /claude_client_version|clientVersion/)
   assert.match(claude, /跟随全局|follow.*global/i)
 })
+
 test('Claude model whitelist stays provider-scoped and uses optimistic detail validation', () => {
   assert.match(claude, /CLAUDE_MODEL_ID_RE = \/\^claude-/)
   assert.match(claude, /api\.syncAccountModelsUpstream\(account\.id\)/)
@@ -209,7 +219,8 @@ test('Claude settings card uses the shared Select and renders CLI version sync b
 test('Usage page surfaces Anthropic prompt-cache write tokens and costs', () => {
   assert.match(usage, /cache_write_5m_cost/)
   assert.match(usage, /cache_write_1h_price_per_mtoken/)
-  assert.match(usage, /cacheWriteBadge/)
+  assert.match(usage, /cacheCreateTooltip/)
+  assert.match(usage, /<DatabaseBackup\b/)
   assert.match(types, /cache_write_1h_tokens: number/)
   assert.equal(typeof zh.usage?.cacheWrite1hCost, 'string')
 })

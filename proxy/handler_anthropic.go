@@ -466,7 +466,8 @@ func (h *Handler) Messages(c *gin.Context) {
 	// 因此拿到的是与改动前逐字节一致的入站体。
 	claudeSecurityConfig := h.store.ClaudeSecurityConfig()
 	canonicalBody := rawBody
-	if h.nativeClaudeRouteForRequest(c, gjson.GetBytes(rawBody, "model").String()) {
+	nativeClaudeRoute := h.nativeClaudeRouteForRequest(c, gjson.GetBytes(rawBody, "model").String())
+	if nativeClaudeRoute {
 		normalized, canonicalErr := normalizeClaudeRequestBody(rawBody, claudeSecurityConfig)
 		if canonicalErr != nil {
 			rejectAnthropicMessagesRequest(c, http.StatusBadRequest, "invalid_request_error", canonicalErr.Error())
@@ -535,10 +536,19 @@ func (h *Handler) Messages(c *gin.Context) {
 	serviceTier := extractServiceTier(routingBody)
 	ruleIdentity := h.payloadRuleIdentity(c)
 	sessionIdentity := resolveRequestSessionIdentity(c.Request.Header, rawBody)
+	if nativeClaudeRoute {
+		sessionIdentity = resolveClaudeRequestSessionIdentity(c.Request.Header, rawBody)
+	}
 	var codexTranslation anthropicCodexTranslation
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	apiKeyID := requestAPIKeyID(c)
 	affinityKey := sessionAffinityKey(sessionIdentity.affinityID, apiKeyID)
+	// 与 ccbridge 的请求级身份一致性设计相同：在换号循环外确定一次，
+	// 但保留本项目的 API Key 隔离和无显式会话时的每请求隔离语义。
+	claudeSessionID := ""
+	if nativeClaudeRoute {
+		claudeSessionID = claudeUpstreamSessionID(resolveUpstreamSessionID(apiKeyID, sessionIdentity.upstreamSeed, sessionIdentity.explicitUpstreamID, false))
+	}
 
 	// 3. 带重试的上游请求
 	maxRetries := h.getMaxRetries()
@@ -671,18 +681,27 @@ func (h *Handler) Messages(c *gin.Context) {
 		// 身份按 attempt 附加实际选中账号维度：account_* 门随重试换号重新匹配（issue #410）。
 		attemptIdentity := ruleIdentity.WithSelectedAccount(account, h.store)
 		upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
+		if account.IsClaudeOAuth() {
+			if claudeSessionID == "" {
+				claudeSessionID = claudeUpstreamSessionID(upstreamSessionID)
+			}
+			upstreamCtx = WithClaudeSessionID(upstreamCtx, claudeSessionID)
+		}
 		lastUpstreamCancel = upstreamCancel
 		feishuWatch := newFeishuFirstTokenWatch(upstreamCtx, database.UsageLogInput{
 			Endpoint: "/v1/messages", Model: model, Stream: isStream, ViaWebsocket: useWebsocket,
 		}, feishuFirstTokenTimeoutForAttempt(start))
+		attemptFirstTokenTimeout := claudeFirstTokenTimeoutFor(h.store, account)
 		ttftGuard := newFirstTokenTimeoutGuardWithHooks(
-			currentFirstTokenTimeout(), upstreamCancel,
+			attemptFirstTokenTimeout, upstreamCancel,
 			func() { feishuWatch.MarkProgress() },
 			func() { feishuWatch.Stop() },
 		)
 		var resp *http.Response
 		var reqErr error
 		if account.IsClaudeOAuth() {
+			// 首字前保活：长推理期间让下游能区分"上游在思考"与"连接已死"。
+			activateClaudeStreamKeepalive(c.Request.Context(), h.store, account, isStream)
 			// Claude Code OAuth 账号本身说 Anthropic Messages API：不翻译成 Codex，
 			// 直接把原始入站 body 透传到 api.anthropic.com/v1/messages；返回的响应
 			// 已是原生 Anthropic SSE，打上原生路由标记复用既有透传链路。
@@ -761,7 +780,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			timedOut := ttftGuard.TimedOut()
 			ttftGuard.Stop()
 			if timedOut {
-				reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
+				reqErr = firstTokenTimeoutError(attemptFirstTokenTimeout)
 			}
 			kind := classifyTransportFailure(reqErr)
 			if wsHTTPFallback.ForceHTTP() && !useWebsocket {
@@ -1036,6 +1055,8 @@ func (h *Handler) Messages(c *gin.Context) {
 				applyAnthropicUsageSemantics(usage)
 			}
 			outcome = normalizeNativeFailureMessageForAccount(account, outcome)
+			outcome = claudeNativeFirstTokenOutcome(ttftGuard, firstTokenMs, outcome, attemptFirstTokenTimeout)
+			logClaudeFirstTokenLatency(account, attemptEffectiveModel, reasoningEffort, firstTokenMs, outcome, start)
 			// The native forwarder consumes the body before returning. Synchronize
 			// Anthropic's unified quota headers now, once per attempt, so Claude
 			// usage remains fresh without adding a write before first token.
@@ -1399,7 +1420,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		outcome = overlayContinuousRetryLocalFailure(outcome, readErr, writeErr)
 		terminalFailurePayload, _ = resolvePreContentRetryErrorCandidate(terminalFailurePayload, preContentErrorCandidate, contentStarted, wroteAnyBody, gotTerminal, readErr, c.Request.Context().Err(), writeErr)
 		if ttftGuard.TimedOut() && !ttftRecorded && !gotTerminal {
-			outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
+			outcome = firstTokenTimeoutOutcome(attemptFirstTokenTimeout)
 		}
 		ttftGuard.Stop()
 		if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {

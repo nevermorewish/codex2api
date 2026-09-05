@@ -2,6 +2,13 @@ export type ToastType = 'success' | 'error' | 'warning' | 'info'
 export type ISODateString = string
 export type UpstreamChannel = 'codex' | 'grok' | 'antigravity' | 'claude'
 
+// 管理台可见渠道设置（GET/PUT /settings/visible-channels）
+export interface VisibleChannelsSettings {
+  channels: UpstreamChannel[]
+  all: UpstreamChannel[]
+  fallback: UpstreamChannel
+}
+
 /** Claude Code OAuth：第一步返回授权 URL 与 state。 */
 export interface ClaudeAuthURLResponse {
   auth_url: string
@@ -1954,6 +1961,7 @@ export interface SystemSettings {
   codex_cli_version_sync_enabled: boolean
   codex_cli_version_sync_interval_hours: number
   codex_synced_cli_version?: string
+  codex_effective_cli_version?: string
   codex_user_agent_config: string
   usage_log_mode: 'full' | 'errors' | 'off' | string
   usage_log_batch_size: number
@@ -2869,11 +2877,30 @@ export interface ModelsResponse {
   warning?: string
 }
 
+export interface ChannelModelRefreshResult {
+  channel: 'codex' | 'claude' | 'grok' | 'antigravity' | string
+  groups?: number
+  refreshed: number
+  failed: number
+  added: string[]
+  error?: string
+}
+
+export interface RefreshAllModelsResponse {
+  type: 'complete'
+  message: string
+  channels: ChannelModelRefreshResult[]
+  added: string[]
+  model_count: number
+  duration_ms: number
+}
+
 export interface ModelSyncResponse {
   added: number
   updated: number
   unchanged: number
   skipped: string[]
+  removed?: string[]
   models: string[]
   items: ModelInfo[]
   last_synced_at: string
@@ -3686,6 +3713,8 @@ export interface ClaudeGlobalConfig {
   session_window_limit: number
   cli_version_sync_enabled: boolean
   cli_version_sync_interval_hours: number
+  first_token_timeout_seconds: number
+  stream_keepalive_enabled: boolean
   synced_cli_version?: string
   builtin_cli_version?: string
   effective_cli_version?: string
