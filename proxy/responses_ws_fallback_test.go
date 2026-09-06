@@ -1,0 +1,240 @@
+package proxy
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/codex2api/auth"
+	"github.com/codex2api/config"
+	"github.com/codex2api/database"
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
+)
+
+const wsFallbackOverload = `{"type":"response.failed","response":{"status":"failed","error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"primary overloaded"}}}`
+const wsFallbackSuccess = `{"type":"response.completed","response":{"id":"resp_fallback","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}`
+
+func TestNativeWSFallbackHandoff(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name                                                             string
+		wsRetries, maxRetries, relayCount                                int
+		failure                                                          string
+		wantPrimary, wantFallback                                        int
+		sticky, silentOff, fallbackOff, emptyPrimary, fallbackFails      bool
+		incompatible, emptyFallback, continuation, preflight, continuous bool
+	}{
+		{name: "default_budget", wsRetries: 2, maxRetries: 2, relayCount: 3, failure: "overload", wantPrimary: 3, wantFallback: 1},
+		{name: "relay_count_cannot_extend", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, wantFallback: 1},
+		{name: "ws_zero", wsRetries: 0, maxRetries: 3, relayCount: 10, failure: "overload", wantPrimary: 1, wantFallback: 1},
+		{name: "global_zero", wsRetries: 5, maxRetries: 0, relayCount: 10, failure: "overload", wantPrimary: 1, wantFallback: 1},
+		{name: "global_cap", wsRetries: 5, maxRetries: 1, relayCount: 10, failure: "overload", wantPrimary: 2, wantFallback: 1},
+		{name: "silent_off", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 1, wantFallback: 1, silentOff: true},
+		{name: "early_relay", wsRetries: 5, maxRetries: 5, relayCount: 1, failure: "overload", wantPrimary: 1, wantFallback: 1},
+		{name: "sticky_capacity", wsRetries: 2, maxRetries: 2, relayCount: 3, failure: "overload", wantPrimary: 3, wantFallback: 1, sticky: true},
+		{name: "eof", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "eof", wantPrimary: 3, wantFallback: 1},
+		{name: "transport", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "transport", wantPrimary: 3, wantFallback: 1},
+		{name: "http_500", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "http500", wantPrimary: 3, wantFallback: 1},
+		{name: "http_429", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "http429", wantPrimary: 3, wantFallback: 1},
+		{name: "fallback_503", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, wantFallback: 1, fallbackFails: true},
+		{name: "pool_disabled", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, fallbackOff: true},
+		{name: "empty_primary", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantFallback: 1, emptyPrimary: true},
+		{name: "invalid_request", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "invalid", wantPrimary: 1},
+		{name: "after_content", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "after_content", wantPrimary: 1},
+		{name: "incompatible_model", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, incompatible: true},
+		{name: "empty_fallback", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, emptyFallback: true},
+		{name: "provider_continuation", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, continuation: true, sticky: true},
+		{name: "preflight_metadata", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, wantFallback: 1, preflight: true},
+		{name: "continuous_primary_cap", wsRetries: 2, maxRetries: 0, relayCount: 10, failure: "overload", wantPrimary: 1, wantFallback: 1, continuous: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previous := CurrentRuntimeSettings()
+			previousExec := WebsocketExecuteFunc
+			t.Cleanup(func() { ApplyRuntimeSettings(previous); WebsocketExecuteFunc = previousExec })
+			settings := previous
+			settings.CodexWSSilentRetry = !tc.silentOff
+			settings.CodexWSSilentRetries = tc.wsRetries
+			settings.CodexWSHideErrors = false
+			settings.CodexPreflightSSEPassthrough = tc.preflight
+			settings.CodexOverloadPauseEnabled = false
+			settings.ContinuousRetryPolicy = database.ContinuousRetryPolicy{}
+			if tc.continuous {
+				settings.ContinuousRetryPolicy = database.ContinuousRetryPolicy{Enabled: true, CatchAll: true}
+			}
+			ApplyRuntimeSettings(settings)
+			var mu sync.Mutex
+			var primaryIDs []int64
+			fallbackCalls := 0
+			var fallbackBody []byte
+			var fallbackAuth, fallbackPath string
+			WebsocketExecuteFunc = func(ctx context.Context, a *auth.Account, body []byte, sessionID, proxyURL, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, poolRouteKey string) (*http.Response, error) {
+				mu.Lock()
+				primaryIDs = append(primaryIDs, a.ID())
+				mu.Unlock()
+				if a.IsExternalFallback() {
+					return nil, errors.New("fallback credential entered Codex WS executor")
+				}
+				if tc.failure == "transport" {
+					return nil, errors.New("connection reset by peer")
+				}
+				status := http.StatusOK
+				sse := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"primary\"}}\n\n"
+				if tc.preflight {
+					sse += "data: {\"type\":\"codex.rate_limits\",\"marker\":\"failed-preflight\"}\n\n"
+				}
+				switch tc.failure {
+				case "eof":
+				case "invalid":
+					status = 400
+					sse = `{"error":{"code":"invalid_request","message":"invalid input"}}`
+				case "http500":
+					status = 500
+					sse = `{"error":{"code":"server_error","message":"primary failed"}}`
+				case "http429":
+					status = 429
+					sse = `{"error":{"code":"rate_limit_exceeded","message":"limited"}}`
+				default:
+					if tc.failure == "after_content" {
+						sse += "data: {\"type\":\"response.output_text.delta\",\"delta\":\"already-visible\"}\n\n"
+					}
+					sse += "data: " + wsFallbackOverload + "\n\n"
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(sse))}, nil
+			}
+			fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				fallbackCalls++
+				fallbackBody = body
+				fallbackAuth = r.Header.Get("Authorization")
+				fallbackPath = r.URL.Path
+				mu.Unlock()
+				if tc.fallbackFails {
+					w.WriteHeader(503)
+					_, _ = io.WriteString(w, `{"error":{"code":"server_error","message":"fallback unavailable"}}`)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fallback-recovered\"}\n\ndata: "+wsFallbackSuccess+"\n\n")
+			}))
+			defer fallback.Close()
+			store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2})
+			defer store.Stop()
+			store.SetMaxRetries(tc.maxRetries)
+			store.SetTransportRetryPolicy("rotate")
+			if tc.sticky {
+				store.SetTransportRetryPolicy("sticky")
+			}
+			var accounts []*auth.Account
+			if !tc.emptyPrimary {
+				for i := 1; i <= 8; i++ {
+					a := &auth.Account{DBID: int64(i), AccessToken: fmt.Sprintf("at-%d", i), AccountID: fmt.Sprintf("acct-%d", i), PlanType: "pro"}
+					store.AddAccount(a)
+					accounts = append(accounts, a)
+				}
+				store.BindSessionAffinity("native-ws-fallback", accounts[0], "")
+			}
+			pool := auth.NewFallbackPool(store)
+			pool.Replace([]auth.FallbackAccountConfig{{ID: 9, Name: "ws-backup", BaseURL: fallback.URL, APIKey: "sk-backup-only", Model: "fallback-model", Enabled: true}})
+			if tc.incompatible {
+				pool.Replace([]auth.FallbackAccountConfig{{ID: 9, Name: "ws-backup", BaseURL: fallback.URL, APIKey: "sk-backup-only", Models: []string{"unrelated-model"}, Enabled: true}})
+			}
+			if tc.emptyFallback {
+				pool.Replace(nil)
+			}
+			pool.SetPolicy(auth.FallbackPolicy{Enabled: !tc.fallbackOff, RelayCount: tc.relayCount})
+			h := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
+			h.SetFallbackPool(pool)
+			router := gin.New()
+			h.RegisterRoutes(router)
+			server := httptest.NewServer(router)
+			defer server.Close()
+			conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			request := `{"type":"response.create","model":"gpt-5.4","input":"hello","prompt_cache_key":"native-ws-fallback"}`
+			if tc.continuation {
+				request = `{"type":"response.create","model":"gpt-5.4","input":"continue","prompt_cache_key":"native-ws-fallback","previous_response_id":"resp_remote_only","client_metadata":{"x-codex-turn-state":"pinned-turn"}}`
+			}
+			if err = conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(4 * time.Second))
+			var output strings.Builder
+			var terminal string
+			for i := 0; i < 12; i++ {
+				_, frame, readErr := conn.ReadMessage()
+				if readErr != nil {
+					t.Fatalf("read WS: %v; output=%s", readErr, output.String())
+				}
+				output.Write(frame)
+				kind := gjson.GetBytes(frame, "type").String()
+				if kind == "response.completed" || kind == "error" || kind == "response.failed" {
+					terminal = kind
+					break
+				}
+			}
+			// The terminal frame can arrive just before the server releases leases.
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				occupied := int64(0)
+				for _, a := range append(accounts, pool.Accounts()...) {
+					occupied += a.GetOccupiedRequests()
+				}
+				if occupied == 0 {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(primaryIDs) != tc.wantPrimary || fallbackCalls != tc.wantFallback {
+				t.Fatalf("primary=%v fallback=%d want=%d/%d output=%s", primaryIDs, fallbackCalls, tc.wantPrimary, tc.wantFallback, output.String())
+			}
+			if tc.sticky {
+				for _, id := range primaryIDs {
+					if id != primaryIDs[0] {
+						t.Fatalf("sticky rotated: %v", primaryIDs)
+					}
+				}
+			} else {
+				seen := map[int64]bool{}
+				for _, id := range primaryIDs {
+					if seen[id] {
+						t.Fatalf("rotate reused primary: %v", primaryIDs)
+					}
+					seen[id] = true
+				}
+			}
+			if tc.wantFallback > 0 && !tc.fallbackFails {
+				if terminal != "response.completed" || !strings.Contains(output.String(), "fallback-recovered") || strings.Contains(output.String(), "primary overloaded") || strings.Contains(output.String(), "failed-preflight") {
+					t.Fatalf("bad WS fallback output: %s", output.String())
+				}
+				if fallbackAuth != "Bearer sk-backup-only" || fallbackPath != "/v1/responses" {
+					t.Fatalf("wrong fallback endpoint/auth: %s %s", fallbackPath, fallbackAuth)
+				}
+				if gjson.GetBytes(fallbackBody, "type").Exists() || !gjson.GetBytes(fallbackBody, "stream").Bool() || gjson.GetBytes(fallbackBody, "model").String() != "fallback-model" {
+					t.Fatalf("invalid HTTP fallback request: %s", fallbackBody)
+				}
+			} else if terminal == "response.completed" {
+				t.Fatalf("failure reported as success: %s", output.String())
+			}
+			for _, a := range append(accounts, pool.Accounts()...) {
+				if a.GetActiveRequests() != 0 || a.GetOccupiedRequests() != 0 {
+					t.Fatalf("lease leaked account=%d", a.ID())
+				}
+			}
+		})
+	}
+}

@@ -103,9 +103,10 @@ type responsesWSCloseError struct {
 }
 
 type responsesWSForwardOptions struct {
-	auditEndpoint        string
-	transformClientEvent func([]byte) []byte
-	onResponseCompleted  func([]byte)
+	auditEndpoint              string
+	transformClientEvent       func([]byte) []byte
+	onResponseCompleted        func([]byte)
+	deferPreContentForFallback bool
 }
 
 // responsesWSInboundMessage is produced by the connection's only reader. A
@@ -324,6 +325,10 @@ func stripNewAPIPolicyWebSocketEventID(payload []byte) ([]byte, string) {
 }
 
 func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.Conn, rawPayload []byte, policyEventID string, options *responsesWSForwardOptions) (returnErr error) {
+	// A Gin context lives for the whole downstream WS connection, not one turn.
+	c.Set(contextFallbackAccountName, "")
+	c.Set(contextSourceAccountID, int64(0))
+	c.Set(contextSourceAccountName, "")
 	if apiErr := h.refreshNewAPIWebSocketBinding(c, time.Now()); apiErr != nil {
 		_ = writeResponsesWSError(conn, apiErr)
 		return newResponsesWSCloseError(websocket.ClosePolicyViolation, apiErr.Message, apiErr)
@@ -468,8 +473,14 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		defer releaseAPIKeyConcurrency()
 	}
 
-	accountFilter := accountFilterForModel(effectiveModel)
+	responsesModelFilter := accountFilterForResponsesModelCandidates([]string{logModel, effectiveModel}, effectiveModel, true)
+	accountFilter := auth.AccountFilter(func(account *auth.Account) bool {
+		// Native WS still schedules Codex primary accounts only. The separately
+		// owned fallback pool uses the same mapped-model admission as HTTP.
+		return account != nil && (!account.IsRelayStyle() || account.IsExternalFallback()) && responsesModelFilter(account)
+	})
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
@@ -567,12 +578,38 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
+	capacityShedRetries := map[int64]int{}
+	fallbackState := &fallbackRouteState{}
+	// A provider-owned continuation/compaction cannot be moved to another
+	// provider just by deleting its ID. Only self-contained turns use fallback.
+	if !compactionAffinity.Known && !preserveContinuationBinding() {
+		fallbackState = h.newFallbackRouteState(accountFilter, len(rawBody))
+		if fallbackState.configured() {
+			// Both limits cap primary attempts; relay_count may switch earlier.
+			// Reserve a transition even when WS same-pool retries are disabled.
+			if primaryLimit := h.getMaxRetries(); primaryLimit >= 0 && (maxRetries < 0 || primaryLimit < maxRetries) {
+				maxRetries = primaryLimit
+			}
+			maxRateLimitRetries = maxRetries
+			maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
+			retryEnabled = true
+			// Preflight metadata must not commit a failed primary attempt before
+			// the fallback decision. Preserve any caller-supplied transforms.
+			forwardOptions := responsesWSForwardOptions{}
+			if options != nil {
+				forwardOptions = *options
+			}
+			forwardOptions.deferPreContentForFallback = true
+			options = &forwardOptions
+		}
+	}
 	for attempt := 0; ; attempt++ {
 		if c.Request.Context().Err() != nil {
 			return errResponsesWSClientGone
 		}
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
+			fallbackState.activateAfterRetryBudget(generalRetries, rateLimitRetries)
 			affinityGuard = auth.SessionAffinityGuard{}
 			if !continuationPinned && hasPreviousResponse && !continuationDegraded {
 				// 绑定账号已被本次请求硬排除（上一轮 429/5xx 等）时不必再等它 30s：
@@ -590,11 +627,18 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			}
 			if account != nil {
 				stickyProxyURL = account.GetProxyURL()
+			} else if fallbackState.usingFallback() {
+				account = fallbackState.account(retryExclusions.ForSelection())
 			} else if continuationPinned {
 				account, stickyProxyURL = h.nextRetryAccountForContinuationWithDispatch(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+			} else if fallbackState.configured() {
+				account, stickyProxyURL, affinityGuard = h.nextFallbackAwareAccountWithGuard(c.Request.Context(), fallbackState, affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 			} else {
 				account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 			}
+		}
+		if account == nil && fallbackState.activateAfterPrimaryExhausted() {
+			account = fallbackState.account(retryExclusions.ForSelection())
 		}
 		if account == nil {
 			if c.Request.Context().Err() != nil {
@@ -620,6 +664,10 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			_ = writeResponsesWSError(conn, apiErr)
 			return newResponsesWSCloseError(websocket.CloseTryAgainLater, apiErr.Message, apiErr)
 		}
+		fallbackState.noteSelected(account)
+		h.annotateFallbackRequest(c, fallbackState, account)
+		attemptEffectiveModel := effectiveModel
+		attemptLogEffectiveModel := logEffectiveModel
 		if attempt > 0 {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 		}
@@ -661,7 +709,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			func() { feishuWatch.MarkProgress() },
 			func() { feishuWatch.Stop() },
 		)
-		useWebsocket := !wsHTTPFallback.ForceHTTP()
+		useWebsocket := !wsHTTPFallback.ForceHTTP() && !account.IsExternalFallback()
 		// 生图请求改走 HTTP 上游（客户端仍是 WS）：WebSocket 上游传输大体积
 		// 图片数据会卡死（issue #220）；自然语言生图意图也需保留图片工具（issue #288）。
 		if useWebsocket && rawResponsesBodyShouldForceHTTPForImageGeneration(rawBody) {
@@ -692,13 +740,27 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				log.Printf("Responses WebSocket HTTP 降级：previous_response_id=%s 本地缓存未命中，上游侧会话历史将不可用 (account=%d)", prevID, account.ID())
 			}
 		}
+		if account.IsExternalFallback() {
+			upstreamBody = prepareResponsesWSFallbackBody(rawBody)
+			if mappedBody, mappedModel, applied := h.applyAccountModelMappingToBodyForModels(upstreamBody, account, logModel, effectiveModel); applied {
+				upstreamBody = mappedBody
+				attemptEffectiveModel = mappedModel
+				attemptLogEffectiveModel = usageEffectiveModelForMapping(logModel, mappedModel, true)
+			}
+			attemptExpandedInputRaw = responsesInputRaw(upstreamBody)
+		}
 		// service_tier 记账按 payload 规则改写后的值归因（覆写 service_tier 的规则才生效）。
-		serviceTier = EffectiveRequestedServiceTier(upstreamBody, effectiveModel, downstreamHeaders, attemptIdentity)
+		serviceTier = EffectiveRequestedServiceTier(upstreamBody, attemptEffectiveModel, downstreamHeaders, attemptIdentity)
 		// 在 useWebsocket 最终确定后再派生上游身份键：与 handler.go 的
 		// Responses/ChatCompletions 路径一致——无显式会话默认每请求隔离上游身份，
 		// WS 路径交给 ExecuteRequest 的 stateless 槽位池处理。
 		upstreamSessionID := resolveUpstreamSessionID(apiKeyID, sessionIdentity.upstreamSeed, sessionIdentity.explicitUpstreamID, useWebsocket)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
+			if account.IsExternalFallback() {
+				// The downstream stays WS. The fallback provider receives its own
+				// Responses API key over HTTP/SSE, never the ChatGPT WS executor.
+				return ExecuteOpenAIResponsesRequest(upstreamCtx, account, upstreamBody, proxyURL, downstreamHeaders)
+			}
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		})
 		durationMs := int(time.Since(start).Milliseconds())
@@ -741,7 +803,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			// 传输层连接失败此前不落库，接力链只能看到最后一次 HTTP 状态码错误，
 			// 中间真实发生的换号尝试全部丢失。这里无条件记一跳。
 			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
-				AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: logEffectiveModel,
+				AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
 				StatusCode: logStatusUpstreamStreamBreak, DurationMs: durationMs, ReasoningEffort: reasoningEffort,
 				InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: kind,
@@ -860,14 +922,14 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				Transport: upstreamPromptPolicyTransport(true, useWebsocket), StatusCode: resp.StatusCode,
 				AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
-			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, effectiveModel)
+			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
 			shouldRetry := retryEnabled && shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:              account.ID(),
 				Endpoint:               "/v1/responses",
 				Model:                  logModel,
-				EffectiveModel:         logEffectiveModel,
+				EffectiveModel:         attemptLogEffectiveModel,
 				StatusCode:             resp.StatusCode,
 				DurationMs:             durationMs,
 				ReasoningEffort:        reasoningEffort,
@@ -920,7 +982,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		}
 		preserveAffinity := preserveContinuationBinding()
 		allowContinuationDegrade := canDegradeContinuation()
-		if err := h.streamResponsesWSUpstream(c, conn, resp, account, proxyURL, affinityKey, affinityGuard, preserveAffinity, allowContinuationDegrade, logModel, effectiveModel, logEffectiveModel, reasoningEffort, serviceTier, respCacheOwner, attemptExpandedInputRaw, start, ttftGuard, retryEnabled, hideUpstreamErrors, useWebsocket, fallbackLog, attempt+1, options, continuousRetryPolicy); err != nil {
+		if err := h.streamResponsesWSUpstream(c, conn, resp, account, proxyURL, affinityKey, affinityGuard, preserveAffinity, allowContinuationDegrade, logModel, attemptEffectiveModel, attemptLogEffectiveModel, reasoningEffort, serviceTier, respCacheOwner, attemptExpandedInputRaw, start, ttftGuard, retryEnabled, hideUpstreamErrors, useWebsocket, fallbackLog, attempt+1, options, continuousRetryPolicy); err != nil {
 			if continuousRetryDeadlineExceeded(c.Request.Context()) {
 				return errResponsesWSClientGone
 			}
@@ -946,16 +1008,22 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 					rememberContinuousRetryStreamFailure(c.Request.Context(), retryErr.outcome, retryErr.outcome.failurePayload)
 					if isFirstTokenTimeoutOutcome(retryErr.outcome) {
 						retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
-					} else {
+					} else if !retryErr.outcome.capacityShed {
 						retryExclusions.MarkStreamFailureForEvent(account.ID(), retryErr.outcome, eventType, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
 					}
+					if !preserveAffinity {
+						h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, proxyURL, affinityGuard, retryErr.outcome, capacityShedRetries, continuousRetryPolicy)
+					}
 					retryOrdinal, retryLimit := retryStateForStreamEvent(retryErr.outcome, eventType, generalRetries, rateLimitRetries, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
-					log.Printf("Responses WebSocket upstream stream ended before first token, retrying (attempt %s, account %d): %s", retryAttemptProgress(retryOrdinal-1, retryLimit), account.ID(), retryErr.outcome.failureMessage)
+					log.Printf("Responses WebSocket 首内容前上游失败，重试 (attempt %s, account %d, reason=%s): %s", retryAttemptProgress(retryOrdinal-1, retryLimit), account.ID(), preContentRetryReason(retryErr.outcome), retryErr.outcome.failureMessage)
 					// 有限首字超时已白等一轮；无限预算仍强制退避，避免无等待循环。
 					if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), isFirstTokenTimeoutOutcome(retryErr.outcome), retryOrdinal, retryLimit, resp) {
 						return errResponsesWSClientGone
 					}
 					continue
+				}
+				if !preserveAffinity {
+					h.store.UnbindSessionAffinity(affinityKey, account.ID())
 				}
 				apiErr = api.NewAPIError(api.ErrCodeUpstreamError, retryErr.outcome.failureMessage, api.ErrorTypeUpstream)
 				clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
@@ -1066,6 +1134,9 @@ func (h *Handler) streamResponsesWSUpstream(
 	preflightSettings := CurrentRuntimeSettings()
 	preflightSettings.ContinuousRetryPolicy = continuousRetryPolicy
 	preflightPassthrough := continuousRetryPreflightPassthrough(preflightSettings)
+	if options != nil && options.deferPreContentForFallback {
+		preflightPassthrough = false
+	}
 	gotTerminal := false
 	deltaCharCount := 0
 	var readErr error
@@ -1372,7 +1443,8 @@ func (h *Handler) streamResponsesWSUpstream(
 			h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
 		}
 		h.store.Release(account)
-		if !preserveAffinity {
+		recycleStreamClientIfBroken(account, proxyURL, outcome)
+		if !preserveAffinity && !outcome.capacityShed {
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 		}
 		return &responsesWSRetryableStreamError{outcome: outcome, eventType: terminalFailureEventType}
@@ -1476,7 +1548,7 @@ func (h *Handler) streamResponsesWSUpstream(
 
 	resp.Body.Close()
 	if outcome.penalize {
-		recyclePooledClient(account, proxyURL)
+		recycleStreamClientIfBroken(account, proxyURL, outcome)
 		h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
 		if !preserveAffinity {
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"log"
 	"strings"
 
 	"github.com/codex2api/auth"
@@ -18,6 +19,12 @@ type fallbackRouteState struct {
 	active          bool
 	required        bool
 	sourceAccount   *auth.Account
+	// Keep the operator's primary budgets separate from the extra transition
+	// attempt. RelayCount may switch earlier, but must never extend these limits.
+	retryHandoffEnabled        bool
+	primaryMaxRetries          int
+	primaryMaxRateLimitRetries int
+	accountMaxRateLimitRetries int
 }
 
 func (h *Handler) newFallbackRouteState(filter auth.AccountFilter, requestBodySize ...int) *fallbackRouteState {
@@ -48,7 +55,7 @@ func (s *fallbackRouteState) noteSelected(account *auth.Account) {
 	}
 	s.primaryAttempts++
 	s.sourceAccount = account
-	if s.policy.Enabled && s.primaryAttempts >= s.policy.RelayCount {
+	if s.configured() && s.primaryAttempts >= s.policy.RelayCount {
 		s.active = true
 	}
 }
@@ -64,6 +71,7 @@ func (h *Handler) annotateFallbackRequest(c *gin.Context, state *fallbackRouteSt
 	fallbackName := strings.TrimSpace(account.Name)
 	account.Mu().RUnlock()
 	c.Set(contextFallbackAccountName, fallbackName)
+	log.Printf("使用兜底号池账号 (account=%d, primary_attempts=%d)", account.ID(), state.primaryAttempts)
 	if state.sourceAccount != nil {
 		source := state.sourceAccount
 		source.Mu().RLock()
@@ -94,23 +102,51 @@ func (s *fallbackRouteState) configured() bool {
 }
 
 func (s *fallbackRouteState) retryBudgets(maxRetries, maxRateLimitRetries int) (int, int) {
-	if s == nil || !s.configured() || s.policy.RelayCount < 1 {
+	if s == nil || !s.configured() {
 		return maxRetries, maxRateLimitRetries
 	}
-	if maxRetries >= 0 && maxRetries < s.policy.RelayCount {
-		maxRetries = s.policy.RelayCount
-	}
-	if maxRateLimitRetries >= 0 && maxRateLimitRetries < s.policy.RelayCount {
-		maxRateLimitRetries = s.policy.RelayCount
-	}
-	return maxRetries, maxRateLimitRetries
+	s.retryHandoffEnabled = true
+	s.primaryMaxRetries = maxRetries
+	s.primaryMaxRateLimitRetries = maxRateLimitRetries
+	s.accountMaxRateLimitRetries = maxRateLimitRetries
+	return reserveFallbackTransition(maxRetries), reserveFallbackTransition(maxRateLimitRetries)
 }
 
 func (s *fallbackRouteState) retryBudgetForAccount(maxRateLimitRetries int) int {
-	if s == nil || !s.configured() || maxRateLimitRetries < 0 || maxRateLimitRetries >= s.policy.RelayCount {
+	if s == nil || !s.retryHandoffEnabled {
 		return maxRateLimitRetries
 	}
-	return s.policy.RelayCount
+	s.accountMaxRateLimitRetries = maxRateLimitRetries
+	return reserveFallbackTransition(maxRateLimitRetries)
+}
+
+func (s *fallbackRouteState) primaryRateLimitBudget(defaultLimit int) int {
+	if s != nil && s.retryHandoffEnabled {
+		return s.primaryMaxRateLimitRetries
+	}
+	return defaultLimit
+}
+
+func reserveFallbackTransition(limit int) int {
+	if limit < 0 {
+		return limit
+	}
+	return limit + 1
+}
+
+// Called only when a retryable, uncommitted attempt has elected to continue.
+// N retries means the initial attempt plus N retries; the next attempt belongs
+// to the fallback pool, even if healthy primary accounts are still available.
+func (s *fallbackRouteState) activateAfterRetryBudget(generalRetries, rateLimitRetries int) {
+	if s == nil || !s.retryHandoffEnabled || s.active {
+		return
+	}
+	if (s.primaryMaxRetries >= 0 && (generalRetries > s.primaryMaxRetries || s.primaryAttempts > s.primaryMaxRetries)) ||
+		(s.accountMaxRateLimitRetries >= 0 && rateLimitRetries > s.accountMaxRateLimitRetries) {
+		s.active = true
+		log.Printf("主账号池重试预算耗尽，切入兜底号池 (primary_attempts=%d, general_retries=%d, max_retries=%d, rate_limit_retries=%d, max_rate_limit_retries=%d)",
+			s.primaryAttempts, generalRetries, s.primaryMaxRetries, rateLimitRetries, s.accountMaxRateLimitRetries)
+	}
 }
 
 func (s *fallbackRouteState) queueThresholdReached(store *auth.Store) bool {

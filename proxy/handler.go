@@ -3929,6 +3929,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	}
 	for attempt := 0; ; attempt++ {
+		fallbackState.activateAfterRetryBudget(generalRetries, rateLimitRetries)
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
@@ -4011,7 +4012,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			emitResponsesPhaseTimings(c, logModel, len(rawBody), handlerStart, bodyReadDone, validateDone, prepareDone)
 		}
 		h.AcquireAPIKeyScopeConcurrency(c, account)
-		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries))
+		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, fallbackState.primaryRateLimitBudget(maxRateLimitRetries)))
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		if !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
@@ -4359,7 +4360,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
 					h.store.Release(account)
 					h.store.UnbindSessionAffinity(affinityKey, account.ID())
-					retryExclusions.MarkStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+					retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 					retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 					if !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
 						return
@@ -4674,8 +4675,8 @@ func (h *Handler) Responses(c *gin.Context) {
 					AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 					ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 				}, promptPolicyIncidentID)
-				log.Printf("OpenAI Responses 上游流在首包前断开，重置连接并重试 (attempt %s, account %d): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
-				recyclePooledClient(account, proxyURL)
+				log.Printf("OpenAI Responses 首内容前上游失败，重试 (attempt %s, account %d, reason=%s, recycle_client=%t): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), preContentRetryReason(outcome), shouldRecycleStreamClient(outcome), outcome.failureMessage)
+				recycleStreamClientIfBroken(account, proxyURL, outcome)
 				if isFirstTokenTimeoutOutcome(outcome) {
 					retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 				} else {
@@ -4684,9 +4685,8 @@ func (h *Handler) Responses(c *gin.Context) {
 				resp.Body.Close()
 				h.store.Release(account)
 				h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, proxyURL, affinityGuard, outcome, capacityShedRetries, continuousRetryPolicy)
-				if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed &&
-					retryLimitForStreamOutcome(outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy) == -1 {
-					retryExclusions.MarkStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+				if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
+					retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				}
 				// 有限首字超时已白等一轮；无限预算仍强制退避，避免无等待循环。
 				retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
@@ -4821,7 +4821,7 @@ func (h *Handler) Responses(c *gin.Context) {
 
 			resp.Body.Close()
 			if outcome.penalize {
-				recyclePooledClient(account, proxyURL)
+				recycleStreamClientIfBroken(account, proxyURL, outcome)
 				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			} else if outcome.logStatusCode == http.StatusOK {
@@ -5577,8 +5577,8 @@ func (h *Handler) Responses(c *gin.Context) {
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 			}, promptPolicyIncidentID)
-			log.Printf("上游流在首包前断开，重置连接并重试 (attempt %s, account %d, /v1/responses): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
-			recyclePooledClient(account, proxyURL)
+			log.Printf("首内容前上游失败，重试 (attempt %s, account %d, /v1/responses, reason=%s, recycle_client=%t): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), preContentRetryReason(outcome), shouldRecycleStreamClient(outcome), outcome.failureMessage)
+			recycleStreamClientIfBroken(account, proxyURL, outcome)
 			if isFirstTokenTimeoutOutcome(outcome) {
 				retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 			} else {
@@ -5587,9 +5587,8 @@ func (h *Handler) Responses(c *gin.Context) {
 			resp.Body.Close()
 			h.store.Release(account)
 			h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, proxyURL, affinityGuard, outcome, capacityShedRetries, continuousRetryPolicy)
-			if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed &&
-				retryLimitForStreamOutcome(outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy) == -1 {
-				retryExclusions.MarkStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
+				retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 			}
 			// 有限首字超时已白等一轮；无限预算仍强制退避，避免无等待循环。
 			retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
@@ -5754,7 +5753,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			resp.Body.Close()
 		}
 		if outcome.penalize {
-			recyclePooledClient(account, proxyURL)
+			recycleStreamClientIfBroken(account, proxyURL, outcome)
 			h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 		} else if outcome.logStatusCode == http.StatusOK {
@@ -6764,6 +6763,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	fallbackState := h.newFallbackRouteState(accountFilter, len(rawBody))
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	for attempt := 0; ; attempt++ {
+		fallbackState.activateAfterRetryBudget(generalRetries, rateLimitRetries)
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
@@ -6810,7 +6810,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 
 		h.AcquireAPIKeyScopeConcurrency(c, account)
-		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries))
+		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, fallbackState.primaryRateLimitBudget(maxRateLimitRetries)))
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		if !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
@@ -7133,7 +7133,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
 				h.store.Release(account)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
-				retryExclusions.MarkStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+				retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				if !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
 					return
@@ -7573,8 +7573,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 			}, promptPolicyIncidentID)
-			log.Printf("上游流在首包前断开，重置连接并重试 (attempt %s, account %d, /v1/chat/completions): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
-			recyclePooledClient(account, proxyURL)
+			log.Printf("首内容前上游失败，重试 (attempt %s, account %d, /v1/chat/completions, reason=%s, recycle_client=%t): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), preContentRetryReason(outcome), shouldRecycleStreamClient(outcome), outcome.failureMessage)
+			recycleStreamClientIfBroken(account, proxyURL, outcome)
 			if isFirstTokenTimeoutOutcome(outcome) {
 				retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 			} else {
@@ -7583,9 +7583,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			resp.Body.Close()
 			h.store.Release(account)
 			h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, proxyURL, affinityGuard, outcome, capacityShedRetries, continuousRetryPolicy)
-			if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed &&
-				retryLimitForStreamOutcome(outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy) == -1 {
-				retryExclusions.MarkStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
+				retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 			}
 			// 有限首字超时已白等一轮；无限预算仍强制退避，避免无等待循环。
 			retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
@@ -7709,7 +7708,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 
 		resp.Body.Close()
 		if outcome.penalize {
-			recyclePooledClient(account, proxyURL)
+			recycleStreamClientIfBroken(account, proxyURL, outcome)
 			h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 		} else if outcome.logStatusCode == http.StatusOK {

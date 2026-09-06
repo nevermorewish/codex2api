@@ -576,6 +576,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	fallbackState := h.newFallbackRouteState(accountFilter, len(rawBody))
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	for attempt := 0; ; attempt++ {
+		fallbackState.activateAfterRetryBudget(generalRetries, rateLimitRetries)
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
@@ -629,7 +630,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		}
 
 		h.AcquireAPIKeyScopeConcurrency(c, account)
-		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries))
+		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, fallbackState.primaryRateLimitBudget(maxRateLimitRetries)))
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		if !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
@@ -1117,7 +1118,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
 				h.store.Release(account)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
-				retryExclusions.MarkStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+				retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				if !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
 					return
@@ -1525,9 +1526,9 @@ func (h *Handler) Messages(c *gin.Context) {
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 			}, promptPolicyIncidentID)
-			log.Printf("上游流在首包前断开，重试 (attempt %s, account %d, /v1/messages): %s",
-				retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
-			recyclePooledClient(account, proxyURL)
+			log.Printf("首内容前上游失败，重试 (attempt %s, account %d, /v1/messages, reason=%s, recycle_client=%t): %s",
+				retryAttemptProgress(attempt, maxRetries), account.ID(), preContentRetryReason(outcome), shouldRecycleStreamClient(outcome), outcome.failureMessage)
+			recycleStreamClientIfBroken(account, proxyURL, outcome)
 			syncAnthropicUsageStateForAccount(h.store, account, resp)
 			if isFirstTokenTimeoutOutcome(outcome) {
 				retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
@@ -1537,9 +1538,8 @@ func (h *Handler) Messages(c *gin.Context) {
 			resp.Body.Close()
 			h.store.Release(account)
 			h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, proxyURL, affinityGuard, outcome, capacityShedRetries, continuousRetryPolicy)
-			if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed &&
-				retryLimitForStreamOutcome(outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy) == -1 {
-				retryExclusions.MarkStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
+			if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
+				retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 			}
 			retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 			if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), isFirstTokenTimeoutOutcome(outcome), retryOrdinal, retryLimit, resp) {
@@ -1653,7 +1653,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		resp.Body.Close()
 		syncAnthropicUsageStateForAccount(h.store, account, resp)
 		if outcome.penalize {
-			recyclePooledClient(account, proxyURL)
+			recycleStreamClientIfBroken(account, proxyURL, outcome)
 			h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 		} else if outcome.logStatusCode == http.StatusOK {
