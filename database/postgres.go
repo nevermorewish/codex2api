@@ -1765,6 +1765,7 @@ const (
 	UpstreamChannelGrok        = "grok"
 	UpstreamChannelAntigravity = "antigravity"
 	UpstreamChannelClaude      = "claude"
+	UpstreamChannelFallback    = "fallback"
 )
 
 // ResolveUpstreamChannel 归一 Key 的上游渠道限定；未知值一律视为不限（auto）。
@@ -2241,6 +2242,7 @@ func NormalizeModelsListReadMaxBytes(value int64) int64 {
 
 // SystemSettings 运行时设置项
 type SystemSettings struct {
+	FeishuConfig                       string
 	SiteName                           string
 	SiteLogo                           string
 	BackgroundConfig                   string // JSON: {"image":"...","opacity":18,"blur":0}
@@ -4093,6 +4095,7 @@ type UsageLog struct {
 	ImageSize              string    `json:"image_size"`
 	AccountName            string    `json:"account_name"`
 	AccountEmail           string    `json:"account_email"`
+	FallbackAccountName    string    `json:"fallback_account_name"`
 	CreatedAt              time.Time `json:"created_at"`
 	AccountBilled          float64   `json:"account_billed"`
 	UserBilled             float64   `json:"user_billed"`
@@ -4265,11 +4268,14 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 
 // UsageLogInput 日志写入参数
 type UsageLogInput struct {
-	RequestID         string
-	UpstreamRequestID string
-	UpstreamProxyID   int64
-	UpstreamProxyName string
-	AccountID         int64
+	RequestID           string
+	UpstreamRequestID   string
+	UpstreamProxyID     int64
+	UpstreamProxyName   string
+	AccountID           int64
+	SourceAccountID     int64
+	SourceAccountName   string
+	FallbackAccountName string
 	// CredentialGeneration attributes internally-generated Grok traffic to the
 	// credential snapshot that issued it. Zero is legacy/unscoped traffic.
 	CredentialGeneration int64
@@ -6196,6 +6202,9 @@ func (db *DB) Stats() sql.DBStats {
 // AccountRequestCount 每个账号的请求统计
 type AccountRequestCount struct {
 	AccountID             int64
+	SourceAccountID       int64
+	SourceAccountName     string
+	FallbackAccountName   string
 	SuccessCount          int64
 	ErrorCount            int64
 	RetryErrorCount       int64

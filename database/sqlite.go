@@ -1112,6 +1112,12 @@ func (db *DB) getAccountEventTrendSQLite(ctx context.Context, start, end time.Ti
 	return result, nil
 }
 
+func (db *DB) loadFallbackUsageStatsRollup(ctx context.Context) (usageStatsRollup, error) {
+	var r usageStatsRollup
+	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(total_tokens),0), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(cached_tokens),0), COALESCE(SUM(CASE WHEN cached_tokens > 0 THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN first_token_ms > 0 THEN first_token_ms ELSE 0 END),0), COALESCE(SUM(CASE WHEN first_token_ms > 0 THEN 1 ELSE 0 END),0), COALESCE(SUM(account_billed),0), COALESCE(SUM(user_billed),0) FROM usage_logs WHERE status_code <> 499 AND TRIM(COALESCE(internal_reason,'')) = '' AND (channel = $1 OR account_id < 0)`, UpstreamChannelFallback).Scan(&r.TotalRequests, &r.TotalTokens, &r.PromptTokens, &r.CompletionTokens, &r.CachedTokens, &r.CacheHitRequests, &r.FirstTokenMsSum, &r.FirstTokenSamples, &r.TotalAccountBilled, &r.TotalUserBilled)
+	return r, err
+}
+
 // getUsageStatsSQLite SQLite 版使用统计（内存聚合，避免 PG 特有语法）。
 // rangeStart 为零值时回落到"今日"(本地 0 点起);rangeEnd 为零值表示至今。
 func (db *DB) getUsageStatsSQLite(ctx context.Context, rangeStart, rangeEnd time.Time, channel string, includeBreakdowns bool) (*UsageStats, error) {

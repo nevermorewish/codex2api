@@ -2294,7 +2294,7 @@ func (h *Handler) unbindOrRetainAffinityForCapacityShedWithGuard(exclusions *ret
 	// retry policy，忽略了 transport_retry_policy=rotate，导致默认配置下
 	// server_is_overloaded 会在同一账号上反复重试，relay chain 只能看到一条。
 	// sticky 策略保留原有的同账号退避行为。
-	rotateTransportRetry := h != nil && h.store != nil && !h.stickyRetryTransportEnabled()
+	rotateTransportRetry := h != nil && h.store != nil && h.store.GetTransportRetryPolicy() != transportRetryPolicySticky
 	if !rotateTransportRetry && !policy.CatchesAllUpstreamFailures() && capacityShedRetainsAffinity(outcome, retries[id]) {
 		// Buffered attempts defer affinity until replay resolves. Bind here only
 		// for real upstream capacity retries to preserve same-account backoff.
