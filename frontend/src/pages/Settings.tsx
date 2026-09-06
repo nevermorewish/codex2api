@@ -5168,65 +5168,6 @@ export default function Settings() {
                 </div>
               </SettingsCard>
 
-              <SettingsCard title="飞书机器人通知" description="配置飞书应用后，可按错误码和首 token 延迟发送告警。" icon={<ShieldAlert className="size-4" />} channels={ALL_UPSTREAM_CHANNELS}>
-                <div className="space-y-4">
-                  <div className={SETTINGS_SWITCH_ROW}>
-                    <SettingField label="启用飞书告警" description="启用后向配置的群聊发送请求异常和首 token 延迟告警。" layout="switch">
-                      <Switch
-                        checked={settingsForm.feishu_alert_enabled}
-                        onCheckedChange={(checked) => autoSaveBooleanField('feishu_alert_enabled', checked)}
-                      />
-                    </SettingField>
-                  </div>
-                  <div className={SETTINGS_FIELD_GRID_3}>
-                    <SettingField label="飞书 App ID">
-                      <Input
-                        value={settingsForm.feishu_app_id}
-                        placeholder="cli_xxx"
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => setSettingsForm(f => ({ ...f, feishu_app_id: e.target.value }))}
-                        onBlur={(e) => void autoSaveSettingsPatch({ feishu_app_id: e.currentTarget.value.trim() })}
-                      />
-                    </SettingField>
-                    <SettingField label="飞书 App Secret" description={settingsForm.feishu_app_secret_configured ? '已配置；留空保持不变。' : '请输入飞书应用密钥。'}>
-                      <Input
-                        type="password"
-                        defaultValue=""
-                        placeholder={settingsForm.feishu_app_secret_configured ? '已配置（留空保持）' : '请输入 App Secret'}
-                        onBlur={(e) => {
-                          const value = e.currentTarget.value.trim()
-                          if (value) void autoSaveSettingsPatch({ feishu_app_secret: value })
-                        }}
-                      />
-                    </SettingField>
-                    <SettingField label="飞书群聊 ID" description="多个群聊 ID 用逗号、空格或换行分隔。">
-                      <Input
-                        value={settingsForm.feishu_chat_ids}
-                        placeholder="oc_xxx, oc_yyy"
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => setSettingsForm(f => ({ ...f, feishu_chat_ids: e.target.value }))}
-                        onBlur={(e) => void autoSaveSettingsPatch({ feishu_chat_ids: e.currentTarget.value.trim() })}
-                      />
-                    </SettingField>
-                    <SettingField label="告警错误码" description="支持 HTTP 状态码（如 503）、http_503 或上游错误类型，逗号分隔；留空不发送错误告警。">
-                      <Input
-                        value={settingsForm.feishu_alert_error_codes}
-                        placeholder="503, 429, service_unavailable"
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => setSettingsForm(f => ({ ...f, feishu_alert_error_codes: e.target.value }))}
-                        onBlur={(e) => void autoSaveSettingsPatch({ feishu_alert_error_codes: e.currentTarget.value.trim() })}
-                      />
-                    </SettingField>
-                    <SettingField label="首 token 告警阈值（秒）" description="请求首 token 达到该时长时发送，默认 30 秒。">
-                      <DraftNumberInput
-                        min={1}
-                        max={86400}
-                        value={settingsForm.feishu_first_token_timeout_seconds}
-                        onValueChange={(value) => setSettingsForm(f => ({ ...f, feishu_first_token_timeout_seconds: value }))}
-                        onValueCommit={(value) => void autoSaveSettingsPatch({ feishu_first_token_timeout_seconds: value })}
-                      />
-                    </SettingField>
-                  </div>
-                </div>
-              </SettingsCard>
-
               <SettingsCard title={t('settings.githubAccess')} description={t('settings.githubAccessDesc')} icon={<Globe className="size-4" />}>
                 <div className={SETTINGS_FIELD_GRID}>
                   <SettingField label={t('settings.githubToken')} description={t('settings.githubTokenDesc')}>

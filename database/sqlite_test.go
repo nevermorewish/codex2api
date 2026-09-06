@@ -130,11 +130,12 @@ func TestSQLiteSessionSlotBufferSettingsRoundtrip(t *testing.T) {
 }
 
 func TestSQLiteFeishuConfigRoundtripAndDefault(t *testing.T) {
-	db, err := New("sqlite", filepath.Join(t.TempDir(), "feishu-config.db"))
+	dbPath := filepath.Join(t.TempDir(), "feishu-config.db")
+	db, err := New("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("New(sqlite): %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
 	settings := &SystemSettings{
@@ -152,6 +153,19 @@ func TestSQLiteFeishuConfigRoundtripAndDefault(t *testing.T) {
 	}
 	if got == nil || got.FeishuConfig != settings.FeishuConfig {
 		t.Fatalf("feishu config = %q, want %q", got.FeishuConfig, settings.FeishuConfig)
+	}
+
+	// Reopen the database to simulate a container restart, including migrations.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = New("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetSystemSettings(ctx)
+	if err != nil || got == nil || got.FeishuConfig != settings.FeishuConfig {
+		t.Fatalf("feishu config was not retained after reopening: %v", err)
 	}
 
 	settings.FeishuConfig = `{"enabled":true,"app_id":"cli_demo"}`

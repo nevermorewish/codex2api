@@ -11184,7 +11184,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.FirstTokenTimeoutSec = *req.FirstTokenTimeoutSeconds
 		log.Printf("设置已更新: first_token_timeout_seconds = %d", runtimeCfg.FirstTokenTimeoutSec)
 	}
-	if req.FeishuAlertEnabled != nil || req.FeishuAppID != nil || req.FeishuAppSecret != nil || req.FeishuChatIDs != nil || req.FeishuAlertErrorCodes != nil || req.FeishuFirstTokenTimeoutSeconds != nil {
+	feishuChanged := req.FeishuAlertEnabled != nil || req.FeishuAppID != nil || req.FeishuAppSecret != nil || req.FeishuChatIDs != nil || req.FeishuAlertErrorCodes != nil || req.FeishuFirstTokenTimeoutSeconds != nil
+	feishuConfigToPersist := ""
+	if feishuChanged {
 		if req.FeishuAlertEnabled != nil {
 			feishuCfg.Enabled = *req.FeishuAlertEnabled
 		}
@@ -11208,6 +11210,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			feishuCfg.FirstTokenTimeoutSeconds = *req.FeishuFirstTokenTimeoutSeconds
 		}
 		feishuCfg = proxy.NormalizeFeishuAlertConfig(feishuCfg)
+		feishuConfigToPersist = proxy.EncodeFeishuAlertConfig(feishuCfg)
 	}
 	runtimeCfg.FeishuConfig = proxy.EncodeFeishuAlertConfig(feishuCfg)
 	if req.BillingTierPolicy != nil {
@@ -11293,6 +11296,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		// CodexSyncedCLIVersion 由后台同步任务独立维护；管理员保存其他设置时
 		// 必须保留临界区内读到的最新值，避免反向回滚同步结果。
 		effectiveRuntimeCfg.CodexSyncedCLIVersion = current.CodexSyncedCLIVersion
+		// 飞书配置只有落库成功后才发布，避免重启丢失或保存失败仍然生效。
+		effectiveRuntimeCfg.FeishuConfig = current.FeishuConfig
 		return effectiveRuntimeCfg
 	})
 
@@ -11511,6 +11516,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 
 	// 持久化保存到数据库
 	err = h.db.UpdateSystemSettings(c.Request.Context(), &database.SystemSettings{
+		FeishuConfig:                        feishuConfigToPersist,
 		SiteName:                            siteName,
 		SiteLogo:                            siteLogo,
 		MaxConcurrency:                      h.store.GetMaxConcurrency(),
@@ -11636,6 +11642,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	})
 	if err != nil {
 		log.Printf("无法持久化保存设置: %v", err)
+		if feishuChanged {
+			writeError(c, http.StatusInternalServerError, "保存飞书机器人设置失败，设置未生效")
+			return
+		}
 		if req.SessionSlotBufferEnabled != nil || req.SessionSlotBufferSeconds != nil {
 			writeError(c, http.StatusInternalServerError, "保存会话并发槽缓冲设置失败，设置未生效")
 			return
@@ -11671,6 +11681,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	} else {
+		if feishuChanged {
+			proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
+				current.FeishuConfig = feishuConfigToPersist
+				return current
+			})
+		}
 		if req.SessionSlotBufferSeconds != nil {
 			h.store.SetSessionSlotBuffer(time.Duration(sessionSlotBufferSeconds) * time.Second)
 			log.Printf("设置已更新: session_slot_buffer_seconds = %d", sessionSlotBufferSeconds)
