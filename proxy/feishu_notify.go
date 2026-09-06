@@ -30,12 +30,16 @@ type FeishuAlertConfig struct {
 }
 
 const defaultFeishuFirstTokenTimeoutSeconds = 30
+const defaultFeishuAlertErrorCodes = "400-599"
 
 func NormalizeFeishuAlertConfig(cfg FeishuAlertConfig) FeishuAlertConfig {
 	cfg.AppID = strings.TrimSpace(cfg.AppID)
 	cfg.AppSecret = strings.TrimSpace(cfg.AppSecret)
 	cfg.ChatIDs = strings.TrimSpace(cfg.ChatIDs)
 	cfg.ErrorCodes = normalizeFeishuErrorCodes(cfg.ErrorCodes)
+	if cfg.ErrorCodes == "" {
+		cfg.ErrorCodes = defaultFeishuAlertErrorCodes
+	}
 	if cfg.FirstTokenTimeoutSeconds <= 0 {
 		cfg.FirstTokenTimeoutSeconds = defaultFeishuFirstTokenTimeoutSeconds
 	}
