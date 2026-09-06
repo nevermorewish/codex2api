@@ -557,10 +557,11 @@ func upstreamPromptPolicyTransport(stream, viaWebsocket bool) string {
 }
 
 func (h *Handler) logPromptPolicyRetryUsage(c *gin.Context, input database.UsageLogInput, incidentID string) {
-	if strings.TrimSpace(incidentID) == "" {
-		return
+	// 每一次首包前断连的重试都要落库，接力链才能完整展示换号过程；
+	// incidentID 仅在命中审计事件时非空，为空也要照常记这一跳（issue: 接力链只显示 1 次失败）。
+	if strings.TrimSpace(incidentID) != "" {
+		input.PromptPolicyIncidentID = incidentID
 	}
-	input.PromptPolicyIncidentID = incidentID
 	input.IsRetryAttempt = true
 	h.logUsageForRequest(c, &input)
 }

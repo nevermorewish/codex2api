@@ -811,6 +811,15 @@ func (h *Handler) Messages(c *gin.Context) {
 			// busy acquire 超时会轮换账号，避免同一 key 重复排队（issue #413）。
 			stickyRetry := continuousRetryBuffersAttempts(continuousRetryPolicy) &&
 				h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
+			// 传输层连接失败此前不落库，接力链只能看到最后一次 HTTP 状态码错误，
+			// 中间真实发生的换号尝试全部丢失。这里无条件记一跳。
+			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+				AccountID: account.ID(), Endpoint: "/v1/messages", Model: model, EffectiveModel: attemptEffectiveModel,
+				StatusCode: logStatusUpstreamStreamBreak, DurationMs: durationMs, ReasoningEffort: reasoningEffort,
+				InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
+				AttemptIndex: attempt + 1, UpstreamErrorKind: kind,
+				ErrorMessage: usageLogFailureMessage(logStatusUpstreamStreamBreak, reqErr.Error()),
+			}, "")
 			if retryable && shouldPenalizeTransportKind(kind) && !(timedOut && shouldRetry) && !stickyRetry {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}

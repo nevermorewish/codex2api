@@ -4146,6 +4146,15 @@ func (h *Handler) Responses(c *gin.Context) {
 				// 传输类失败粘滞同号重试:不记账号失败、不解绑亲和、不硬排除(issue #331)
 				// busy acquire 超时不粘滞同号：同 key 再等只会重复排队，直接换号（issue #413）
 				stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
+				// 传输层连接失败（拨号/首包前断开）此前不落库，接力链只能看到最后一次
+				// HTTP 状态码错误，中间真实发生的换号尝试全部丢失。这里无条件记一跳。
+				h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+					AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
+					StatusCode: logStatusUpstreamStreamBreak, DurationMs: durationMs, ReasoningEffort: reasoningEffort,
+					InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: false,
+					AttemptIndex: attempt + 1, UpstreamErrorKind: kind,
+					ErrorMessage: usageLogFailureMessage(logStatusUpstreamStreamBreak, reqErr.Error()),
+				}, "")
 				if retryable && shouldPenalizeTransportKind(kind) && !(timedOut && shouldRetry) && !stickyRetry {
 					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
@@ -4897,6 +4906,15 @@ func (h *Handler) Responses(c *gin.Context) {
 			// 传输类失败粘滞同号重试:不记账号失败、不解绑亲和、不硬排除(issue #331)
 			// busy acquire 超时不粘滞同号：同 key 再等只会重复排队，直接换号（issue #413）
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
+			// 传输层连接失败此前不落库，接力链只能看到最后一次 HTTP 状态码错误，
+			// 中间真实发生的换号尝试全部丢失。这里无条件记一跳。
+			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+				AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
+				StatusCode: logStatusUpstreamStreamBreak, DurationMs: durationMs, ReasoningEffort: reasoningEffort,
+				InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: isStream, ViaWebsocket: useWebsocket,
+				AttemptIndex: attempt + 1, UpstreamErrorKind: kind,
+				ErrorMessage: usageLogFailureMessage(logStatusUpstreamStreamBreak, reqErr.Error()),
+			}, "")
 			if retryable && shouldPenalizeTransportKind(kind) && !(timedOut && shouldRetry) && !stickyRetry {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
@@ -6002,7 +6020,16 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					return
 				}
 				retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
-				if kind := classifyTransportFailure(reqErr); retryable && shouldPenalizeTransportKind(kind) {
+				kind := classifyTransportFailure(reqErr)
+				// 传输层连接失败此前不落库，接力链只能看到最后一次 HTTP 状态码错误。
+				h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+					AccountID: account.ID(), Endpoint: "/v1/responses/compact", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
+					StatusCode: logStatusUpstreamStreamBreak, DurationMs: durationMs, ReasoningEffort: reasoningEffort,
+					InboundEndpoint: "/v1/responses/compact", UpstreamEndpoint: upstreamEndpoint,
+					AttemptIndex: attempt + 1, UpstreamErrorKind: kind,
+					ErrorMessage: usageLogFailureMessage(logStatusUpstreamStreamBreak, reqErr.Error()),
+				}, "")
+				if retryable && shouldPenalizeTransportKind(kind) {
 					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
@@ -6244,7 +6271,16 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				return
 			}
 			retryable := isRetryableRequestErrorForContext(c.Request.Context(), reqErr, continuousRetryPolicy)
-			if kind := classifyTransportFailure(reqErr); retryable && shouldPenalizeTransportKind(kind) {
+			kind := classifyTransportFailure(reqErr)
+			// 传输层连接失败此前不落库，接力链只能看到最后一次 HTTP 状态码错误。
+			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+				AccountID: account.ID(), Endpoint: "/v1/responses/compact", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
+				StatusCode: logStatusUpstreamStreamBreak, DurationMs: durationMs, ReasoningEffort: reasoningEffort,
+				InboundEndpoint: "/v1/responses/compact", UpstreamEndpoint: upstreamEndpointLabel,
+				AttemptIndex: attempt + 1, UpstreamErrorKind: kind,
+				ErrorMessage: usageLogFailureMessage(logStatusUpstreamStreamBreak, reqErr.Error()),
+			}, "")
+			if retryable && shouldPenalizeTransportKind(kind) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
@@ -6917,6 +6953,15 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			// 传输类失败粘滞同号重试:不记账号失败、不解绑亲和、不硬排除(issue #331)
 			// busy acquire 超时不粘滞同号：同 key 再等只会重复排队，直接换号（issue #413）
 			stickyRetry := h.shouldStickyTransportRetry(reqErr, kind, timedOut, shouldRetry, continuousRetryPolicy)
+			// 传输层连接失败此前不落库，接力链只能看到最后一次 HTTP 状态码错误，
+			// 中间真实发生的换号尝试全部丢失。这里无条件记一跳。
+			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+				AccountID: account.ID(), Endpoint: "/v1/chat/completions", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
+				StatusCode: logStatusUpstreamStreamBreak, DurationMs: durationMs, ReasoningEffort: reasoningEffort,
+				InboundEndpoint: "/v1/chat/completions", UpstreamEndpoint: "/v1/chat/completions", Stream: isStream, ViaWebsocket: useWebsocket,
+				AttemptIndex: attempt + 1, UpstreamErrorKind: kind,
+				ErrorMessage: usageLogFailureMessage(logStatusUpstreamStreamBreak, reqErr.Error()),
+			}, "")
 			if retryable && shouldPenalizeTransportKind(kind) && !(timedOut && shouldRetry) && !stickyRetry {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
