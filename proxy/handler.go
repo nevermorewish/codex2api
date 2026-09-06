@@ -2290,7 +2290,12 @@ func (h *Handler) unbindOrRetainAffinityForCapacityShedWithGuard(exclusions *ret
 	// Catch-all promises a real account rotation for every upstream failure.
 	// Keep the legacy same-account capacity backoff only for the normal,
 	// selective policy mode.
-	if !policy.CatchesAllUpstreamFailures() && capacityShedRetainsAffinity(outcome, retries[id]) {
+	// rotate 策略要求容量降载也立即切换账号。此前这里只看 continuous
+	// retry policy，忽略了 transport_retry_policy=rotate，导致默认配置下
+	// server_is_overloaded 会在同一账号上反复重试，relay chain 只能看到一条。
+	// sticky 策略保留原有的同账号退避行为。
+	rotateTransportRetry := h != nil && h.store != nil && !h.stickyRetryTransportEnabled()
+	if !rotateTransportRetry && !policy.CatchesAllUpstreamFailures() && capacityShedRetainsAffinity(outcome, retries[id]) {
 		// Buffered attempts defer affinity until replay resolves. Bind here only
 		// for real upstream capacity retries to preserve same-account backoff.
 		// 缓冲 attempt 会把亲和绑定延后到回放完成；这里只为真实上游降载重试绑定，
