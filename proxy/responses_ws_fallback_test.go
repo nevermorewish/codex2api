@@ -23,6 +23,169 @@ import (
 const wsFallbackOverload = `{"type":"response.failed","response":{"status":"failed","error":{"code":"server_is_overloaded","type":"service_unavailable_error","message":"primary overloaded"}}}`
 const wsFallbackSuccess = `{"type":"response.completed","response":{"id":"resp_fallback","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}`
 
+// Exercise the real per-turn forwarder over one downstream socket. The wrapper
+// snapshots Gin metadata after each completed turn, before accepting the next.
+func TestNativeWSFallbackMultiTurnIsolation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previous, previousExec := CurrentRuntimeSettings(), WebsocketExecuteFunc
+	previousMetrics := globalFallbackMetrics
+	globalFallbackMetrics = newFallbackMetrics()
+	t.Cleanup(func() {
+		ApplyRuntimeSettings(previous)
+		WebsocketExecuteFunc = previousExec
+		globalFallbackMetrics = previousMetrics
+	})
+	settings := previous
+	settings.CodexWSSilentRetry, settings.CodexWSHideErrors = true, false
+	settings.CodexWSSilentRetries = 1
+	settings.CodexOverloadPauseEnabled = false
+	settings.ContinuousRetryPolicy = database.ContinuousRetryPolicy{}
+	ApplyRuntimeSettings(settings)
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2})
+	defer store.Stop()
+	store.SetMaxRetries(1)
+	store.SetRetryIntervalMS(0)
+	store.SetTransportRetryPolicy("rotate")
+	var accounts []*auth.Account
+	for id := int64(1); id <= 8; id++ {
+		a := &auth.Account{DBID: id, Name: fmt.Sprintf("primary-%d", id), AccountID: fmt.Sprint(id), AccessToken: "test-only", PlanType: "pro"}
+		store.AddAccount(a)
+		accounts = append(accounts, a)
+	}
+	var mu sync.Mutex
+	primaryCalls, fallbackCalls := 0, 0
+	WebsocketExecuteFunc = func(ctx context.Context, a *auth.Account, body []byte, sessionID, proxyURL, apiKey string, cfg *DeviceProfileConfig, headers http.Header, route string) (*http.Response, error) {
+		mu.Lock()
+		primaryCalls++
+		mu.Unlock()
+		payload := wsFallbackOverload
+		if strings.Contains(string(body), "primary-success") {
+			payload = strings.ReplaceAll(wsFallbackSuccess, "resp_fallback", "resp_primary")
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("data: " + payload + "\n\n"))}, nil
+	}
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		mu.Lock()
+		fallbackCalls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+wsFallbackSuccess+"\n\n")
+	}))
+	defer fallback.Close()
+	pool := auth.NewFallbackPool(store)
+	pool.Replace([]auth.FallbackAccountConfig{{ID: 9, Name: "multi-turn-backup", BaseURL: fallback.URL, APIKey: "backup-only", Model: "fallback-model", Enabled: true}})
+	pool.SetPolicy(auth.FallbackPolicy{Enabled: true, RelayCount: 10})
+	h := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
+	h.SetFallbackPool(pool)
+	type turnResult struct {
+		err                      error
+		fallbackName, sourceName string
+		sourceID                 int64
+		occupied                 int64
+		metrics                  FallbackMetricsSnapshot
+	}
+	results := make(chan turnResult, 3)
+	done := make(chan struct{})
+	router := gin.New()
+	router.GET("/v1/responses", func(c *gin.Context) {
+		defer close(done)
+		conn, err := responsesWSUpgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil {
+			results <- turnResult{err: err}
+			return
+		}
+		defer conn.Close()
+		for turn := 0; turn < 3; turn++ {
+			_, body, err := conn.ReadMessage()
+			if err != nil {
+				results <- turnResult{err: err}
+				return
+			}
+			err = h.forwardResponsesWebSocketTurn(c, conn, body, fmt.Sprintf("turn-%d", turn), nil)
+			result := turnResult{err: err, fallbackName: c.GetString(contextFallbackAccountName), sourceName: c.GetString(contextSourceAccountName), sourceID: c.GetInt64(contextSourceAccountID), metrics: GetFallbackMetricsSnapshot()}
+			for _, a := range append(accounts, pool.Accounts()...) {
+				result.occupied += a.GetOccupiedRequests() + a.GetActiveRequests()
+			}
+			results <- result
+			if err != nil {
+				return
+			}
+		}
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = conn.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("WS handler did not stop")
+		}
+	}()
+	for turn, input := range []string{"fallback-first", "primary-success", "fallback-third"} {
+		request := fmt.Sprintf(`{"type":"response.create","model":"gpt-5.4","input":%q,"prompt_cache_key":"same-multi-turn-session"}`, input)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(4 * time.Second))
+		for {
+			_, body, err := conn.ReadMessage()
+			if err != nil {
+				t.Fatalf("turn %d: %v", turn, err)
+			}
+			kind := gjson.GetBytes(body, "type").String()
+			if kind == "error" || kind == "response.failed" {
+				t.Fatalf("turn %d leaked failed primary: %s", turn, body)
+			}
+			if kind == "response.completed" {
+				wantID := "resp_fallback"
+				if turn == 1 {
+					wantID = "resp_primary"
+				}
+				if gjson.GetBytes(body, "response.id").String() != wantID {
+					t.Fatalf("turn %d: wrong terminal %s", turn, body)
+				}
+				break
+			}
+		}
+		var result turnResult
+		select {
+		case result = <-results:
+		case <-time.After(time.Second):
+			t.Fatal("missing turn result")
+		}
+		if result.err != nil || result.occupied != 0 {
+			t.Fatalf("turn %d err=%v occupied=%d", turn, result.err, result.occupied)
+		}
+		if turn == 1 {
+			if result.fallbackName != "" || result.sourceName != "" || result.sourceID != 0 {
+				t.Fatalf("fallback attribution leaked into primary turn: %+v", result)
+			}
+		} else if result.fallbackName != "multi-turn-backup" || result.sourceID <= 0 || result.sourceName == "" {
+			t.Fatalf("missing fallback attribution: %+v", result)
+		}
+		wantPrimary, wantFallback := []int{2, 3, 5}[turn], []int{1, 1, 2}[turn]
+		mu.Lock()
+		primary, backup := primaryCalls, fallbackCalls
+		mu.Unlock()
+		if primary != wantPrimary || backup != wantFallback {
+			t.Fatalf("turn %d budgets leaked: primary=%d fallback=%d", turn, primary, backup)
+		}
+		m := result.metrics
+		if m.WSPrimaryAttempts != uint64(wantPrimary) || m.FallbackHandoffCount != uint64(wantFallback) || m.FallbackAttemptCount != uint64(wantFallback) || m.FallbackSuccessCount != uint64(wantFallback) || m.UpstreamOverloadedCount != []uint64{2, 2, 4}[turn] {
+			t.Fatalf("turn %d bad metrics: %+v", turn, m)
+		}
+		if m.FallbackFailureCount != 0 || len(m.Accounts) != 1 || m.Accounts[0].Success != uint64(wantFallback) {
+			t.Fatalf("bad fallback outcome counters: %+v", m)
+		}
+	}
+}
+
 func TestNativeWSFallbackHandoff(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, tc := range []struct {
@@ -59,7 +222,13 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			previous := CurrentRuntimeSettings()
 			previousExec := WebsocketExecuteFunc
-			t.Cleanup(func() { ApplyRuntimeSettings(previous); WebsocketExecuteFunc = previousExec })
+			previousMetrics := globalFallbackMetrics
+			globalFallbackMetrics = newFallbackMetrics()
+			t.Cleanup(func() {
+				ApplyRuntimeSettings(previous)
+				WebsocketExecuteFunc = previousExec
+				globalFallbackMetrics = previousMetrics
+			})
 			settings := previous
 			settings.CodexWSSilentRetry = !tc.silentOff
 			settings.CodexWSSilentRetries = tc.wsRetries
@@ -201,6 +370,19 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 			defer mu.Unlock()
 			if len(primaryIDs) != tc.wantPrimary || fallbackCalls != tc.wantFallback {
 				t.Fatalf("primary=%v fallback=%d want=%d/%d output=%s", primaryIDs, fallbackCalls, tc.wantPrimary, tc.wantFallback, output.String())
+			}
+			metrics := GetFallbackMetricsSnapshot()
+			if metrics.WSPrimaryAttempts != uint64(tc.wantPrimary) || metrics.FallbackHandoffCount != uint64(tc.wantFallback) || metrics.FallbackAttemptCount != uint64(tc.wantFallback) {
+				t.Fatalf("routing metrics disagree with real calls: %+v", metrics)
+			}
+			if tc.wantFallback > 0 {
+				wantSuccess, wantFailure := uint64(1), uint64(0)
+				if tc.fallbackFails {
+					wantSuccess, wantFailure = 0, 1
+				}
+				if metrics.FallbackSuccessCount != wantSuccess || metrics.FallbackFailureCount != wantFailure {
+					t.Fatalf("fallback outcomes disagree with actual response: %+v", metrics)
+				}
 			}
 			if tc.sticky {
 				for _, id := range primaryIDs {

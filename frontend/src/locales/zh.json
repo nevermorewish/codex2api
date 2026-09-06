@@ -1983,6 +1983,22 @@
     "rpmNoLimit": "未开启全局限流",
     "tpm": "TPM",
     "tpmToday": "今日 {{value}}",
+    "fallbackMetrics": {
+      "title": "兜底接力与上游故障",
+      "description": "本实例累计，重启后清零。每个请求（WS 每轮）进入兜底只计一次，包含直达兜底；成功、失败、取消按已记录结果的尝试计数。故障统计覆盖主池和兜底，连接异常也包含输出后的断流。",
+      "since": "统计起点：{{time}}",
+      "wsPrimary": "WS 主池尝试",
+      "handoffs": "进入兜底的请求",
+      "attempts": "兜底尝试",
+      "success": "兜底成功",
+      "failure": "兜底失败",
+      "canceled": "兜底取消",
+      "overloaded": "上游过载",
+      "timeout": "首响应超时",
+      "streamBreak": "上游连接／断流异常",
+      "account": "兜底账号",
+      "other": "其他账号（超出分组上限）"
+    },
     "responseCache": {
       "title": "响应上下文缓存",
       "description": "查看本实例保留的逻辑载荷用量和续链重建状态；这里的字节数不是 RSS。",

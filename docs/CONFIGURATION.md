@@ -197,6 +197,21 @@ Redis 模式会把 response context 保存到共享后端。后端值在重建�
 
 首内容前的业务错误和真实断流分开记录：`upstream_overloaded` / `upstream_error_frame` 不因业务错误本身回收 HTTP 客户端；`upstream_stream_break` / `first_response_timeout` 才按连接故障处理。有限重试中的临时断流会在当前轮排除失败主账号，优先选择其他账号；没有兜底且单账号池已遍历时，仍可在剩余预算内恢复重试。
 
+运维概览的“兜底接力与上游故障”卡片和 `GET /api/admin/ops/overview` 的 `fallback` 字段提供实例内存累计指标（`since` 为统计起点，重启清零，多实例各自统计）：
+
+| 字段 | 口径 |
+| --- | --- |
+| `ws_primary_attempts` | 原生 WS 入站每轮已选中的主池尝试数，包含首次尝试和重试；HTTP POST 使用 WS 上游不计入此项 |
+| `fallback_handoff_count` | 每个请求／WS turn 首次实际选中兜底账号计一次，包含超大请求、队列等直达兜底；仅激活状态但没有选到账号不计数 |
+| `fallback_attempt_count` | 兜底账号已选中的尝试总数，同一请求多次兜底重试分别计数 |
+| `fallback_success_count` / `fallback_failure_count` / `fallback_canceled_count` | 按已记录结果的外层 attempt 计数；2xx 无错误为成功，499 为取消，其余为失败。进行中或尚未记录结果的尝试不进入结果计数，失败不等同于供应商过载 |
+| `upstream_overloaded_count` | 主池和兜底 attempt 的错误摘要包含 `server_is_overloaded` 的次数，不把所有 500/503 都归为过载 |
+| `first_token_timeout_count` | 首响应看门狗明确报告超时的次数，普通连接超时不计入 |
+| `upstream_stream_break_count` | 内部 598 连接／流错误次数，排除上述首响应超时；包含输出后的断流，不等同于首 token 前断连 |
+| `accounts` | 按兜底账号 ID／名称分组的尝试、成功、失败、取消数；最多保留 128 个账号分组，其余归入 ID=0 的 other，不暴露供应商 URL 或凭据 |
+
+指标只覆盖接入兜底路由的 Responses、Chat Completions、Messages 请求（含原生 WS），不因关闭兜底开关而停止主池故障统计。隐藏续想用量和同一 attempt 重复日志不重复累计。请求接力链继续使用已有 `fallback_account_name`、`source_account_id`、`source_account_name` 追溯具体来源，模型 429 冷却策略保持原有配置和行为。
+
 调度引擎的推荐上线顺序是 `legacy → shadow → indexed`：
 
 - `legacy` 保留原有全池扫描，作为无停机回退路径。

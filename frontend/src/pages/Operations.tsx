@@ -334,6 +334,7 @@ export default function Operations() {
               </div>
             </div>
 
+            <FallbackMetricsCard metrics={overview.fallback} t={t} />
             <ResponseCacheCard cache={overview.response_cache} t={t} />
           </>
         ) : null}
@@ -345,6 +346,60 @@ export default function Operations() {
 function schedulerFastHitRate(scheduler: NonNullable<OpsOverviewResponse['scheduler']>) {
   const decided = scheduler.selection_fast_hit + scheduler.selection_slow_hit
   return decided > 0 ? (scheduler.selection_fast_hit / decided) * 100 : 0
+}
+
+function FallbackMetricsCard({ metrics, t }: {
+  metrics?: OpsOverviewResponse['fallback']
+  t: (key: string, options?: Record<string, unknown>) => string
+}) {
+  if (!metrics) return null
+  const counters = [
+    ['wsPrimary', metrics.ws_primary_attempts],
+    ['handoffs', metrics.fallback_handoff_count],
+    ['attempts', metrics.fallback_attempt_count],
+    ['success', metrics.fallback_success_count],
+    ['failure', metrics.fallback_failure_count],
+    ['canceled', metrics.fallback_canceled_count],
+    ['overloaded', metrics.upstream_overloaded_count],
+    ['timeout', metrics.first_token_timeout_count],
+    ['streamBreak', metrics.upstream_stream_break_count],
+  ] as const
+  return (
+    <Card className="mt-6">
+      <CardContent className="p-6">
+        <h3 className="text-base font-semibold text-foreground">{t('ops.fallbackMetrics.title')}</h3>
+        <p className="mt-1 text-sm text-muted-foreground">{t('ops.fallbackMetrics.description')}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{t('ops.fallbackMetrics.since', { time: new Date(metrics.since).toLocaleString() })}</p>
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3">
+          {counters.map(([key, value]) => (
+            <div key={key} className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">{t(`ops.fallbackMetrics.${key}`)}</div>
+              <div className="mt-1 text-xl font-semibold tabular-nums">{formatNumber(value)}</div>
+            </div>
+          ))}
+        </div>
+        {metrics.accounts.length > 0 && (
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead><tr className="border-b">
+                {['account', 'attempts', 'success', 'failure', 'canceled'].map(key => (
+                  <th key={key} className="px-2 py-2 font-medium">{t(`ops.fallbackMetrics.${key}`)}</th>
+                ))}
+              </tr></thead>
+              <tbody>{metrics.accounts.map(account => (
+                <tr key={account.account_id} className="border-b last:border-0">
+                  <td className="px-2 py-2">{account.account_id === 0 ? t('ops.fallbackMetrics.other') : `${account.name || '—'} (${account.account_id})`}</td>
+                  {[account.attempts, account.success, account.failure, account.canceled].map((value, index) => (
+                    <td key={index} className="px-2 py-2 tabular-nums">{formatNumber(value)}</td>
+                  ))}
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 type ResponseCacheOverview = NonNullable<OpsOverviewResponse['response_cache']>

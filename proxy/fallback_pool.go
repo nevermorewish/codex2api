@@ -12,13 +12,14 @@ import (
 const oversizedDirectFallbackBytes = 3 << 20
 
 type fallbackRouteState struct {
-	pool            *auth.FallbackPool
-	filter          auth.AccountFilter
-	policy          auth.FallbackPolicy
-	primaryAttempts int
-	active          bool
-	required        bool
-	sourceAccount   *auth.Account
+	pool                  *auth.FallbackPool
+	filter                auth.AccountFilter
+	policy                auth.FallbackPolicy
+	primaryAttempts       int
+	active                bool
+	required              bool
+	sourceAccount         *auth.Account
+	metricHandoffRecorded bool
 	// Keep the operator's primary budgets separate from the extra transition
 	// attempt. RelayCount may switch earlier, but must never extend these limits.
 	retryHandoffEnabled        bool
@@ -64,6 +65,7 @@ func (s *fallbackRouteState) noteSelected(account *auth.Account) {
 // attempt into the request log. Fallback accounts are runtime-only and use a
 // negative ID, so the normal accounts table cannot provide this relationship.
 func (h *Handler) annotateFallbackRequest(c *gin.Context, state *fallbackRouteState, account *auth.Account) {
+	globalFallbackMetrics.selected(c, state, account)
 	if c == nil || state == nil || account == nil || !account.IsExternalFallback() {
 		return
 	}

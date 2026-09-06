@@ -204,6 +204,17 @@ func TestGetOpsOverviewIncludesResponseCacheAndMemoryShape(t *testing.T) {
 	}
 	for _, path := range []string{
 		"response_cache.entries",
+		"fallback.since",
+		"fallback.ws_primary_attempts",
+		"fallback.fallback_handoff_count",
+		"fallback.fallback_attempt_count",
+		"fallback.fallback_success_count",
+		"fallback.fallback_failure_count",
+		"fallback.fallback_canceled_count",
+		"fallback.upstream_overloaded_count",
+		"fallback.first_token_timeout_count",
+		"fallback.upstream_stream_break_count",
+		"fallback.accounts",
 		"response_cache.local_hits",
 		"response_cache.remote_misses",
 		"response_cache.last_config_sync_at",

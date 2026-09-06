@@ -1519,6 +1519,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateUpstreamTrace(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
 	markCyberPolicyUsageKind(input)
+	observeFallbackMetricUsage(c, input)
 	h.logUsage(input)
 }
 

@@ -156,6 +156,7 @@ func testPreContentFailureHandoff(t *testing.T, codexPrimary bool, websocketUpst
 				c.Request = httptest.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString(body))
 				c.Request.Header.Set("Content-Type", "application/json")
 				c.Request.Header.Set("X-Codex2API-Affinity-Key", "retry-handoff-test")
+				beforeMetrics := GetFallbackMetricsSnapshot()
 				switch endpoint {
 				case "/v1/responses":
 					h.Responses(c)
@@ -168,6 +169,19 @@ func testPreContentFailureHandoff(t *testing.T, codexPrimary bool, websocketUpst
 				defer mu.Unlock()
 				if len(primaryKeys) != tc.wantPrimary || fallbackCalls != tc.wantFallback {
 					t.Fatalf("primary keys=%v fallback calls=%d; want primary=%d fallback=%d; status=%d body=%s", primaryKeys, fallbackCalls, tc.wantPrimary, tc.wantFallback, recorder.Code, recorder.Body.String())
+				}
+				afterMetrics := GetFallbackMetricsSnapshot()
+				if afterMetrics.WSPrimaryAttempts != beforeMetrics.WSPrimaryAttempts || afterMetrics.FallbackHandoffCount-beforeMetrics.FallbackHandoffCount != uint64(tc.wantFallback) || afterMetrics.FallbackAttemptCount-beforeMetrics.FallbackAttemptCount != uint64(tc.wantFallback) {
+					t.Fatalf("HTTP routing metrics mismatch: before=%+v after=%+v", beforeMetrics, afterMetrics)
+				}
+				if tc.wantFallback > 0 {
+					wantSuccess, wantFailure := uint64(1), uint64(0)
+					if tc.fallbackFails {
+						wantSuccess, wantFailure = 0, 1
+					}
+					if afterMetrics.FallbackSuccessCount-beforeMetrics.FallbackSuccessCount != wantSuccess || afterMetrics.FallbackFailureCount-beforeMetrics.FallbackFailureCount != wantFailure {
+						t.Fatalf("HTTP outcome metrics mismatch: before=%+v after=%+v", beforeMetrics, afterMetrics)
+					}
 				}
 				seen := map[string]bool{}
 				for _, key := range primaryKeys {

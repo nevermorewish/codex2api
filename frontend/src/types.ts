@@ -1551,6 +1551,19 @@ export interface AccountEventTrendPoint {
 }
 
 export interface OpsOverviewResponse {
+  fallback?: {
+    since: ISODateString
+    ws_primary_attempts: number
+    fallback_handoff_count: number
+    fallback_attempt_count: number
+    fallback_success_count: number
+    fallback_failure_count: number
+    fallback_canceled_count: number
+    upstream_overloaded_count: number
+    first_token_timeout_count: number
+    upstream_stream_break_count: number
+    accounts: { account_id: number; name: string; attempts: number; success: number; failure: number; canceled: number }[]
+  }
   updated_at: ISODateString
   uptime_seconds: number
   database_driver: string

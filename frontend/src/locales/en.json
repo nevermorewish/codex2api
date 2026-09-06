@@ -1983,6 +1983,22 @@
     "rpmNoLimit": "No global rate limit",
     "tpm": "TPM",
     "tpmToday": "Today {{value}}",
+    "fallbackMetrics": {
+      "title": "Fallback routing and upstream failures",
+      "description": "Instance totals reset on restart. Fallback entry is counted once per request (per WS turn), including direct routes. Outcomes count attempts with recorded results. Failures cover both pools; connection errors include mid-stream disconnects.",
+      "since": "Counting since: {{time}}",
+      "wsPrimary": "WS primary attempts",
+      "handoffs": "Requests entering fallback",
+      "attempts": "Fallback attempts",
+      "success": "Fallback successes",
+      "failure": "Fallback failures",
+      "canceled": "Fallback cancellations",
+      "overloaded": "Upstream overloads",
+      "timeout": "First-response timeouts",
+      "streamBreak": "Upstream connection / stream errors",
+      "account": "Fallback account",
+      "other": "Other accounts (group limit reached)"
+    },
     "responseCache": {
       "title": "Response context cache",
       "description": "Logical retained payload usage and continuation reconstruction health for this instance. These bytes are not RSS.",

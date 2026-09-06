@@ -6,6 +6,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 )
@@ -154,6 +155,7 @@ type opsOverviewResponse struct {
 	Traffic        opsTrafficResponse            `json:"traffic"`
 	ResponseCache  opsResponseCache              `json:"response_cache"`
 	Scheduler      auth.SchedulerMetricsSnapshot `json:"scheduler"`
+	Fallback       proxy.FallbackMetricsSnapshot `json:"fallback"`
 }
 
 type opsCPUResponse struct {

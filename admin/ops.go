@@ -472,5 +472,6 @@ func (h *Handler) GetOpsOverview(c *gin.Context) {
 		},
 		ResponseCache: responseCacheOpsResponseFromSnapshot(responseCacheSnapshot),
 		Scheduler:     h.store.GetSchedulerMetrics(),
+		Fallback:      proxy.GetFallbackMetricsSnapshot(),
 	})
 }
