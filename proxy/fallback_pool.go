@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"log"
+	"net/http"
 	"strings"
 
 	"github.com/codex2api/auth"
@@ -13,10 +14,12 @@ import (
 const oversizedDirectFallbackBytes = 3 << 20
 const fallbackTerminalAttemptContextKey = "fallback_terminal_attempt"
 const contextFallbackReason = "fallbackReason"
+const contextFallbackDeadlineState = "fallbackDeadlineState"
 
 const (
 	fallbackReasonRelayLimit       = "relay_limit"
 	fallbackReasonRetryBudget      = "retry_budget"
+	fallbackReasonRetryDeadline    = "retry_deadline"
 	fallbackReasonRateLimitBudget  = "rate_limit_budget"
 	fallbackReasonAffinityFull     = "affinity_capacity_full"
 	fallbackReasonQueueThreshold   = "queue_threshold"
@@ -98,6 +101,12 @@ func prepareFallbackAttempt(c *gin.Context, account *auth.Account, generalLimit,
 		if c.Request != nil {
 			if deadline := continuousRetryDeadlineForContext(c.Request.Context()); deadline != nil {
 				deadline.Stop()
+				// Selection itself may finish just after the primary timer fires
+				// (for example while waiting for a concurrency slot).
+				if continuousRetryDeadlineExceeded(c.Request.Context()) && deadline.parentContext != nil &&
+					deadline.parentContext.Err() == nil && c.Writer != nil && !c.Writer.Written() {
+					c.Request = c.Request.WithContext(deadline.parentContext)
+				}
 			}
 		}
 	}
@@ -148,6 +157,42 @@ func (s *fallbackRouteState) usingFallback() bool {
 
 func (s *fallbackRouteState) configured() bool {
 	return s != nil && s.pool != nil && s.policy.Enabled && s.pool.HasEligibleAccount(s.filter)
+}
+
+// Only the primary retry deadline can be replaced by a fallback attempt.
+// Preserve the real client's cancellation/deadline and never replay visible
+// output, a pinned compaction domain, or an already-attempted external fallback.
+func canFallbackAfterPrimaryDeadline(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Writer == nil || c.Writer.Written() ||
+		!continuousRetryDeadlineExceeded(c.Request.Context()) {
+		return false
+	}
+	value, _ := c.Get(contextFallbackDeadlineState)
+	state, _ := value.(*fallbackRouteState)
+	deadline := continuousRetryDeadlineForContext(c.Request.Context())
+	return state != nil && !state.fallbackAttempted && state.configured() &&
+		deadline != nil && deadline.parentContext != nil && deadline.parentContext.Err() == nil
+}
+
+// Called after the primary attempt has returned and released its response,
+// replay buffer and account lease. Continue the same loop with a live sibling
+// context instead of starting over with a new request or losing attempt IDs.
+func handoffPrimaryDeadlineToFallback(c *gin.Context, state *fallbackRouteState) bool {
+	if !canFallbackAfterPrimaryDeadline(c) {
+		return false
+	}
+	deadline := continuousRetryDeadlineForContext(c.Request.Context())
+	deadline.Stop()
+	c.Request = c.Request.WithContext(deadline.parentContext)
+	state.active = true
+	state.reason = fallbackReasonRetryDeadline
+	c.Set(fallbackTerminalAttemptContextKey, true)
+	// The primary's synthetic access-log status must not hide fallback success.
+	c.Set(AccessLogStatusContextKey, 0)
+	c.Status(http.StatusOK)
+	c.Header("Retry-After", "")
+	log.Printf("主账号池持续重试超时，切入兜底号池 (primary_attempts=%d)", state.primaryAttempts)
+	return true
 }
 
 func (s *fallbackRouteState) retryBudgets(maxRetries, maxRateLimitRetries int) (int, int) {

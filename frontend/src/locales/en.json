@@ -100,6 +100,7 @@
     "fallbackReasons": {
       "relay_limit": "Local attempt limit reached",
       "retry_budget": "Local general retry budget exhausted",
+      "retry_deadline": "Primary retry time limit reached",
       "rate_limit_budget": "Local rate-limit retry budget exhausted",
       "affinity_capacity_full": "Bound account at capacity; no other local account acquired",
       "queue_threshold": "No local account acquired; direct-fallback queue threshold reached",

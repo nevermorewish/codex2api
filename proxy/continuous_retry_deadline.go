@@ -24,6 +24,7 @@ type continuousRetryDeadlineContextKey struct{}
 
 type continuousRetryDeadline struct {
 	duration        time.Duration
+	parentContext   context.Context
 	cancel          context.CancelCauseFunc
 	once            sync.Once
 	mu              sync.Mutex
@@ -356,7 +357,7 @@ func installContinuousRetryDeadlineContext(c *gin.Context, policy database.Conti
 	}
 	original := c.Request
 	requestCtx, cancel := context.WithCancelCause(original.Context())
-	deadline := &continuousRetryDeadline{duration: time.Duration(policy.MaxDurationSeconds) * time.Second, cancel: cancel}
+	deadline := &continuousRetryDeadline{duration: time.Duration(policy.MaxDurationSeconds) * time.Second, parentContext: original.Context(), cancel: cancel}
 	c.Request = original.WithContext(context.WithValue(requestCtx, continuousRetryDeadlineContextKey{}, deadline))
 	return func() {
 		deadline.Stop()
@@ -368,6 +369,12 @@ func installContinuousRetryDeadlineContext(c *gin.Context, policy database.Conti
 func writeContinuousRetryTimeoutResponse(c *gin.Context, protocol continuousRetryHTTPProtocol) bool {
 	if c == nil || c.Request == nil || !continuousRetryDeadlineExceeded(c.Request.Context()) {
 		return false
+	}
+	// A primary timeout hands control back to the attempt loop before any
+	// terminal bytes are published. A completed handoff can also restore this
+	// old context during deferred keepalive cleanup; it must not append an error.
+	if c.GetBool(fallbackTerminalAttemptContextKey) || canFallbackAfterPrimaryDeadline(c) {
+		return true
 	}
 	if written, ok := c.Get(continuousRetryTimeoutWrittenKey); ok && written == true {
 		return true

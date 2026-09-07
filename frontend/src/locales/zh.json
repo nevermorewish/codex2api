@@ -100,6 +100,7 @@
     "fallbackReasons": {
       "relay_limit": "达到本地接力次数上限",
       "retry_budget": "本地普通重试预算耗尽",
+      "retry_deadline": "主池持续重试时限耗尽",
       "rate_limit_budget": "本地限流重试预算耗尽",
       "affinity_capacity_full": "会话绑定账号并发已满，未获取到其他本地账号",
       "queue_threshold": "未选到本地账号，排队达到直达兜底阈值",

@@ -1,6 +1,7 @@
 const knownReasons = new Set([
   'relay_limit',
   'retry_budget',
+  'retry_deadline',
   'rate_limit_budget',
   'affinity_capacity_full',
   'queue_threshold',
