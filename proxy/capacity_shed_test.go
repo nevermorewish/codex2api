@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -274,6 +275,78 @@ func capacityShedEpilogue(t *testing.T, c *gin.Context, events [][]byte, attempt
 		})
 	}
 	return false
+}
+
+// 回归：持续重试的保活心跳在首包前触发过，降载重试耗尽后仍须返回真实 500。
+//
+// 生产事故（下游 huanxing-api 日志「上游没有返回计费信息，无法扣费」）的成因：
+// 保活心跳过去写 SSE 注释，会提前提交 HTTP 200 header；此后终态状态码不可改，
+// server_is_overloaded 重试耗尽只能降级成 200 + response.failed（且无 usage），
+// 计费型中转把它当成"正常完成但没返回 usage"，既不计费也不报错。
+// 首包前心跳改用 1xx 后，真实 500 与上游原始信息必须仍能下发。
+func TestCapacityShedExhaustionReturns500EvenAfterKeepaliveHeartbeat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	shedError := []byte(`{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."},"sequence_number":2}`)
+	shedFailed := []byte(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}},"sequence_number":3}`)
+	events := [][]byte{
+		[]byte(`{"type":"response.created","response":{"id":"resp_1"},"sequence_number":0}`),
+		[]byte(`{"type":"response.in_progress","response":{"id":"resp_1"},"sequence_number":1}`),
+		shedError,
+		shedFailed,
+	}
+
+	router := gin.New()
+	router.POST("/v1/responses", func(c *gin.Context) {
+		stop := installContinuousRetrySSEKeepalive(c, true, "text/event-stream")
+		defer stop()
+		keepalive, ok := continuousRetryKeepaliveForContext(c.Request.Context()).(*requestContinuousRetryKeepalive)
+		if !ok {
+			t.Error("SSE 保活未安装")
+			return
+		}
+		// 模拟重试等待期间的心跳（生产中约每 15s 一次）。
+		keepalive.Activate()
+		keepalive.last = time.Time{}
+		if err := keepalive.Keepalive(); err != nil {
+			t.Errorf("写保活心跳: %v", err)
+			return
+		}
+		if retryKeepaliveCommitted(c) {
+			t.Error("首包前心跳提交了响应，终态状态码将不可改")
+			return
+		}
+		// 重试耗尽（attempt == maxRetries）后走真实错误码分支。
+		capacityShedEpilogue(t, c, events, 3, 3)
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL+"/v1/responses", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	body := string(raw)
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500（不得因心跳退化成 200）; body=%q", resp.StatusCode, body)
+	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", resp.Header.Get("Content-Type"))
+	}
+	if !strings.Contains(body, "Our servers are currently overloaded") {
+		t.Errorf("上游原始信息应原样下发, got %q", body)
+	}
+	// 退化的标志是 SSE 帧（data: 前缀 / event-stream），而不是错误消息里恰好
+	// 含有 "response.failed" 字样——上游原始信息本就带这个词。
+	if strings.HasPrefix(body, "data:") || strings.Contains(body, "\ndata:") {
+		t.Errorf("不应退化成 200 流里的 SSE 帧, got %q", body)
+	}
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		t.Errorf("Content-Type 不应是 SSE, got %q", resp.Header.Get("Content-Type"))
+	}
 }
 
 // 回归用例（真实上游降载序列）：created → in_progress → error 帧 → response.failed。

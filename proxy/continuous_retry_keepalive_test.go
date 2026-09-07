@@ -253,7 +253,80 @@ func TestReadSSEStreamWithContinuousRetryKeepaliveWhileWaitingForFrame(t *testin
 	}
 }
 
-func TestContinuousRetrySSEKeepaliveAndCommittedErrors(t *testing.T) {
+// A pre-content SSE heartbeat must not commit HTTP 200. Overload retries can
+// still exhaust afterwards, and billing relays read a 200 stream as a
+// successful turn that merely reported no usage. Heartbeat with 1xx while
+// nothing real has been written so the genuine upstream status still wins.
+func TestContinuousRetrySSEKeepaliveKeepsFinalStatusSelectable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.POST("/v1/responses", func(c *gin.Context) {
+		stop := installContinuousRetrySSEKeepalive(c, true, "text/event-stream")
+		defer stop()
+		keepalive, ok := continuousRetryKeepaliveForContext(c.Request.Context()).(*requestContinuousRetryKeepalive)
+		if !ok {
+			t.Error("SSE heartbeat was not installed")
+			return
+		}
+		keepalive.Activate()
+		keepalive.last = time.Time{}
+		if err := keepalive.Keepalive(); err != nil {
+			t.Errorf("write SSE heartbeat: %v", err)
+			return
+		}
+		// Nothing real was written, so the terminal status is still ours.
+		if retryKeepaliveCommitted(c) {
+			t.Error("pre-content heartbeat committed the response")
+			return
+		}
+		c.Header("Content-Type", "application/json; charset=utf-8")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": gin.H{"message": "server_is_overloaded", "type": "upstream_error"},
+		})
+	})
+	server := httptest.NewServer(engine)
+	defer server.Close()
+
+	gotInformational := make(chan int, 1)
+	trace := &httptrace.ClientTrace{Got1xxResponse: func(code int, _ textproto.MIMEHeader) error {
+		select {
+		case gotInformational <- code:
+		default:
+		}
+		return nil
+	}}
+	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodPost, server.URL+"/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer response.Body.Close()
+	select {
+	case code := <-gotInformational:
+		if code != http.StatusProcessing {
+			t.Fatalf("informational status = %d, want %d", code, http.StatusProcessing)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SSE 102 informational heartbeat was not observed")
+	}
+	if response.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("final status = %d, want %d", response.StatusCode, http.StatusInternalServerError)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read final JSON: %v", err)
+	}
+	if !strings.Contains(string(body), "server_is_overloaded") {
+		t.Fatalf("final JSON = %q", body)
+	}
+}
+
+// Once real stream bytes have reached the client the status is spent, so a
+// later failure must still degrade to an in-band protocol event.
+func TestContinuousRetrySSEKeepaliveCommittedErrorAfterRealOutput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -261,20 +334,12 @@ func TestContinuousRetrySSEKeepaliveAndCommittedErrors(t *testing.T) {
 	stop := installContinuousRetrySSEKeepalive(c, true, "text/event-stream")
 	defer stop()
 
-	keepalive, ok := continuousRetryKeepaliveForContext(c.Request.Context()).(*requestContinuousRetryKeepalive)
-	if !ok {
-		t.Fatal("SSE heartbeat was not installed")
+	setSSEStreamHeaders(c, "text/event-stream")
+	if _, err := c.Writer.WriteString("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"); err != nil {
+		t.Fatalf("write real SSE output: %v", err)
 	}
-	keepalive.Activate()
-	keepalive.last = time.Time{}
-	if err := keepalive.Keepalive(); err != nil {
-		t.Fatalf("write SSE heartbeat: %v", err)
-	}
-	if !strings.Contains(recorder.Body.String(), continuousRetryKeepaliveComment) {
-		t.Fatalf("SSE heartbeat body = %q", recorder.Body.String())
-	}
-	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
-		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	if !retryKeepaliveCommitted(c) {
+		t.Fatal("real stream output did not commit the response")
 	}
 
 	if !writeCommittedResponsesRetryError(c, "upstream failed") {

@@ -76,7 +76,22 @@ func installContinuousRetrySSEKeepalive(c *gin.Context, stream bool, contentType
 	}
 	original := c.Request
 	requestCtx, cancel := context.WithCancelCause(original.Context())
+	// An SSE comment commits HTTP 200 headers. Emitting one before the first
+	// real body byte makes every later failure unreportable: retry exhaustion
+	// on `server_is_overloaded` could only be delivered as a
+	// `200 + response.failed` frame, which billing relays read as a successful
+	// turn that merely returned no usage (hence "上游没有返回计费信息，无法扣费").
+	// While nothing real has been written, heartbeat with a 1xx informational
+	// response instead so the terminal status stays selectable and the genuine
+	// 500 + upstream message reaches the client.
+	informational := unwrapInformationalResponseWriter(c)
 	keepalive := &requestContinuousRetryKeepalive{write: func() error {
+		if informational != nil && !c.Writer.Written() {
+			// net/http sends 1xx immediately and still allows a final status.
+			// Do not Flush: that would commit the accidental 200.
+			informational.WriteHeader(http.StatusProcessing)
+			return nil
+		}
 		setSSEStreamHeaders(c, contentType)
 		if _, err := c.Writer.WriteString(continuousRetryKeepaliveComment); err != nil {
 			return err
@@ -93,22 +108,19 @@ func installContinuousRetrySSEKeepalive(c *gin.Context, stream bool, contentType
 	}
 }
 
-// installContinuousRetryHTTPInformationalKeepalive installs a non-committing
-// keepalive for ordinary JSON endpoints. HTTP 102 is sent through the
-// unwrapped net/http writer so the final JSON status/body can still be chosen
-// later; calling Gin's WriteHeader or Flush here would commit an accidental
-// 200 response. 非流式 JSON 不能插入 SSE 注释，因此用标准 HTTP 102
-// Processing 保活，同时保留最终 JSON 的状态码和响应体语义。
-func installContinuousRetryHTTPInformationalKeepalive(c *gin.Context) func() {
+// unwrapInformationalResponseWriter resolves the raw net/http writer beneath
+// Gin's wrapper so a 1xx informational response can be sent without committing
+// the final status. Gin exposes one Unwrap layer, but middleware may add
+// another; resolve a short chain and refuse to guess when the final writer is
+// still unknown. Returns nil when no raw writer could be resolved.
+func unwrapInformationalResponseWriter(c *gin.Context) http.ResponseWriter {
 	if c == nil || c.Request == nil || c.Writer == nil || !c.Request.ProtoAtLeast(1, 1) {
-		return func() {}
+		return nil
 	}
 	writer, ok := c.Writer.(http.ResponseWriter)
 	if !ok {
-		return func() {}
+		return nil
 	}
-	// Gin exposes one Unwrap layer, but middleware may add another. Resolve a
-	// short chain while refusing to guess when the final writer is unknown.
 	unwrapped := false
 	for depth := 0; depth < 8; depth++ {
 		unwrapper, canUnwrap := writer.(interface{ Unwrap() http.ResponseWriter })
@@ -117,15 +129,29 @@ func installContinuousRetryHTTPInformationalKeepalive(c *gin.Context) func() {
 		}
 		next := unwrapper.Unwrap()
 		if next == nil {
-			return func() {}
+			return nil
 		}
 		writer = next
 		unwrapped = true
 	}
 	if !unwrapped {
-		return func() {}
+		return nil
 	}
 	if _, stillWrapped := writer.(interface{ Unwrap() http.ResponseWriter }); stillWrapped {
+		return nil
+	}
+	return writer
+}
+
+// installContinuousRetryHTTPInformationalKeepalive installs a non-committing
+// keepalive for ordinary JSON endpoints. HTTP 102 is sent through the
+// unwrapped net/http writer so the final JSON status/body can still be chosen
+// later; calling Gin's WriteHeader or Flush here would commit an accidental
+// 200 response. 非流式 JSON 不能插入 SSE 注释，因此用标准 HTTP 102
+// Processing 保活，同时保留最终 JSON 的状态码和响应体语义。
+func installContinuousRetryHTTPInformationalKeepalive(c *gin.Context) func() {
+	writer := unwrapInformationalResponseWriter(c)
+	if writer == nil {
 		return func() {}
 	}
 	original := c.Request

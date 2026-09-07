@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -1090,18 +1091,32 @@ func TestForwardImagesCommittedKeepaliveEndsWithSSEFailure(t *testing.T) {
 	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "image-test-token", PlanType: "plus", AccountID: "image-test-account"})
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
-	responsesBody := []byte(`{"model":"gpt-5.4","input":"draw a test image","tools":[{"type":"image_generation","model":"gpt-image-2"}],"stream":true}`)
-	handler.forwardImagesRequest(c, "/v1/images/generations", "gpt-image-2", "gpt-image-2", "gpt-image-2", responsesBody, "b64_json", "image_generation", true)
+	// A pre-content heartbeat must not commit HTTP 200: the upstream failure
+	// still has to reach the client as a real error status, otherwise a billing
+	// relay reads the 200 stream as a successful turn that reported no usage.
+	engine := gin.New()
+	engine.POST("/v1/images/generations", func(c *gin.Context) {
+		responsesBody := []byte(`{"model":"gpt-5.4","input":"draw a test image","tools":[{"type":"image_generation","model":"gpt-image-2"}],"stream":true}`)
+		handler.forwardImagesRequest(c, "/v1/images/generations", "gpt-image-2", "gpt-image-2", "gpt-image-2", responsesBody, "b64_json", "image_generation", true)
+	})
+	downstream := httptest.NewServer(engine)
+	t.Cleanup(downstream.Close)
 
-	body := recorder.Body.String()
-	if recorder.Code != http.StatusOK || !strings.HasPrefix(body, continuousRetryKeepaliveComment) {
-		t.Fatalf("heartbeat did not commit SSE response: status=%d body=%q", recorder.Code, body)
+	response, err := downstream.Client().Post(downstream.URL+"/v1/images/generations", "application/json", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
 	}
-	if !strings.Contains(body, `"type":"response.failed"`) || !strings.Contains(body, "stop now") {
-		t.Fatalf("committed stream missing terminal response.failed: %q", body)
+	defer response.Body.Close()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(raw)
+	if response.StatusCode == http.StatusOK {
+		t.Fatalf("upstream failure was delivered as HTTP 200: body=%q", body)
+	}
+	if !strings.Contains(body, "stop now") {
+		t.Fatalf("final error body lost the upstream message: status=%d body=%q", response.StatusCode, body)
 	}
 }
 

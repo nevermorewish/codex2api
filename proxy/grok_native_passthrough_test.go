@@ -252,12 +252,16 @@ func TestSendGrokNativeHTTPErrorAfterKeepaliveUsesProtocolEvent(t *testing.T) {
 			stop := installContinuousRetrySSEKeepalive(ctx, true, "text/event-stream")
 			defer stop()
 
-			keepalive := continuousRetryKeepaliveForContext(ctx.Request.Context())
-			keepalive.Activate()
-			requestKeepalive := keepalive.(*requestContinuousRetryKeepalive)
-			requestKeepalive.last = time.Time{}
-			if err := keepalive.Keepalive(); err != nil {
-				t.Fatalf("write keepalive: %v", err)
+			// Real stream bytes spend the HTTP status, which is what forces the
+			// later failure to be delivered as an in-band protocol event. A bare
+			// pre-content heartbeat no longer commits the response, so the
+			// terminal status would otherwise still be selectable.
+			setSSEStreamHeaders(ctx, "text/event-stream")
+			if _, err := ctx.Writer.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"); err != nil {
+				t.Fatalf("write real SSE output: %v", err)
+			}
+			if !retryKeepaliveCommitted(ctx) {
+				t.Fatal("real stream output did not commit the response")
 			}
 			(&Handler{}).sendGrokNativeHTTPError(ctx, tc.protocol, streamOutcome{
 				logStatusCode:  http.StatusServiceUnavailable,
