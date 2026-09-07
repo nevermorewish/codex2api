@@ -58,13 +58,17 @@ type Handler struct {
 	// executeClaudeUsageProbe is injectable for tests; production uses the
 	// provider-native Anthropic Messages request directly.
 	executeClaudeUsageProbe func(context.Context, *auth.Account, []byte) (*http.Response, error)
-	activate5hWindow        func(context.Context, *auth.Account) error
-	executeUsageProbe       usageProbeRequestFunc
-	syncAccountPlanOnReset  func(context.Context, *auth.Account) error
-	queryResetCredits       func(context.Context, *auth.Account, string) (*proxy.WhamResetCreditsList, *http.Response, error)
-	consumeResetCredit      func(context.Context, *auth.Account, string, string) (*proxy.WhamResetResult, *http.Response, error)
-	queryWhamDailyUsage     func(context.Context, *auth.Account, string, string, string) (*proxy.WhamDailyUsageResponse, *http.Response, error)
-	sendCodexInvite         func(context.Context, *auth.Account, string, string, string, []string) (*proxy.CodexInviteResult, error)
+	// refreshClaudeTokensForImport is injectable for tests; production uses the
+	// real platform.claude.com refresh grant (see refreshClaudeCredentialsForImport).
+	refreshClaudeTokensForImport func(ctx context.Context, proxyURL, refreshToken string) (*auth.ClaudeTokenData, error)
+	activate5hWindow             func(context.Context, *auth.Account) error
+	executeUsageProbe            usageProbeRequestFunc
+	syncAccountPlanOnReset       func(context.Context, *auth.Account) error
+	queryResetCredits            func(context.Context, *auth.Account, string) (*proxy.WhamResetCreditsList, *http.Response, error)
+	consumeResetCredit           func(context.Context, *auth.Account, string, string) (*proxy.WhamResetResult, *http.Response, error)
+	queryWhamDailyUsage          func(context.Context, *auth.Account, string, string, string) (*proxy.WhamDailyUsageResponse, *http.Response, error)
+	queryWhamDailyTokenBreakdown func(context.Context, *auth.Account, string, string, string) (*proxy.WhamDailyTokenBreakdownResponse, *http.Response, error)
+	sendCodexInvite              func(context.Context, *auth.Account, string, string, string, []string) (*proxy.CodexInviteResult, error)
 	// 列表 page-stats 发现当前页缺少官方结算快照时，按账号做即时回补；
 	// last/in-flight 避免翻页或前端重试把同一号打爆上游，failedAt 给持续
 	// 失败的账号更长的冷却，syncedOnce 记录「成功同步过但上游没有数据」
@@ -74,6 +78,7 @@ type Handler struct {
 	whamDailyBackfillInFlight  map[int64]struct{}
 	whamDailyBackfillFailedAt  map[int64]time.Time
 	whamDailySyncedOnce        map[int64]struct{}
+	whamDailyDeepSynced        map[int64]whamDailyDeepState
 	recordAccountEvent         func(int64, string, string)
 	proxyProbe                 func(context.Context, string, string) proxyProbeResult
 	reloadProxyPoolFn          func() error
@@ -94,6 +99,8 @@ type Handler struct {
 	antigravityCapabilityProbe antigravityCapabilityExecutor
 	fallbackPool               *auth.FallbackPool
 	apiKeyConcurrencySnapshot  func() map[int64]int64
+	// Claude / Antigravity 渠道连通性测试配置的进程内缓存（首次读库，PUT 刷新）。
+	channelTestCfg atomic.Pointer[database.ChannelTestConfig]
 
 	// 导入触发的用量采样队列。固定数量 worker 消费任务，避免“一账号一 goroutine”
 	// 在大文件导入时堆出成千上万个阻塞协程。
@@ -992,6 +999,7 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 	handler.queryResetCredits = proxy.QueryWhamResetCredits
 	handler.consumeResetCredit = proxy.ConsumeResetCreditParsed
 	handler.queryWhamDailyUsage = proxy.QueryWhamDailyUsage
+	handler.queryWhamDailyTokenBreakdown = proxy.QueryWhamDailyTokenBreakdown
 	handler.sendCodexInvite = proxy.SendCodexInvite
 	handler.whamDailyBackfillLast = make(map[int64]time.Time)
 	handler.whamDailyBackfillInFlight = make(map[int64]struct{})
@@ -1098,7 +1106,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/grok/oauth/exchange-code", h.ExchangeGrokOAuthCode) // 兼容旧客户端
 	api.POST("/accounts/claude/oauth/auth-url", h.GenerateClaudeAuthURL)
 	api.POST("/accounts/claude/oauth/exchange-code", h.ExchangeClaudeOAuthCode)
+	api.POST("/accounts/claude/oauth/exchange-session-key", h.ExchangeClaudeSessionKey)
 	api.POST("/accounts/claude/import", h.ImportClaudeToken)
+	api.POST("/accounts/claude/import-setup-tokens", h.ImportClaudeSetupTokens) // 兼容旧名:同时接受 oat01/ort01
+	api.POST("/accounts/claude/import-tokens", h.ImportClaudeSetupTokens)
 	api.GET("/accounts/claude/export", h.ExportClaudeAccounts)
 	api.POST("/accounts/:id/claude/models", h.RefreshClaudeModels)
 	api.POST("/accounts/claude/models/refresh", h.RefreshAllClaudeModels)
@@ -1218,6 +1229,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PUT("/settings/invite-guide", h.UpdateInviteGuideSettings)
 	api.GET("/settings/visible-channels", h.GetVisibleChannelsSettings)
 	api.PUT("/settings/visible-channels", h.UpdateVisibleChannelsSettings)
+	api.GET("/settings/channel-tests", h.GetChannelTestSettings)
+	api.PUT("/settings/channel-tests", h.UpdateChannelTestSettings)
+	api.GET("/settings/antigravity", h.GetAntigravitySettings)
+	api.PUT("/settings/antigravity", h.UpdateAntigravitySettings)
 	api.POST("/settings/background-upload", h.UploadBackgroundAsset)
 	api.POST("/settings/image-storage/test", h.TestImageStorageConnection)
 	api.GET("/prompt-filter/logs", h.ListPromptFilterLogs)
@@ -1601,6 +1616,8 @@ type accountResponse struct {
 	GrokAPI                       bool                        `json:"grok_api,omitempty"`
 	AntigravityAPI                bool                        `json:"antigravity_api,omitempty"`
 	ClaudeAPI                     bool                        `json:"claude_api,omitempty"`
+	ClaudeAuthKind                string                      `json:"claude_auth_kind,omitempty"`
+	ClaudeBaseURL                 string                      `json:"claude_base_url,omitempty"`
 	AntigravityAuthKind           string                      `json:"antigravity_auth_kind,omitempty"`
 	AgentIdentity                 bool                        `json:"agent_identity,omitempty"`
 	GrokAuthKind                  string                      `json:"grok_auth_kind,omitempty"`
@@ -2555,6 +2572,17 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 			}
 			writeError(c, http.StatusInternalServerError, "查询账号失败: "+err.Error())
 			return
+		}
+		// Claude API Key 账号的 custom_headers 是出站自定义头(issue #647):网关保留头
+		// (Authorization / x-api-key / Content-Type / Accept 等)不允许覆盖。
+		if strings.EqualFold(strings.TrimSpace(row.GetCredential("upstream_type")), auth.UpstreamClaude) && claudeAuthKindForRow(row, true) == auth.ClaudeAuthKindAPIKey {
+			normalized, err := normalizeClaudeAPIKeyCustomHeaders(update.CustomHeaders.Values)
+			if err != nil {
+				writeError(c, http.StatusBadRequest, err.Error())
+				return
+			}
+			update.CustomHeaders.Values = normalized
+			update.CredentialUpdates["custom_headers"] = cloneCustomHeaders(normalized)
 		}
 		seed := tokenCredentialSeedFromAccountRow(row)
 		previousOverride := openaiidentity.WorkspaceOverrideFromHeaders(seed.customHeaders)
@@ -4519,7 +4547,7 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 	if account.IsClaudeOAuth() {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 		defer cancel()
-		models, fetchErr := auth.NewClaudeAuth(h.store.ResolveProxyForAccount(account)).FetchModels(ctx, account.GetAccessToken())
+		models, fetchErr := auth.NewClaudeAuth(h.store.ResolveProxyForAccount(account)).FetchModelsForAccount(ctx, account)
 		if fetchErr != nil {
 			writeError(c, http.StatusBadGateway, fmt.Sprintf("拉取 Claude 上游模型清单失败: %s", fetchErr.Error()))
 			return

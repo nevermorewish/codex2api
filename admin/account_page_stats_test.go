@@ -96,6 +96,9 @@ func TestGetAccountPageStatsBackfillsMissingOfficialUsage(t *testing.T) {
 	t.Cleanup(func() { _ = tokenCache.Close() })
 	handler := NewHandler(store, db, tokenCache, nil, "")
 	ageAccountForOfficialUsage(t, store, codexID)
+	handler.queryWhamDailyTokenBreakdown = func(context.Context, *auth.Account, string, string, string) (*proxy.WhamDailyTokenBreakdownResponse, *http.Response, error) {
+		return &proxy.WhamDailyTokenBreakdownResponse{}, nil, nil
+	}
 
 	var mu sync.Mutex
 	called := make([]int64, 0, 2)
@@ -167,6 +170,9 @@ func TestGetAccountPageStatsMarksSyncedWhenUpstreamHasNoData(t *testing.T) {
 	t.Cleanup(func() { _ = tokenCache.Close() })
 	handler := NewHandler(store, db, tokenCache, nil, "")
 	ageAccountForOfficialUsage(t, store, id)
+	handler.queryWhamDailyTokenBreakdown = func(context.Context, *auth.Account, string, string, string) (*proxy.WhamDailyTokenBreakdownResponse, *http.Response, error) {
+		return &proxy.WhamDailyTokenBreakdownResponse{}, nil, nil
+	}
 
 	var mu sync.Mutex
 	calls := 0
@@ -233,6 +239,9 @@ func TestWhamDailyBackfillFailureCooldownSkipsRetry(t *testing.T) {
 	t.Cleanup(func() { _ = tokenCache.Close() })
 	handler := NewHandler(store, db, tokenCache, nil, "")
 	ageAccountForOfficialUsage(t, store, id)
+	handler.queryWhamDailyTokenBreakdown = func(context.Context, *auth.Account, string, string, string) (*proxy.WhamDailyTokenBreakdownResponse, *http.Response, error) {
+		return &proxy.WhamDailyTokenBreakdownResponse{}, nil, nil
+	}
 
 	var mu sync.Mutex
 	calls := 0

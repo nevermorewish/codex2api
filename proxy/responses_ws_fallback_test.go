@@ -27,6 +27,8 @@ const wsFallbackSuccess = `{"type":"response.completed","response":{"id":"resp_f
 // snapshots Gin metadata after each completed turn, before accepting the next.
 func TestNativeWSFallbackMultiTurnIsolation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	resetResponseCacheForTest()
+	t.Cleanup(resetResponseCacheForTest)
 	previous, previousExec := CurrentRuntimeSettings(), WebsocketExecuteFunc
 	previousMetrics := globalFallbackMetrics
 	globalFallbackMetrics = newFallbackMetrics()
@@ -130,7 +132,7 @@ func TestNativeWSFallbackMultiTurnIsolation(t *testing.T) {
 		}
 	}()
 	for turn, input := range []string{"fallback-first", "primary-success", "fallback-third"} {
-		request := fmt.Sprintf(`{"type":"response.create","model":"gpt-5.4","input":%q,"prompt_cache_key":"same-multi-turn-session"}`, input)
+		request := fmt.Sprintf(`{"type":"response.create","model":"gpt-5.4","store":%t,"input":[{"type":"message","role":"user","content":%q}],"prompt_cache_key":"same-multi-turn-session"}`, turn != 0, input)
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
 			t.Fatal(err)
 		}
@@ -163,6 +165,16 @@ func TestNativeWSFallbackMultiTurnIsolation(t *testing.T) {
 		}
 		if result.err != nil || result.occupied != 0 {
 			t.Fatalf("turn %d err=%v occupied=%d", turn, result.err, result.occupied)
+		}
+		// The forwarder has returned, so its cache commit is complete. The
+		// fallback adapter must obey store:false and retain the current turn
+		// when storage is enabled under the upstream replay-source API.
+		cachedFallback := getResponseCache("anon", "resp_fallback")
+		if turn == 0 && len(cachedFallback) != 0 {
+			t.Fatal("store:false fallback turn was cached")
+		}
+		if turn == 2 && (len(cachedFallback) != 1 || gjson.GetBytes(cachedFallback[0], "content").String() != input) {
+			t.Fatalf("fallback replay snapshot lost the current input: %s", cachedFallback)
 		}
 		if turn == 1 {
 			if result.fallbackName != "" || result.sourceName != "" || result.sourceID != 0 || result.fallbackReason != "" {
