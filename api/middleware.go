@@ -202,6 +202,40 @@ func BodyCacheMiddleware() gin.HandlerFunc {
 	}
 }
 
+// EnsureErrorBodyMiddleware guarantees every response that finishes with a 5xx
+// status but no body gets a standard JSON error, so a bare c.Status()/
+// AbortWithStatus() call (present or future, anywhere in the chain) never
+// reaches the client as a Content-Length: 0 response the caller can't parse.
+// Must be the outermost middleware (registered before RecoveryMiddleware) so
+// it observes the final wire status after recovery/handlers have run.
+func EnsureErrorBodyMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+
+		status := c.Writer.Status()
+		if status < 500 || status > 599 || c.Writer.Size() > 0 {
+			return
+		}
+
+		fallback := ErrServerError
+		if status == http.StatusServiceUnavailable {
+			fallback = ErrServiceUnavailable
+		}
+
+		if !c.Writer.Written() {
+			SendErrorWithStatus(c, fallback, status)
+			return
+		}
+		// Headers are already committed (status locked in); we can still append
+		// a body since nothing but the status line/headers has gone out yet.
+		body, err := json.Marshal(ErrorResponse{Error: *fallback})
+		if err != nil {
+			return
+		}
+		_, _ = c.Writer.Write(body)
+	}
+}
+
 // RecoveryMiddleware provides enhanced panic recovery with standardized error response
 func RecoveryMiddleware() gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
