@@ -3850,6 +3850,7 @@ export interface RelayChain {
   started_at: ISODateString
   attempts: RelayAttempt[]
   final_ok: boolean
+  status?: 'in_progress' | 'success' | 'failed' | 'canceled' | 'incomplete'
   total_ms: number
   switch_count: number
 }

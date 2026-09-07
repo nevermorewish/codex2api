@@ -1516,6 +1516,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	}
 	populateAPIKeyMetaFromContext(c, input)
 	populateInternalUsageMetaFromContext(c, input)
+	observeRelayRequest(c, input)
 	populateClientIPFromRequest(c, input)
 	populateUserAgentMetaFromRequest(c, input)
 	populateWsAcquireFromRequest(c, input)
@@ -3709,6 +3710,7 @@ func firstGJSONInt(body []byte, paths ...string) int64 {
 
 // Responses 处理 /v1/responses 请求（原生透传，增强输入验证）
 func (h *Handler) Responses(c *gin.Context) {
+	defer beginRelayRequest(c)()
 	// 1. 读取请求体
 	handlerStart := time.Now()
 	rawBody, err := readRawRequestBody(c)
@@ -6633,6 +6635,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 }
 
 func (h *Handler) ChatCompletions(c *gin.Context) {
+	defer beginRelayRequest(c)()
 	// 1. 读取请求体
 	rawBody, err := readRawRequestBody(c)
 	if err != nil {

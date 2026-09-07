@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
 	"github.com/gin-gonic/gin"
 )
 
@@ -36,6 +37,7 @@ type relayChainResponse struct {
 	StartedAt   time.Time              `json:"started_at"`
 	Attempts    []relayAttemptResponse `json:"attempts"`
 	FinalOK     bool                   `json:"final_ok"`
+	Status      string                 `json:"status"`
 	TotalMs     int64                  `json:"total_ms"`
 	SwitchCount int                    `json:"switch_count"`
 }
@@ -164,7 +166,9 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 			accountName := relayAccountName(row, fallbackNames)
 			accountKey := relayAccountKey(row, accountName)
 			decision := "failed"
-			if row.StatusCode >= 200 && row.StatusCode < 300 && !row.IsRetryAttempt {
+			if row.StatusCode == 499 {
+				decision = "canceled"
+			} else if row.StatusCode >= 200 && row.StatusCode < 300 && !row.IsRetryAttempt {
 				decision = "success"
 			} else if index > 0 || row.IsRetryAttempt {
 				switch {
@@ -195,11 +199,33 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 			}
 			chain.FinalOK = row.StatusCode >= 200 && row.StatusCode < 300 && !row.IsRetryAttempt
 		}
+		chain.Status = relayChainStatus(group.logs[len(group.logs)-1], proxy.RelayRequestInProgress(chain.RequestID))
 		chain.StartedAt = first.CreatedAt.Add(-time.Duration(first.DurationMs) * time.Millisecond)
 		chains = append(chains, chain)
 	}
 	sort.Slice(chains, func(i, j int) bool { return order[chains[i].RequestID] < order[chains[j].RequestID] })
 	c.JSON(http.StatusOK, gin.H{"chains": chains, "total": total, "page": page, "page_size": pageSize})
+}
+
+func relayChainStatus(last *database.UsageLog, active bool) string {
+	if last == nil {
+		return "incomplete"
+	}
+	if last.StatusCode == 499 {
+		return "canceled"
+	}
+	if last.IsRetryAttempt || last.StatusCode < 200 {
+		if active {
+			return "in_progress"
+		}
+		// The request ended (or the process restarted), but its final attempt
+		// has not been persisted. Do not invent a success or failure outcome.
+		return "incomplete"
+	}
+	if last.StatusCode < 300 {
+		return "success"
+	}
+	return "failed"
 }
 
 func isFallbackRelayAttempt(row *database.UsageLog) bool {

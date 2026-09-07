@@ -12,7 +12,7 @@ const relayChainCTE = `WITH candidate_rows AS (
           PARTITION BY COALESCE(NULLIF(TRIM(parent_request_id), ''), 'usage-' || CAST(id AS TEXT))
         ) AS max_attempt
  FROM usage_logs
- WHERE status_code <> 499 AND COALESCE(TRIM(internal_reason), '') = ''
+ WHERE COALESCE(TRIM(internal_reason), '') = ''
 ), attempt_rows AS (
  SELECT * FROM candidate_rows WHERE max_attempt = 0 OR attempt_index > 0
 ), chains AS (

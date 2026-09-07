@@ -325,6 +325,7 @@ func stripNewAPIPolicyWebSocketEventID(payload []byte) ([]byte, string) {
 }
 
 func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.Conn, rawPayload []byte, policyEventID string, options *responsesWSForwardOptions) (returnErr error) {
+	defer beginRelayRequest(c)()
 	// A Gin context lives for the whole downstream WS connection, not one turn.
 	c.Set(contextFallbackAccountName, "")
 	c.Set(contextFallbackReason, "")

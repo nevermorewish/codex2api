@@ -527,8 +527,8 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
 
 export const api = {
   getBranding: () => requestPublic<SiteBranding>('/api/branding'),
-  getConcurrency: () => request<ConcurrencySnapshot>('/concurrency'),
-  getRelayChains: (page = 1) => request<{ chains: RelayChain[]; total: number; page: number; page_size: number }>(`/dashboard/relay-chains?page=${encodeURIComponent(String(page))}`),
+  getConcurrency: (signal?: AbortSignal) => request<ConcurrencySnapshot>('/concurrency', { signal }),
+  getRelayChains: (page = 1, signal?: AbortSignal) => request<{ chains: RelayChain[]; total: number; page: number; page_size: number }>(`/dashboard/relay-chains?page=${encodeURIComponent(String(page))}`, { signal }),
   listFallbackAccounts: () => request<{ accounts: FallbackAccount[] }>('/fallback/accounts'),
   createFallbackAccount: (data: FallbackAccountPayload) =>
     request<{ account: FallbackAccount }>('/fallback/accounts', { method: 'POST', body: JSON.stringify(data) }),

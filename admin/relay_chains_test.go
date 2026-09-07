@@ -14,6 +14,72 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestRelayChainStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		row    *database.UsageLog
+		active bool
+		want   string
+	}{
+		{"retry running", &database.UsageLog{StatusCode: 500, IsRetryAttempt: true}, true, "in_progress"},
+		{"interrupted retry", &database.UsageLog{StatusCode: 500, IsRetryAttempt: true}, false, "incomplete"},
+		{"canceled", &database.UsageLog{StatusCode: 499}, false, "canceled"},
+		{"cancel before cleanup", &database.UsageLog{StatusCode: 499}, true, "canceled"},
+		{"success before cleanup", &database.UsageLog{StatusCode: 200}, true, "success"},
+		{"terminal error", &database.UsageLog{StatusCode: 503}, false, "failed"},
+		{"missing", nil, false, "incomplete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := relayChainStatus(tc.row, tc.active); got != tc.want {
+				t.Fatalf("status=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetRelayChainsPreservesCanceledFallback(t *testing.T) {
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "relay-canceled.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetUsageLogConfig(database.UsageLogModeFull, 1000, 3600)
+	for i, id := range []int64{1, 2, 3, -4} {
+		status, reason := 500, ""
+		if i == 3 {
+			status, reason = 499, "relay_limit"
+		}
+		if err := db.InsertUsageLog(context.Background(), &database.UsageLogInput{
+			AccountID: id, ParentRequestID: "cancel-fallback", AttemptIndex: i + 1,
+			StatusCode: status, IsRetryAttempt: i < 3, DurationMs: 10, FallbackReason: reason,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.FlushUsageLogs()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/dashboard/relay-chains", nil)
+	(&Handler{db: db}).GetRelayChains(c)
+	var response struct {
+		Chains []relayChainResponse `json:"chains"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != 200 || len(response.Chains) != 1 {
+		t.Fatalf("response=%s", recorder.Body.String())
+	}
+	chain := response.Chains[0]
+	if len(chain.Attempts) != 4 || chain.SwitchCount != 3 || chain.Status != "canceled" || chain.FinalOK || chain.TotalMs != 40 {
+		t.Fatalf("chain lost canceled hop: %+v", chain)
+	}
+	last := chain.Attempts[3]
+	if last.StatusCode != 499 || last.Decision != "canceled" || !last.Fallback || last.FallbackReason != "relay_limit" {
+		t.Fatalf("canceled fallback lost attribution: %+v", last)
+	}
+}
+
 func TestRelayAccountName(t *testing.T) {
 	names := map[int64]string{-3: " zwenooo ", -4: "nexaxis.ai"}
 	tests := []struct {
@@ -192,7 +258,7 @@ func TestGetRelayChainsFiltersBeforePagingCompleteRequests(t *testing.T) {
 	insert(&database.UsageLogInput{ParentRequestID: "cancelled", StatusCode: 499})
 	db.FlushUsageLogs()
 	seen := make(map[string]bool)
-	for page, want := range []int{20, 20, 2, 0} {
+	for page, want := range []int{20, 20, 3, 0} {
 		recorder := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(recorder)
 		c.Request = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/admin/dashboard/relay-chains?page=%d", page+1), nil)
@@ -209,7 +275,7 @@ func TestGetRelayChainsFiltersBeforePagingCompleteRequests(t *testing.T) {
 		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)
 		}
-		if response.Total != 42 || response.PageSize != 20 || response.Page != page+1 || len(response.Chains) != want {
+		if response.Total != 43 || response.PageSize != 20 || response.Page != page+1 || len(response.Chains) != want {
 			t.Fatalf("page %d: total=%d page=%d size=%d chains=%d", page+1, response.Total, response.Page, response.PageSize, len(response.Chains))
 		}
 		for _, chain := range response.Chains {
@@ -222,7 +288,7 @@ func TestGetRelayChainsFiltersBeforePagingCompleteRequests(t *testing.T) {
 			}
 		}
 	}
-	if len(seen) != 42 {
-		t.Fatalf("unique chains = %d, want 42", len(seen))
+	if len(seen) != 43 {
+		t.Fatalf("unique chains = %d, want 43", len(seen))
 	}
 }

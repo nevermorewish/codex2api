@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
-import { Activity, ArrowRight, CheckCircle2, ChevronDown, Gauge, GitBranch, KeyRound, Layers3, Search, Users, XCircle } from 'lucide-react'
+import { Activity, ArrowRight, CheckCircle2, ChevronDown, CircleHelp, CircleSlash, Gauge, GitBranch, KeyRound, Layers3, LoaderCircle, Search, Users, XCircle } from 'lucide-react'
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from 'recharts'
 import { api } from '../api'
 import type { ConcurrencyAccountRow, ConcurrencySnapshot, RelayAttempt, RelayChain } from '../types'
@@ -15,8 +15,35 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { getErrorMessage } from '../utils/error'
 import { cn } from '@/lib/utils'
 import { relayFallbackReasonKey } from '@/lib/relayFallbackReason'
+import { relayChainReason, relayChainStatus, relayElapsedMs } from '@/lib/relayChainStatus'
+import { createSerialPoller } from '@/lib/serialPoller'
 
 const RELAY_PAGE_SIZE = 20
+
+function RelayResult({ chain, t }: { chain: RelayChain; t: TFunction }) {
+  const status = relayChainStatus(chain)
+  const Icon = status === 'success' ? CheckCircle2 : status === 'failed' ? XCircle : status === 'in_progress' ? LoaderCircle : status === 'canceled' ? CircleSlash : CircleHelp
+  return (
+    <span className={cn('inline-flex items-center gap-1 text-xs font-medium', status === 'success' ? 'text-emerald-600 dark:text-emerald-400' : status === 'failed' ? 'text-red-600 dark:text-red-400' : status === 'in_progress' ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground')}>
+      <Icon className={cn('size-4 shrink-0', status === 'in_progress' && 'animate-spin')} />
+      <span>{t(`concurrency.relayStatuses.${status}`)}</span>
+    </span>
+  )
+}
+
+function RelayReason({ chain, t }: { chain: RelayChain; t: TFunction }) {
+  const reason = relayChainReason(chain)
+  if (!reason) return null
+  const message = reason.message || (reason.statusCode >= 400
+    ? t('concurrency.relayReasonHTTPOnly', { code: reason.statusCode })
+    : t('concurrency.relayReasonUnavailable'))
+  return (
+    <span className={cn('mt-2 block whitespace-pre-wrap break-words text-xs leading-relaxed [overflow-wrap:anywhere]', reason.kind === 'final' ? 'text-red-700 dark:text-red-300' : reason.kind === 'latest' ? 'text-amber-700 dark:text-amber-300' : 'text-muted-foreground')}>
+      <span className="font-medium">{t(`concurrency.relayReasonLabels.${reason.kind}`)}{reason.kind === 'latest' && reason.seq > 0 ? ` #${reason.seq}` : ''}：</span>
+      {reason.message && reason.statusCode >= 400 ? `HTTP ${reason.statusCode} · ` : ''}{message}
+    </span>
+  )
+}
 
 function RelayAccountLabel({ attempt, t }: { attempt: RelayAttempt; t: TFunction }) {
   const name = attempt.account_name || (attempt.account_id ? `#${attempt.account_id}` : t('concurrency.unknownAccount'))
@@ -73,12 +100,10 @@ function RelayChainDetails({ chain, t }: { chain: RelayChain; t: TFunction }) {
         </div>
         <div>
           <div className="text-muted-foreground">{t('concurrency.relayResult')}</div>
-          <div className={cn('mt-1 font-medium', chain.final_ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-            {chain.final_ok ? t('concurrency.relaySuccess') : t('concurrency.relayFailed')}
-          </div>
+          <div className="mt-1"><RelayResult chain={chain} t={t} /></div>
         </div>
         <div>
-          <div className="text-muted-foreground">{t('concurrency.relayAttemptsLabel')}</div>
+          <div className="text-muted-foreground">{t(relayChainStatus(chain) === 'in_progress' ? 'concurrency.relayCompletedAttemptsLabel' : 'concurrency.relayAttemptsLabel')}</div>
           <div className="mt-1 font-medium tabular-nums text-foreground">{chain.attempts.length}</div>
         </div>
         <div>
@@ -87,6 +112,10 @@ function RelayChainDetails({ chain, t }: { chain: RelayChain; t: TFunction }) {
         </div>
       </div>
 
+      <RelayReason chain={chain} t={t} />
+      {relayChainStatus(chain) === 'in_progress' || relayChainStatus(chain) === 'incomplete' ? (
+        <p className="mt-3 text-xs text-muted-foreground">{t(relayChainStatus(chain) === 'in_progress' ? 'concurrency.relayInProgressHint' : 'concurrency.relayIncompleteHint')}</p>
+      ) : null}
       <div className="mt-4 overflow-x-auto rounded-md border border-border bg-background/50">
         <Table>
           <TableHeader>
@@ -107,9 +136,9 @@ function RelayChainDetails({ chain, t }: { chain: RelayChain; t: TFunction }) {
                 <TableRow key={`${chain.request_id}-detail-${attempt.seq}`}>
                   <TableCell className="tabular-nums text-muted-foreground">{attempt.seq}</TableCell>
                   <TableCell className="max-w-56 font-medium"><RelayAccountLabel attempt={attempt} t={t} /></TableCell>
-                  <TableCell className={cn('tabular-nums', statusOK ? 'text-emerald-600 dark:text-emerald-400' : attempt.status_code >= 400 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground')}>{attempt.status_code || '-'}</TableCell>
+                  <TableCell className={cn('tabular-nums', attempt.status_code === 499 ? 'text-muted-foreground' : statusOK ? 'text-emerald-600 dark:text-emerald-400' : attempt.status_code >= 400 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground')}>{attempt.status_code || '-'}</TableCell>
                   <TableCell>
-                    <span className={cn('rounded border px-1.5 py-0.5 text-[11px]', attempt.decision === 'success' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : attempt.decision === 'failed' ? 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300')}>
+                    <span className={cn('rounded border px-1.5 py-0.5 text-[11px]', attempt.decision === 'canceled' ? 'border-border bg-muted text-muted-foreground' : attempt.decision === 'success' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : attempt.decision === 'failed' ? 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300')}>
                       {t(`concurrency.relayDecisionValues.${attempt.decision}`, { defaultValue: attempt.decision || '-' })}
                     </span>
                   </TableCell>
@@ -117,7 +146,7 @@ function RelayChainDetails({ chain, t }: { chain: RelayChain; t: TFunction }) {
                     {attempt.fallback || attempt.account_id < 0 ? t(relayFallbackReasonKey(attempt.fallback_reason)) : '-'}
                   </TableCell>
                   <TableCell className="whitespace-nowrap tabular-nums text-muted-foreground">{formatDuration(attempt.duration_ms)}</TableCell>
-                  <TableCell className="max-w-72 truncate text-xs text-red-700 dark:text-red-300" title={attempt.error || undefined}>{attempt.error || '-'}</TableCell>
+                  <TableCell className="min-w-56 max-w-96 whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300 [overflow-wrap:anywhere]">{attempt.error || (attempt.status_code >= 400 ? t('concurrency.relayReasonHTTPOnly', { code: attempt.status_code }) : '-')}</TableCell>
                 </TableRow>
               )
             })}
@@ -143,30 +172,20 @@ export default function Concurrency() {
   const [relayError, setRelayError] = useState<string | null>(null)
   const [relayRefresh, setRelayRefresh] = useState(0)
   const [requestTrend, setRequestTrend] = useState<Array<{ bucket: string; requests: number; fallback: number }>>([])
+  const [now, setNow] = useState(Date.now)
+  const refreshSnapshot = useRef<() => void>(() => {})
 
-  const refresh = useCallback(async (quiet = false) => {
+  const refresh = useCallback((quiet = false) => {
     if (!quiet) setLoading(true)
-    try {
-      setSnapshot(await api.getConcurrency())
-      setError(null)
-    } catch (err) {
-      setError(getErrorMessage(err))
-    } finally {
-      if (!quiet) setLoading(false)
-    }
+    refreshSnapshot.current()
   }, [])
 
   useEffect(() => {
-    let active = true
-    let inFlight = false
     setRelayLoading(true)
     setExpandedRelay(null)
-    const load = async () => {
-      if (inFlight) return
-      inFlight = true
-      try {
-        const result = await api.getRelayChains(relayPage)
-        if (!active) return
+    const loader = createSerialPoller({
+      request: (signal) => api.getRelayChains(relayPage, signal),
+      onResult: (result) => {
         const lastPage = Math.max(1, Math.ceil(result.total / RELAY_PAGE_SIZE))
         if (relayPage > lastPage) {
           setRelayPage(lastPage)
@@ -175,41 +194,46 @@ export default function Concurrency() {
         setRelayChains(result.chains ?? [])
         setRelayTotal(result.total)
         setRelayError(null)
-      } catch (err) {
-        if (active) setRelayError(getErrorMessage(err))
-      } finally {
-        inFlight = false
-        if (active) setRelayLoading(false)
-      }
-    }
-    void load()
+        setRelayLoading(false)
+      },
+      onError: (err) => {
+        setRelayError(getErrorMessage(err))
+        setRelayLoading(false)
+      },
+    })
+    void loader.load()
     const poll = () => {
-      if (document.visibilityState === 'visible') void load()
+      if (document.visibilityState === 'visible') void loader.load()
     }
     const timer = window.setInterval(poll, 2000)
     document.addEventListener('visibilitychange', poll)
     return () => {
-      active = false
+      loader.stop()
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', poll)
     }
   }, [relayPage, relayRefresh])
 
   useEffect(() => {
-    void refresh(false)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
+    const loader = createSerialPoller({
+      request: (signal) => api.getConcurrency(signal),
+      onResult: (result) => { setSnapshot(result); setError(null); setLoading(false) },
+      onError: (err) => { setError(getErrorMessage(err)); setLoading(false) },
+    })
+    refreshSnapshot.current = () => { void loader.load() }
+    void loader.load()
     const poll = () => {
-      if (document.visibilityState === 'visible') void refresh(true)
+      if (document.visibilityState === 'visible') { setNow(Date.now()); void loader.load() }
     }
     const timer = window.setInterval(poll, 2000)
     document.addEventListener('visibilitychange', poll)
     return () => {
+      loader.stop()
+      refreshSnapshot.current = () => {}
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', poll)
     }
-  }, [refresh])
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -316,14 +340,13 @@ export default function Concurrency() {
                               ))}
                               {chain.attempts.length === 0 ? <span>{t('concurrency.noAttempts')}</span> : null}
                             </div>
+                            <RelayReason chain={chain} t={t} />
+                            {relayChainStatus(chain) === 'in_progress' ? <span className="mt-1 block text-xs text-muted-foreground">{t('concurrency.relayWaitingFinal')}</span> : null}
                           </div>
                           <div className="ml-auto flex shrink-0 items-center gap-2">
-                            <span className="hidden text-xs text-muted-foreground sm:inline">{t('concurrency.relayAttempts', { count: chain.attempts.length })}</span>
-                            <span className={cn('inline-flex items-center gap-1 text-xs font-medium', chain.final_ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-                              {chain.final_ok ? <CheckCircle2 className="size-4" /> : <XCircle className="size-4" />}
-                              <span className="hidden sm:inline">{chain.final_ok ? t('concurrency.relaySuccess') : t('concurrency.relayFailed')}</span>
-                            </span>
-                            <span className="w-14 text-right text-xs tabular-nums text-muted-foreground">{formatDuration(chain.total_ms)}</span>
+                            <span className="text-xs text-muted-foreground">{t(relayChainStatus(chain) === 'in_progress' ? 'concurrency.relayCompletedAttempts' : 'concurrency.relayAttempts', { count: chain.attempts.length })}</span>
+                            <RelayResult chain={chain} t={t} />
+                            <span className="text-right text-xs tabular-nums text-muted-foreground">{relayChainStatus(chain) === 'in_progress' ? t('concurrency.relayElapsed', { duration: formatDuration(relayElapsedMs(chain, now)) }) : formatDuration(chain.total_ms)}</span>
                           </div>
                         </button>
                         {expanded ? <RelayChainDetails chain={chain} t={t} /> : null}
