@@ -1496,6 +1496,9 @@ func populateInternalUsageMetaFromContext(c *gin.Context, input *database.UsageL
 
 func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInput) {
 	if c != nil && input != nil {
+		if input.AccountID < 0 {
+			input.FallbackReason = c.GetString(contextFallbackReason)
+		}
 		if value, ok := c.Get(contextFallbackAccountName); ok {
 			input.FallbackAccountName, _ = value.(string)
 		}
@@ -3939,7 +3942,11 @@ func (h *Handler) Responses(c *gin.Context) {
 			} else if attempt == 0 && compactionAffinity.Known && !turnContinuationPinned {
 				account = h.store.TakePreferredAccountWithDispatch(compactionAffinity.PreferredAccountID, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy)
 			}
-			if account != nil {
+			if fallbackState.usingFallback() {
+				if account != nil {
+					stickyProxyURL = account.GetProxyURL()
+				}
+			} else if account != nil {
 				stickyProxyURL = account.GetProxyURL()
 			} else if continuationUnavailable && !relayContinuationAttempted {
 				account, stickyProxyURL, affinityGuard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy)
@@ -4014,6 +4021,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		}
 		h.AcquireAPIKeyScopeConcurrency(c, account)
 		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, fallbackState.primaryRateLimitBudget(maxRateLimitRetries)))
+		maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy = prepareFallbackAttempt(c, account, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		if !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
@@ -4237,7 +4245,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 				}
 
-				if !invalidEncryptedContentRetried && isInvalidEncryptedContentError(resp.StatusCode, errBody) {
+				if !account.IsExternalFallback() && !invalidEncryptedContentRetried && isInvalidEncryptedContentError(resp.StatusCode, errBody) {
 					strippedRawBody, rawChanged := stripInvalidEncryptedContentFromResponsesBody(rawBody)
 					strippedCodexBody, codexChanged := stripInvalidEncryptedContentFromResponsesBody(codexBody)
 					if rawChanged || codexChanged {
@@ -6812,6 +6820,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 
 		h.AcquireAPIKeyScopeConcurrency(c, account)
 		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, fallbackState.primaryRateLimitBudget(maxRateLimitRetries)))
+		maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy = prepareFallbackAttempt(c, account, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		if !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
@@ -8648,6 +8657,14 @@ func normalizedRetryAfter(value string) string {
 // sendFinalUpstreamError 重试用尽后的最终错误响应：识别 usage_limit_reached 改写为 503，其余透传
 func (h *Handler) sendFinalUpstreamError(c *gin.Context, statusCode int, body []byte) {
 	if !claimContinuousRetryTerminal(c, continuousRetryProtocolOpenAI) {
+		return
+	}
+	if c.GetBool(fallbackTerminalAttemptContextKey) {
+		contentType := "application/json"
+		if !json.Valid(body) {
+			contentType = "text/plain; charset=utf-8"
+		}
+		c.Data(statusCode, contentType, body)
 		return
 	}
 	if details, ok := parseUsageLimitDetails(body); ok {

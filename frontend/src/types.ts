@@ -3833,6 +3833,8 @@ export interface RelayAttempt {
   seq: number
   account_id: number
   account_name: string
+  fallback?: boolean
+  fallback_reason?: string
   status_code: number
   error?: string
   duration_ms: number

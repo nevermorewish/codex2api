@@ -9,9 +9,100 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
 )
+
+func TestRelayAccountName(t *testing.T) {
+	names := map[int64]string{-3: " zwenooo ", -4: "nexaxis.ai"}
+	tests := []struct {
+		name     string
+		row      *database.UsageLog
+		want     string
+		fallback bool
+	}{
+		{"nil", nil, "", false},
+		{"current fallback name", &database.UsageLog{AccountID: -3, FallbackAccountName: "old label"}, "zwenooo", true},
+		{"historical missing label", &database.UsageLog{AccountID: -4}, "nexaxis.ai", true},
+		{"deleted with snapshot", &database.UsageLog{AccountID: -5, FallbackAccountName: " archived backup "}, "archived backup", true},
+		{"deleted without snapshot", &database.UsageLog{AccountID: -6}, "兜底账号 #6", true},
+		{"minimum ID", &database.UsageLog{AccountID: -9223372036854775808}, "兜底账号 #9223372036854775808", true},
+		{"legacy fallback channel", &database.UsageLog{Channel: " Fallback ", AccountName: "source", FallbackAccountName: "backup"}, "backup", true},
+		{"primary ID collision", &database.UsageLog{AccountID: 3, AccountName: "local"}, "local", false},
+		{"primary email", &database.UsageLog{AccountID: 3, AccountEmail: "local@example.test"}, "local@example.test", false},
+		{"primary unnamed", &database.UsageLog{AccountID: 3}, "账号 #3", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := relayAccountName(tt.row, names); got != tt.want {
+				t.Fatalf("relayAccountName = %q, want %q", got, tt.want)
+			}
+			if got := isFallbackRelayAttempt(tt.row); got != tt.fallback {
+				t.Fatalf("fallback = %v, want %v", got, tt.fallback)
+			}
+		})
+	}
+}
+
+func TestGetRelayChainsResolvesFallbackNamesForHistoricalRows(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "relay-fallback-names.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetUsageLogConfig(database.UsageLogModeFull, 1000, 3600)
+	// Older rows only contain the negative runtime ID, not a name snapshot.
+	for i, id := range []int64{3, -3, -4} {
+		if err := db.InsertUsageLog(context.Background(), &database.UsageLogInput{
+			AccountID: id, ParentRequestID: "historical-fallback", Endpoint: "/v1/responses",
+			AttemptIndex: i + 1, StatusCode: 503, IsRetryAttempt: i < 2,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.FlushUsageLogs()
+	pool := auth.NewFallbackPool(nil)
+	configs := []auth.FallbackAccountConfig{
+		{ID: 3, Name: "zwenooo", BaseURL: "https://fallback.example.test", APIKey: "test-key", Enabled: true},
+		{ID: 4, Name: "nexaxis.ai", BaseURL: "https://fallback.example.test", APIKey: "test-key", Enabled: false},
+	}
+	pool.Replace(configs)
+	h := &Handler{db: db, fallbackPool: pool}
+	for _, renamed := range []bool{false, true} {
+		if renamed {
+			configs[0].Name = "renamed backup"
+			pool.Replace(configs)
+		}
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/dashboard/relay-chains", nil)
+		h.GetRelayChains(c)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+		}
+		var response struct {
+			Chains []relayChainResponse `json:"chains"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response.Chains) != 1 || len(response.Chains[0].Attempts) != 3 {
+			t.Fatalf("unexpected chains: %+v", response.Chains)
+		}
+		chain := response.Chains[0]
+		for i, want := range []string{"账号 #3", configs[0].Name, "nexaxis.ai"} {
+			attempt := chain.Attempts[i]
+			if attempt.AccountName != want || attempt.Fallback != (i > 0) {
+				t.Fatalf("attempt %d = %+v, want name=%q fallback=%v", i, attempt, want, i > 0)
+			}
+		}
+		if chain.SwitchCount != 2 || chain.FinalOK {
+			t.Fatalf("unexpected summary: %+v", chain)
+		}
+	}
+}
 
 func TestGetRelayChainsAggregatesAttemptsAndSkipsInternalRows(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -25,7 +116,7 @@ func TestGetRelayChainsAggregatesAttemptsAndSkipsInternalRows(t *testing.T) {
 	ctx := context.Background()
 	inputs := []*database.UsageLogInput{
 		{AccountID: 11, ParentRequestID: "req-relay-1", Endpoint: "/v1/responses", Model: "gpt-5.4", StatusCode: http.StatusTooManyRequests, DurationMs: 15, IsRetryAttempt: true, AttemptIndex: 1},
-		{AccountID: 22, ParentRequestID: "req-relay-1", Endpoint: "/v1/responses", Model: "gpt-5.4", StatusCode: http.StatusOK, DurationMs: 25, AttemptIndex: 2},
+		{AccountID: -22, ParentRequestID: "req-relay-1", Endpoint: "/v1/responses", Model: "gpt-5.4", StatusCode: http.StatusOK, DurationMs: 25, AttemptIndex: 2, FallbackReason: "queue_threshold"},
 		{AccountID: 11, ParentRequestID: "req-relay-1", Endpoint: "/v1/responses", Model: "gpt-5.4", StatusCode: http.StatusOK, DurationMs: 5, InternalReason: "overflow_compact"},
 		{AccountID: 22, ParentRequestID: "req-relay-1", Endpoint: "/v1/responses", Model: "gpt-5.4", StatusCode: http.StatusOK, DurationMs: 5},
 	}
@@ -60,6 +151,9 @@ func TestGetRelayChainsAggregatesAttemptsAndSkipsInternalRows(t *testing.T) {
 	}
 	if chain.SwitchCount != 1 || !chain.FinalOK || chain.TotalMs != 40 {
 		t.Fatalf("chain summary = switches=%d final_ok=%v total_ms=%d, want 1/true/40", chain.SwitchCount, chain.FinalOK, chain.TotalMs)
+	}
+	if chain.Attempts[0].FallbackReason != "" || chain.Attempts[1].FallbackReason != "queue_threshold" || !chain.Attempts[1].Fallback {
+		t.Fatalf("fallback reason missing or leaked into primary: %+v", chain.Attempts)
 	}
 }
 

@@ -121,9 +121,8 @@ func newRetryAccountExclusions() *retryAccountExclusions {
 }
 
 // External fallback accounts use negative runtime IDs (see auth.FallbackPool).
-// They are deliberately retryable: a failure from the fallback upstream must
-// not make the only fallback account disappear from the rest of this request.
-// The normal retry budgets still cap how many times it is called.
+// External accounts are managed outside the primary scheduler's exclusion
+// cycles. The route state enforces one terminal fallback attempt per request.
 func isExternalFallbackAccountID(accountID int64) bool {
 	return accountID < 0
 }

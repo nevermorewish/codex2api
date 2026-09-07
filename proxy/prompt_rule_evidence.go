@@ -562,6 +562,6 @@ func (h *Handler) logPromptPolicyRetryUsage(c *gin.Context, input database.Usage
 	if strings.TrimSpace(incidentID) != "" {
 		input.PromptPolicyIncidentID = incidentID
 	}
-	input.IsRetryAttempt = true
+	input.IsRetryAttempt = !isExternalFallbackAccountID(input.AccountID)
 	h.logUsageForRequest(c, &input)
 }

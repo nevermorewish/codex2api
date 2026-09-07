@@ -631,6 +631,7 @@ func (h *Handler) Messages(c *gin.Context) {
 
 		h.AcquireAPIKeyScopeConcurrency(c, account)
 		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, fallbackState.primaryRateLimitBudget(maxRateLimitRetries)))
+		maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy = prepareFallbackAttempt(c, account, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		if !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
@@ -1007,7 +1008,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			// 最终错误：用 Anthropic 格式返回。
 			// 上游账号 401（OAuth token 失效）是账号侧问题，不是下游客户端凭证无效；
 			// 原样以 401 透传会让客户端误判自己的 key 失效（issue #323），改写为 503。
-			if resp.StatusCode == http.StatusUnauthorized && !isMissingScopeUnauthorized(errBody) {
+			if !account.IsExternalFallback() && resp.StatusCode == http.StatusUnauthorized && !isMissingScopeUnauthorized(errBody) {
 				if isStream && writeCommittedAnthropicRetryError(c, "overloaded_error", "账号池暂无可用账号（上游账号鉴权失效），请稍后重试") {
 					return
 				}
@@ -1016,7 +1017,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			}
 			// 上游账号 403 也是账号侧问题（额度/套餐/工作区受限）：换号重试耗尽后仍 403，
 			// 原样透传会让 Claude Code 误判自身无权限而停工（issue #396），改写为 503 池级错误。
-			if resp.StatusCode == http.StatusForbidden {
+			if !account.IsExternalFallback() && resp.StatusCode == http.StatusForbidden {
 				if isStream && writeCommittedAnthropicRetryError(c, "overloaded_error", "账号池暂无可用账号（上游账号被拒绝访问：额度/套餐或工作区受限），请稍后重试") {
 					return
 				}
@@ -1583,6 +1584,12 @@ func (h *Handler) Messages(c *gin.Context) {
 		if !isStream {
 			if !claimContinuousRetryTerminal(c, continuousRetryProtocolAnthropic) {
 				// The deadline owns the terminal response.
+			} else if account.IsExternalFallback() && outcome.logStatusCode != http.StatusOK {
+				statusCode := outcome.logStatusCode
+				if statusCode < 400 || statusCode > 599 || statusCode == logStatusUpstreamStreamBreak {
+					statusCode = http.StatusBadGateway
+				}
+				sendAnthropicError(c, statusCode, mapHTTPStatusToAnthropicError(statusCode), outcome.failureMessage)
 			} else if anthropicResp != nil {
 				c.JSON(http.StatusOK, anthropicResp)
 			} else {

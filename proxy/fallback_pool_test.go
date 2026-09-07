@@ -49,6 +49,9 @@ func TestResponsesUsesFallbackWhenPrimaryPoolIsEmpty(t *testing.T) {
 	if model := gjson.GetBytes(seenBody, "model").String(); model != "gpt-4.1-direct" {
 		t.Fatalf("fallback fixed model = %q, body=%s", model, seenBody)
 	}
+	if got := ctx.GetString(contextFallbackReason); got != fallbackReasonNoEligible {
+		t.Fatalf("fallback reason = %q, want %q", got, fallbackReasonNoEligible)
+	}
 	if account := pool.Accounts()[0]; account.GetActiveRequests() != 0 || account.GetOccupiedRequests() != 0 {
 		t.Fatalf("fallback lease leaked: active=%d occupied=%d", account.GetActiveRequests(), account.GetOccupiedRequests())
 	}
@@ -70,11 +73,19 @@ func TestFallbackRouteStateSwitchesAfterPrimaryAttemptThreshold(t *testing.T) {
 	if !state.usingFallback() {
 		t.Fatal("fallback did not activate at the primary threshold")
 	}
+	if state.reason != fallbackReasonRelayLimit {
+		t.Fatalf("reason = %q", state.reason)
+	}
 	account := state.account(nil)
 	if account == nil || !account.IsExternalFallback() {
 		t.Fatal("active fallback state did not acquire a fallback account")
 	}
+	state.noteSelected(account)
 	store.Release(account)
+	if next := state.account(nil); next != nil {
+		store.Release(next)
+		t.Fatal("terminal fallback attempt was selected again")
+	}
 }
 
 func TestFallbackRouteStateOversizedBoundary(t *testing.T) {
@@ -255,6 +266,9 @@ func TestFallbackQueueBypassesAtThreshold(t *testing.T) {
 	if account == nil || !account.IsExternalFallback() {
 		t.Fatal("new request did not bypass the local queue at the configured threshold")
 	}
+	if state.reason != fallbackReasonQueueThreshold {
+		t.Fatalf("reason = %q", state.reason)
+	}
 	store.Release(account)
 	cancelWaiter()
 	<-waiterDone
@@ -289,6 +303,9 @@ func TestFallbackSpillsImmediatelyWhenAffinityAccountIsFull(t *testing.T) {
 	)
 	if account == nil || !account.IsExternalFallback() {
 		t.Fatalf("full affinity account did not spill to fallback: %#v", account)
+	}
+	if state.reason != fallbackReasonAffinityFull {
+		t.Fatalf("reason = %q", state.reason)
 	}
 	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
 		t.Fatalf("capacity spill took %s; request should not wait for affinity slot", elapsed)

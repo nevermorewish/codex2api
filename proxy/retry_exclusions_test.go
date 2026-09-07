@@ -72,7 +72,8 @@ func TestRetryAccountExclusionsNeverExcludeExternalFallback(t *testing.T) {
 	const fallbackID int64 = -9
 
 	// Exercise every failure classification used by the HTTP, streaming, and
-	// transport paths. A fallback account remains selectable after each one.
+	// transport paths. Primary exclusions do not manage fallback accounts;
+	// fallbackRouteState separately prevents a second fallback attempt.
 	exclusions.MarkHard(fallbackID)
 	exclusions.MarkTransient(fallbackID)
 	exclusions.MarkSoft(fallbackID)

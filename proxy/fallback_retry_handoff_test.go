@@ -247,6 +247,16 @@ func TestFallbackHandoffPreservesIndependentAndAccountBudgets(t *testing.T) {
 			if s.usingFallback() != tc.wantFallback {
 				t.Fatalf("fallback=%v want=%v", s.usingFallback(), tc.wantFallback)
 			}
+			wantReason := ""
+			if tc.wantFallback {
+				wantReason = fallbackReasonRetryBudget
+				if tc.accountRate >= 0 && tc.rateUsed > tc.accountRate {
+					wantReason = fallbackReasonRateLimitBudget
+				}
+			}
+			if s.reason != wantReason {
+				t.Fatalf("reason=%q want=%q", s.reason, wantReason)
+			}
 		})
 	}
 	for _, mode := range []string{"disabled", "empty", "filtered"} {

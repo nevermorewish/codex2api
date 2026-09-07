@@ -327,6 +327,7 @@ func stripNewAPIPolicyWebSocketEventID(payload []byte) ([]byte, string) {
 func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.Conn, rawPayload []byte, policyEventID string, options *responsesWSForwardOptions) (returnErr error) {
 	// A Gin context lives for the whole downstream WS connection, not one turn.
 	c.Set(contextFallbackAccountName, "")
+	c.Set(contextFallbackReason, "")
 	c.Set(contextSourceAccountID, int64(0))
 	c.Set(contextSourceAccountName, "")
 	c.Set(contextFallbackMetricAttempt, (*fallbackMetricAttempt)(nil))
@@ -667,6 +668,11 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		}
 		fallbackState.noteSelected(account)
 		h.annotateFallbackRequest(c, fallbackState, account)
+		maxRetries, maxRateLimitRetries, continuousRetryPolicy = prepareFallbackAttempt(c, account, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
+		if account.IsExternalFallback() {
+			retryEnabled = false
+			hideUpstreamErrors = false
+		}
 		attemptEffectiveModel := effectiveModel
 		attemptLogEffectiveModel := logEffectiveModel
 		if attempt > 0 {
@@ -879,7 +885,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				return errResponsesWSClientGone
 			}
 
-			if !invalidEncryptedContentRetried && isInvalidEncryptedContentError(resp.StatusCode, errBody) {
+			if !account.IsExternalFallback() && !invalidEncryptedContentRetried && isInvalidEncryptedContentError(resp.StatusCode, errBody) {
 				strippedRawBody, rawChanged := stripInvalidEncryptedContentFromResponsesBody(rawBody)
 				strippedCodexBody, codexChanged := stripInvalidEncryptedContentFromResponsesBody(codexBody)
 				if rawChanged || codexChanged {
@@ -902,7 +908,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 
 			// 上游认不出续链 id：账号本身是好的，别记失败也别排除它，
 			// 降级成自包含请求后原地重试一次（issue #400）。
-			if canDegradeContinuation() && isPreviousResponseNotFoundBody(errBody) {
+			if !account.IsExternalFallback() && canDegradeContinuation() && isPreviousResponseNotFoundBody(errBody) {
 				degradeContinuation(fmt.Sprintf("upstream rejected previous_response_id on account %d", account.ID()), attempt+1)
 				SyncCodexUsageState(h.store, account, resp)
 				h.store.Release(account)
@@ -984,13 +990,13 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			fallbackLog = &wsHTTPFallback
 		}
 		preserveAffinity := preserveContinuationBinding()
-		allowContinuationDegrade := canDegradeContinuation()
+		allowContinuationDegrade := !account.IsExternalFallback() && canDegradeContinuation()
 		if err := h.streamResponsesWSUpstream(c, conn, resp, account, proxyURL, affinityKey, affinityGuard, preserveAffinity, allowContinuationDegrade, logModel, attemptEffectiveModel, attemptLogEffectiveModel, reasoningEffort, serviceTier, respCacheOwner, attemptExpandedInputRaw, start, ttftGuard, retryEnabled, hideUpstreamErrors, useWebsocket, fallbackLog, attempt+1, options, continuousRetryPolicy); err != nil {
 			if continuousRetryDeadlineExceeded(c.Request.Context()) {
 				return errResponsesWSClientGone
 			}
 			var continuationErr *responsesWSContinuationNotFoundError
-			if canDegradeContinuation() && errors.As(err, &continuationErr) {
+			if allowContinuationDegrade && errors.As(err, &continuationErr) {
 				// 账号已在流内释放，未记失败也未解绑：剥离续链 id 后原地再试一次。
 				// turn-state 钉号同样走这条路：上游已经说找不到 id，换号无益，剥 id 才能继续。
 				degradeContinuation(fmt.Sprintf("upstream rejected previous_response_id on account %d", account.ID()), attempt+1)

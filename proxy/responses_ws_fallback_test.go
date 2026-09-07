@@ -81,6 +81,7 @@ func TestNativeWSFallbackMultiTurnIsolation(t *testing.T) {
 	type turnResult struct {
 		err                      error
 		fallbackName, sourceName string
+		fallbackReason           string
 		sourceID                 int64
 		occupied                 int64
 		metrics                  FallbackMetricsSnapshot
@@ -104,6 +105,7 @@ func TestNativeWSFallbackMultiTurnIsolation(t *testing.T) {
 			}
 			err = h.forwardResponsesWebSocketTurn(c, conn, body, fmt.Sprintf("turn-%d", turn), nil)
 			result := turnResult{err: err, fallbackName: c.GetString(contextFallbackAccountName), sourceName: c.GetString(contextSourceAccountName), sourceID: c.GetInt64(contextSourceAccountID), metrics: GetFallbackMetricsSnapshot()}
+			result.fallbackReason = c.GetString(contextFallbackReason)
 			for _, a := range append(accounts, pool.Accounts()...) {
 				result.occupied += a.GetOccupiedRequests() + a.GetActiveRequests()
 			}
@@ -163,10 +165,10 @@ func TestNativeWSFallbackMultiTurnIsolation(t *testing.T) {
 			t.Fatalf("turn %d err=%v occupied=%d", turn, result.err, result.occupied)
 		}
 		if turn == 1 {
-			if result.fallbackName != "" || result.sourceName != "" || result.sourceID != 0 {
+			if result.fallbackName != "" || result.sourceName != "" || result.sourceID != 0 || result.fallbackReason != "" {
 				t.Fatalf("fallback attribution leaked into primary turn: %+v", result)
 			}
-		} else if result.fallbackName != "multi-turn-backup" || result.sourceID <= 0 || result.sourceName == "" {
+		} else if result.fallbackName != "multi-turn-backup" || result.sourceID <= 0 || result.sourceName == "" || result.fallbackReason != fallbackReasonRetryBudget {
 			t.Fatalf("missing fallback attribution: %+v", result)
 		}
 		wantPrimary, wantFallback := []int{2, 3, 5}[turn], []int{1, 1, 2}[turn]
@@ -192,6 +194,7 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 		name                                                             string
 		wsRetries, maxRetries, relayCount                                int
 		failure                                                          string
+		fallbackFailure                                                  string
 		wantPrimary, wantFallback                                        int
 		sticky, silentOff, fallbackOff, emptyPrimary, fallbackFails      bool
 		incompatible, emptyFallback, continuation, preflight, continuous bool
@@ -218,6 +221,10 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 		{name: "provider_continuation", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, continuation: true, sticky: true},
 		{name: "preflight_metadata", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, wantFallback: 1, preflight: true},
 		{name: "continuous_primary_cap", wsRetries: 2, maxRetries: 0, relayCount: 10, failure: "overload", wantPrimary: 1, wantFallback: 1, continuous: true},
+		{name: "early_fallback_failure", wsRetries: 10, maxRetries: 10, relayCount: 1, failure: "overload", wantPrimary: 1, wantFallback: 1, fallbackFails: true},
+		{name: "direct_fallback_failure", wsRetries: 10, maxRetries: 10, relayCount: 3, wantFallback: 1, emptyPrimary: true, fallbackFails: true, continuous: true},
+		{name: "continuous_fallback_http_error", wsRetries: 10, maxRetries: 10, relayCount: 3, failure: "overload", wantPrimary: 3, wantFallback: 1, fallbackFails: true, continuous: true},
+		{name: "continuous_fallback_stream_error", wsRetries: 10, maxRetries: 10, relayCount: 3, failure: "overload", wantPrimary: 3, wantFallback: 1, fallbackFails: true, fallbackFailure: "failed", continuous: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			previous := CurrentRuntimeSettings()
@@ -232,7 +239,7 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 			settings := previous
 			settings.CodexWSSilentRetry = !tc.silentOff
 			settings.CodexWSSilentRetries = tc.wsRetries
-			settings.CodexWSHideErrors = false
+			settings.CodexWSHideErrors = tc.fallbackFails
 			settings.CodexPreflightSSEPassthrough = tc.preflight
 			settings.CodexOverloadPauseEnabled = false
 			settings.ContinuousRetryPolicy = database.ContinuousRetryPolicy{}
@@ -288,6 +295,11 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 				fallbackPath = r.URL.Path
 				mu.Unlock()
 				if tc.fallbackFails {
+					if tc.fallbackFailure == "failed" {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"fallback unavailable\"}}}\n\n")
+						return
+					}
 					w.WriteHeader(503)
 					_, _ = io.WriteString(w, `{"error":{"code":"server_error","message":"fallback unavailable"}}`)
 					return
@@ -411,6 +423,9 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 				}
 			} else if terminal == "response.completed" {
 				t.Fatalf("failure reported as success: %s", output.String())
+			}
+			if tc.fallbackFails && !strings.Contains(output.String(), "fallback unavailable") {
+				t.Fatalf("fallback error was hidden: %s", output.String())
 			}
 			for _, a := range append(accounts, pool.Accounts()...) {
 				if a.GetActiveRequests() != 0 || a.GetOccupiedRequests() != 0 {

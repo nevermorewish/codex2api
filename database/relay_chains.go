@@ -38,7 +38,8 @@ func (db *DB) ListRelayChainLogs(ctx context.Context, page, pageSize int) ([]*Us
         COALESCE(u.endpoint, ''), COALESCE(u.inbound_endpoint, ''), COALESCE(u.channel, ''),
         COALESCE(u.model, ''), COALESCE(u.api_key_id, 0), COALESCE(u.api_key_name, ''),
         u.status_code, u.duration_ms, r.is_retry_attempt, r.attempt_index,
-        COALESCE(u.error_message, ''), COALESCE(u.upstream_error_kind, ''), r.chain_id, u.created_at
+        COALESCE(u.error_message, ''), COALESCE(u.upstream_error_kind, ''), r.chain_id, u.created_at,
+        COALESCE(u.fallback_reason, '')
  FROM page_chains p
  JOIN attempt_rows r ON r.chain_id = p.chain_id
  JOIN usage_logs u ON u.id = r.id
@@ -56,7 +57,7 @@ func (db *DB) ListRelayChainLogs(ctx context.Context, page, pageSize int) ([]*Us
 			&row.FallbackAccountName, &row.Endpoint, &row.InboundEndpoint, &row.Channel,
 			&row.Model, &row.APIKeyID, &row.APIKeyName, &row.StatusCode, &row.DurationMs,
 			&row.IsRetryAttempt, &row.AttemptIndex, &row.ErrorMessage, &row.UpstreamErrorKind,
-			&row.ParentRequestID, &createdAt); err != nil {
+			&row.ParentRequestID, &createdAt, &row.FallbackReason); err != nil {
 			return nil, 0, err
 		}
 		row.AccountEmail = accountEmailFromRawCredentials(credentials)

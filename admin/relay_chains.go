@@ -16,13 +16,15 @@ import (
 // usage log row. Keeping the projection here means the usage log schema can
 // continue to evolve without coupling the realtime page to every column.
 type relayAttemptResponse struct {
-	Seq         int    `json:"seq"`
-	AccountID   int64  `json:"account_id"`
-	AccountName string `json:"account_name"`
-	StatusCode  int    `json:"status_code"`
-	Error       string `json:"error,omitempty"`
-	DurationMs  int64  `json:"duration_ms"`
-	Decision    string `json:"decision"`
+	Seq            int    `json:"seq"`
+	AccountID      int64  `json:"account_id"`
+	AccountName    string `json:"account_name"`
+	Fallback       bool   `json:"fallback"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+	StatusCode     int    `json:"status_code"`
+	Error          string `json:"error,omitempty"`
+	DurationMs     int64  `json:"duration_ms"`
+	Decision       string `json:"decision"`
 }
 
 type relayChainResponse struct {
@@ -61,6 +63,21 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 	if err != nil {
 		writeInternalError(c, err)
 		return
+	}
+	// External fallback accounts use negative runtime IDs and do not exist in
+	// the primary accounts table. Resolve their current labels from the pool,
+	// including disabled accounts, so older usage rows also display names.
+	fallbackNames := make(map[int64]string)
+	if h.fallbackPool != nil {
+		for _, account := range h.fallbackPool.Accounts() {
+			if account == nil {
+				continue
+			}
+			account.Mu().RLock()
+			name := strings.TrimSpace(account.Name)
+			account.Mu().RUnlock()
+			fallbackNames[account.ID()] = name
+		}
 	}
 
 	type chainRows struct {
@@ -144,16 +161,7 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 		}
 		var previousAccountKey string
 		for index, row := range group.logs {
-			accountName := strings.TrimSpace(row.AccountName)
-			if accountName == "" {
-				accountName = strings.TrimSpace(row.AccountEmail)
-			}
-			if accountName == "" {
-				accountName = strings.TrimSpace(row.FallbackAccountName)
-			}
-			if accountName == "" && row.AccountID != 0 {
-				accountName = "账号 #" + strconv.FormatInt(row.AccountID, 10)
-			}
+			accountName := relayAccountName(row, fallbackNames)
 			accountKey := relayAccountKey(row, accountName)
 			decision := "failed"
 			if row.StatusCode >= 200 && row.StatusCode < 300 && !row.IsRetryAttempt {
@@ -174,7 +182,9 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 			}
 			chain.Attempts = append(chain.Attempts, relayAttemptResponse{
 				Seq: index + 1, AccountID: row.AccountID, AccountName: accountName,
-				StatusCode: row.StatusCode, Error: message, DurationMs: int64(row.DurationMs), Decision: decision,
+				Fallback:       isFallbackRelayAttempt(row),
+				FallbackReason: strings.TrimSpace(row.FallbackReason),
+				StatusCode:     row.StatusCode, Error: message, DurationMs: int64(row.DurationMs), Decision: decision,
 			})
 			chain.TotalMs += int64(row.DurationMs)
 			if index > 0 && accountKey != "" && previousAccountKey != "" && accountKey != previousAccountKey {
@@ -190,6 +200,37 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 	}
 	sort.Slice(chains, func(i, j int) bool { return order[chains[i].RequestID] < order[chains[j].RequestID] })
 	c.JSON(http.StatusOK, gin.H{"chains": chains, "total": total, "page": page, "page_size": pageSize})
+}
+
+func isFallbackRelayAttempt(row *database.UsageLog) bool {
+	return row != nil && (row.AccountID < 0 || strings.EqualFold(strings.TrimSpace(row.Channel), "fallback"))
+}
+
+func relayAccountName(row *database.UsageLog, fallbackNames map[int64]string) string {
+	if row == nil {
+		return ""
+	}
+	if isFallbackRelayAttempt(row) {
+		if name := strings.TrimSpace(fallbackNames[row.AccountID]); name != "" {
+			return name
+		}
+		if name := strings.TrimSpace(row.FallbackAccountName); name != "" {
+			return name
+		}
+		if row.AccountID < 0 {
+			// Trim the sign rather than negate: this also handles MinInt64.
+			return "兜底账号 #" + strings.TrimPrefix(strconv.FormatInt(row.AccountID, 10), "-")
+		}
+	}
+	for _, name := range []string{row.AccountName, row.AccountEmail, row.FallbackAccountName} {
+		if name = strings.TrimSpace(name); name != "" {
+			return name
+		}
+	}
+	if row.AccountID != 0 {
+		return "账号 #" + strconv.FormatInt(row.AccountID, 10)
+	}
+	return ""
 }
 
 func relayAccountKey(row *database.UsageLog, accountName string) string {

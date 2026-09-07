@@ -14,8 +14,21 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { getErrorMessage } from '../utils/error'
 import { cn } from '@/lib/utils'
+import { relayFallbackReasonKey } from '@/lib/relayFallbackReason'
 
 const RELAY_PAGE_SIZE = 20
+
+function RelayAccountLabel({ attempt, t }: { attempt: RelayAttempt; t: TFunction }) {
+  const name = attempt.account_name || (attempt.account_id ? `#${attempt.account_id}` : t('concurrency.unknownAccount'))
+  return (
+    <span className="inline-flex min-w-0 max-w-full items-center gap-1" title={name}>
+      <span className="truncate">{name}</span>
+      {attempt.fallback || attempt.account_id < 0 ? (
+        <span className="shrink-0 rounded border border-amber-500/25 bg-amber-500/10 px-1 py-0.5 text-[10px] font-normal text-amber-700 dark:text-amber-300">{t('concurrency.channels.fallback')}</span>
+      ) : null}
+    </span>
+  )
+}
 
 function utilizationWidth(value: number): string {
   return `${Math.max(0, Math.min(100, value))}%`
@@ -82,6 +95,7 @@ function RelayChainDetails({ chain, t }: { chain: RelayChain; t: TFunction }) {
               <TableHead>{t('concurrency.relayAccount')}</TableHead>
               <TableHead>{t('concurrency.relayStatusCode')}</TableHead>
               <TableHead>{t('concurrency.relayDecision')}</TableHead>
+              <TableHead>{t('concurrency.relayFallbackReason')}</TableHead>
               <TableHead>{t('concurrency.relayDuration')}</TableHead>
               <TableHead>{t('concurrency.relayError')}</TableHead>
             </TableRow>
@@ -92,12 +106,15 @@ function RelayChainDetails({ chain, t }: { chain: RelayChain; t: TFunction }) {
               return (
                 <TableRow key={`${chain.request_id}-detail-${attempt.seq}`}>
                   <TableCell className="tabular-nums text-muted-foreground">{attempt.seq}</TableCell>
-                  <TableCell className="max-w-56 truncate font-medium" title={attempt.account_name}>{attempt.account_name || (attempt.account_id ? `#${attempt.account_id}` : t('concurrency.unknownAccount'))}</TableCell>
+                  <TableCell className="max-w-56 font-medium"><RelayAccountLabel attempt={attempt} t={t} /></TableCell>
                   <TableCell className={cn('tabular-nums', statusOK ? 'text-emerald-600 dark:text-emerald-400' : attempt.status_code >= 400 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground')}>{attempt.status_code || '-'}</TableCell>
                   <TableCell>
                     <span className={cn('rounded border px-1.5 py-0.5 text-[11px]', attempt.decision === 'success' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : attempt.decision === 'failed' ? 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300')}>
                       {t(`concurrency.relayDecisionValues.${attempt.decision}`, { defaultValue: attempt.decision || '-' })}
                     </span>
+                  </TableCell>
+                  <TableCell className="min-w-40 max-w-64 whitespace-normal text-xs text-amber-700 dark:text-amber-300">
+                    {attempt.fallback || attempt.account_id < 0 ? t(relayFallbackReasonKey(attempt.fallback_reason)) : '-'}
                   </TableCell>
                   <TableCell className="whitespace-nowrap tabular-nums text-muted-foreground">{formatDuration(attempt.duration_ms)}</TableCell>
                   <TableCell className="max-w-72 truncate text-xs text-red-700 dark:text-red-300" title={attempt.error || undefined}>{attempt.error || '-'}</TableCell>
@@ -289,7 +306,12 @@ export default function Concurrency() {
                               {chain.attempts.map((attempt, index) => (
                                 <span key={`${chain.request_id}-${attempt.seq}`} className="inline-flex min-w-0 items-center gap-1">
                                   {index > 0 ? <ArrowRight className="size-3 shrink-0 text-muted-foreground/70" /> : null}
-                                  <span className="max-w-44 truncate">{attempt.account_name || (attempt.account_id ? `#${attempt.account_id}` : t('concurrency.unknownAccount'))}</span>
+                                  <span className="inline-flex min-w-0 max-w-64 flex-col items-start gap-0.5">
+                                    <RelayAccountLabel attempt={attempt} t={t} />
+                                    {attempt.fallback || attempt.account_id < 0 ? (
+                                      <span className="text-[11px] text-amber-700 dark:text-amber-300">{t('concurrency.relayFallbackReason')}: {t(relayFallbackReasonKey(attempt.fallback_reason))}</span>
+                                    ) : null}
+                                  </span>
                                 </span>
                               ))}
                               {chain.attempts.length === 0 ? <span>{t('concurrency.noAttempts')}</span> : null}
