@@ -436,7 +436,10 @@ func writeContinuousRetryLastFailure(c *gin.Context, protocol continuousRetryHTT
 		if contentType == "" {
 			contentType = "application/json"
 		}
-		c.Data(status, contentType, failure.body)
+		// A remembered stream failure can be a response.failed event. HTTP
+		// error clients read error.message, not response.error.message; unwrap
+		// the event while preserving the original upstream error fields.
+		c.Data(status, contentType, responseFailedErrorBody(failure.body))
 		return
 	}
 	c.JSON(status, gin.H{"error": gin.H{"message": message, "type": ErrorTypeUpstreamError, "code": code}})

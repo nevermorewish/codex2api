@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codex2api/api"
 	"github.com/codex2api/auth"
 	"github.com/codex2api/config"
 	"github.com/codex2api/database"
@@ -258,6 +260,52 @@ func TestContinuousRetryDeadlineReturnsLastUpstreamFailure(t *testing.T) {
 	}
 	if recorder.Body.String() != string(lastBody) {
 		t.Fatalf("body = %q, want last upstream body %q", recorder.Body.String(), lastBody)
+	}
+}
+
+func TestContinuousRetryDeadlineReturnsStreamFailureAsHTTPError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const upstreamError = `{"message":"Our servers are currently overloaded. Please try again later.","type":"service_unavailable_error","code":"server_is_overloaded","status_code":503,"param":null}`
+	for _, protocol := range []continuousRetryHTTPProtocol{continuousRetryProtocolResponses, continuousRetryProtocolChat} {
+		for _, tc := range []struct {
+			name string
+			body string
+		}{
+			{"response.failed", `{"type":"response.failed","response":{"status":"failed","error":` + upstreamError + `}}`},
+			{"status_details", `{"type":"response.failed","response":{"status_details":{"error":` + upstreamError + `}}}`},
+			{"error", `{"error":` + upstreamError + `}`},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", protocol, tc.name), func(t *testing.T) {
+				router := gin.New()
+				// The bare-5xx middleware is installed in production, but a
+				// nonempty response.failed envelope still needs HTTP conversion.
+				router.Use(api.EnsureErrorBodyMiddleware())
+				router.POST("/v1/responses", func(c *gin.Context) {
+					stop := installContinuousRetryHTTPDeadline(c, database.ContinuousRetryPolicy{Enabled: true, MaxDurationSeconds: 1}, protocol)
+					defer stop()
+					payload := []byte(tc.body)
+					rememberContinuousRetryStreamFailure(c.Request.Context(), classifyResponseFailedOutcome(payload), payload)
+					continuousRetryDeadlineForContext(c.Request.Context()).cancel(errContinuousRetryDeadlineExceeded)
+				})
+				server := httptest.NewServer(router)
+				defer server.Close()
+				resp, err := server.Client().Post(server.URL+"/v1/responses", "application/json", strings.NewReader(`{}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if resp.StatusCode != http.StatusServiceUnavailable || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+					t.Fatalf("response = %d %s, want HTTP 503 JSON", resp.StatusCode, resp.Header.Get("Content-Type"))
+				}
+				if string(body) != `{"error":`+upstreamError+`}` {
+					t.Fatalf("body = %s, want top-level HTTP error with original upstream details", body)
+				}
+			})
+		}
 	}
 }
 
