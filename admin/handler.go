@@ -1072,6 +1072,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	})
 	api.GET("/stats", h.GetStats)
 	api.GET("/concurrency", h.GetConcurrencySnapshot)
+	api.GET("/live-streams", h.GetLiveStreams)
 	api.GET("/fallback/accounts", h.ListFallbackAccounts)
 	api.POST("/fallback/accounts", h.CreateFallbackAccount)
 	api.PUT("/fallback/accounts/:id", h.UpdateFallbackAccount)

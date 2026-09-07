@@ -3939,7 +3939,12 @@ func (h *Handler) Responses(c *gin.Context) {
 		fallbackState = h.newFallbackRouteState(accountFilter, len(rawBody))
 		maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	}
+	endLiveAttempt := func() {}
+	defer func() { endLiveAttempt() }()
 	for attempt := 0; ; attempt++ {
+		// Ends the previous iteration's in-flight registration, if any; an
+		// early return from within the loop is covered by the defer above.
+		endLiveAttempt()
 		fallbackState.activateAfterRetryBudget(generalRetries, rateLimitRetries)
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
@@ -4887,6 +4892,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		serviceTier = EffectiveRequestedServiceTier(upstreamBody, attemptEffectiveModel, downstreamHeaders, attemptIdentity)
 		// 换号后剥离旧账号铸造的 turn-state 回带,防止跨账号矛盾信号打到上游。
 		guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
+		endLiveAttempt = beginRelayAttempt(c, account, attemptEffectiveModel, isStream, useWebsocket, attempt+1)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 			return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		})
@@ -5938,18 +5944,34 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	relayContinuationAttempted := false
 
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
+	fallbackState := &fallbackRouteState{}
+	if !compactionAffinity.Known {
+		fallbackState = h.newFallbackRouteState(accountFilter, len(rawBody))
+		maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
+	}
 	for attempt := 0; ; attempt++ {
+		fallbackState.activateAfterRetryBudget(generalRetries, rateLimitRetries)
 		var account *auth.Account
 		var stickyProxyURL string
 		var affinityGuard auth.SessionAffinityGuard
-		if attempt == 0 && compactionAffinity.Known {
+		if fallbackState.usingFallback() {
+			account = fallbackState.account(retryExclusions.ForSelection())
+		} else if attempt == 0 && compactionAffinity.Known {
 			account = h.store.TakePreferredAccountWithDispatch(compactionAffinity.PreferredAccountID, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy)
+		}
+		if fallbackState.usingFallback() {
 			if account != nil {
 				stickyProxyURL = account.GetProxyURL()
 			}
-		}
-		if account == nil {
+		} else if account != nil {
+			stickyProxyURL = account.GetProxyURL()
+		} else if fallbackState.configured() {
+			account, stickyProxyURL, affinityGuard = h.nextFallbackAwareAccountWithGuard(c.Request.Context(), fallbackState, affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+		} else {
 			account, stickyProxyURL, affinityGuard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy)
+		}
+		if account == nil && fallbackState.activateAfterPrimaryExhausted() {
+			account = fallbackState.account(retryExclusions.ForSelection())
 		}
 		if account == nil {
 			if continuousRetryCommitExpired(c, continuousRetryProtocolResponses) {
@@ -5976,7 +5998,11 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				sendResponseContextUnavailable(c, continuationStatus, continuationReason)
 				return
 			}
-			account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+			if fallbackState.configured() {
+				account, stickyProxyURL, affinityGuard = h.nextFallbackAwareAccountWithGuard(c.Request.Context(), fallbackState, affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+			} else {
+				account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+			}
 			if account == nil {
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 					return
@@ -5997,8 +6023,12 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				return
 			}
 		}
+		fallbackState.noteSelected(account)
+		h.annotateFallbackRequest(c, fallbackState, account)
 
 		h.AcquireAPIKeyScopeConcurrency(c, account)
+		attemptMaxRateLimitRetries := fallbackState.retryBudgetForAccount(h.effectiveMaxRateLimitRetries(account, fallbackState.primaryRateLimitBudget(maxRateLimitRetries)))
+		maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy = prepareFallbackAttempt(c, account, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		if !bindContinuousRetrySessionAffinityWithGuard(c.Request.Context(), h.store, affinityKey, account, proxyURL, affinityGuard) {
@@ -6080,7 +6110,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					return
 				}
 
-				if !invalidEncryptedContentRetried && isInvalidEncryptedContentError(resp.StatusCode, errBody) {
+				if !account.IsExternalFallback() && !invalidEncryptedContentRetried && isInvalidEncryptedContentError(resp.StatusCode, errBody) {
 					strippedRawBody, rawChanged := stripInvalidEncryptedContentFromResponsesBody(rawBody)
 					strippedCodexBody, codexChanged := stripInvalidEncryptedContentFromResponsesBody(codexBody)
 					if rawChanged || codexChanged {
@@ -6104,15 +6134,14 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				}
 				h.store.Release(account)
 				h.store.UnbindSessionAffinity(affinityKey, account.ID())
-				effectiveRateLimitRetries := h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries)
-				retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, effectiveRateLimitRetries)
+				retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, attemptMaxRateLimitRetries)
 
 				logUpstreamError("/v1/responses/compact", resp.StatusCode, logModel, account.ID(), errBody)
 				promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/responses/compact", logModel, errBody, upstreamCyberPolicyAttempt{
 					Transport: "http", StatusCode: resp.StatusCode, AccountID: account.ID(), AttemptIndex: attempt + 1,
 				}))
 				decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, attemptEffectiveModel)
-				shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+				shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				usageTiers := resolveUsageServiceTiers("", serviceTier)
 				h.logUsageForRequest(c, &database.UsageLogInput{
 					AccountID:              account.ID(),
@@ -6139,7 +6168,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					clearNewAPIUpstreamCyberPolicyDecision(c)
 					lastStatusCode = resp.StatusCode
 					lastBody = errBody
-					retryOrdinal, retryLimit := retryStateForHTTPStatusWithBody(resp.StatusCode, errBody, generalRetries, rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+					retryOrdinal, retryLimit := retryStateForHTTPStatusWithBody(resp.StatusCode, errBody, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 					if !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
 						return
 					}
@@ -6356,15 +6385,14 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			SyncCodexUsageState(h.store, account, resp)
 			h.store.Release(account)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
-			effectiveRateLimitRetries := h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries)
-			retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, effectiveRateLimitRetries)
+			retryExclusions.MarkHTTPFailure(account.ID(), resp.StatusCode, errBody, maxRetries, attemptMaxRateLimitRetries)
 
 			logUpstreamError("/v1/responses/compact", resp.StatusCode, logModel, account.ID(), errBody)
 			promptPolicyIncidentID := acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/responses/compact", logModel, errBody, upstreamCyberPolicyAttempt{
 				Transport: "http", StatusCode: resp.StatusCode, AccountID: account.ID(), AttemptIndex: attempt + 1,
 			}))
 			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, effectiveModel)
-			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:              account.ID(),
@@ -6391,7 +6419,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				clearNewAPIUpstreamCyberPolicyDecision(c)
 				lastStatusCode = resp.StatusCode
 				lastBody = errBody
-				retryOrdinal, retryLimit := retryStateForHTTPStatusWithBody(resp.StatusCode, errBody, generalRetries, rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousRetryPolicy)
+				retryOrdinal, retryLimit := retryStateForHTTPStatusWithBody(resp.StatusCode, errBody, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				if !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
 					return
 				}
@@ -6508,7 +6536,6 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				h.reportStreamOutcomeFailure(account, failureOutcome, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
-			effectiveRateLimitRetries := h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries)
 			// Use the request snapshot so a hot reload cannot change a request
 			// after its first upstream attempt.
 			continuousPolicy := continuousRetryPolicy
@@ -6521,14 +6548,14 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					&generalRetries,
 					&rateLimitRetries,
 					maxRetries,
-					effectiveRateLimitRetries,
+					attemptMaxRateLimitRetries,
 					false,
 					c.Request.Context().Err(),
 					nil,
 					continuousPolicy,
 				)
 			} else {
-				shouldRetry = shouldRetryHTTPStatus(failStatus, errBody, &generalRetries, &rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousPolicy)
+				shouldRetry = shouldRetryHTTPStatus(failStatus, errBody, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousPolicy)
 			}
 			if shouldRetry {
 				if selectedContinuousFailure {
@@ -6540,9 +6567,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			h.store.Release(account)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			if selectedContinuousFailure {
-				retryExclusions.MarkStreamFailureForEvent(account.ID(), failureOutcome, eventType, maxRetries, effectiveRateLimitRetries, continuousPolicy)
+				retryExclusions.MarkStreamFailureForEvent(account.ID(), failureOutcome, eventType, maxRetries, attemptMaxRateLimitRetries, continuousPolicy)
 			} else {
-				retryExclusions.MarkHTTPFailure(account.ID(), failStatus, errBody, maxRetries, effectiveRateLimitRetries, continuousPolicy)
+				retryExclusions.MarkHTTPFailure(account.ID(), failStatus, errBody, maxRetries, attemptMaxRateLimitRetries, continuousPolicy)
 			}
 
 			logUpstreamError("/v1/responses/compact", failStatus, logModel, account.ID(), errBody)
@@ -6577,9 +6604,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				lastBody = errBody
 				var retryOrdinal, retryLimit int
 				if selectedContinuousFailure {
-					retryOrdinal, retryLimit = retryStateForStreamEvent(failureOutcome, eventType, generalRetries, rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousPolicy)
+					retryOrdinal, retryLimit = retryStateForStreamEvent(failureOutcome, eventType, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousPolicy)
 				} else {
-					retryOrdinal, retryLimit = retryStateForHTTPStatusWithBody(failStatus, errBody, generalRetries, rateLimitRetries, maxRetries, effectiveRateLimitRetries, continuousPolicy)
+					retryOrdinal, retryLimit = retryStateForHTTPStatusWithBody(failStatus, errBody, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousPolicy)
 				}
 				if !h.waitBeforeRetryWithBudget(c.Request.Context(), retryOrdinal, retryLimit, resp) {
 					return
@@ -6780,7 +6807,12 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	grokQualityAttempts := 0
 	fallbackState := h.newFallbackRouteState(accountFilter, len(rawBody))
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
+	endLiveAttempt := func() {}
+	defer func() { endLiveAttempt() }()
 	for attempt := 0; ; attempt++ {
+		// Ends the previous iteration's in-flight registration, if any; an
+		// early return from within the loop is covered by the defer above.
+		endLiveAttempt()
 		fallbackState.activateAfterRetryBudget(generalRetries, rateLimitRetries)
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
@@ -6936,6 +6968,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if useWebsocket {
 				upstreamBody = stripResponsesImageGenerationTool(codexBody)
 			}
+			endLiveAttempt = beginRelayAttempt(c, account, attemptEffectiveModel, isStream, useWebsocket, attempt+1)
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 			})

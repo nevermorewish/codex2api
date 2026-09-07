@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -123,5 +124,123 @@ func TestRelayRequestRemainsActiveWhileFallbackIsPending(t *testing.T) {
 	logs, _, err = db.ListRelayChainLogs(context.Background(), 1, 20)
 	if err != nil || len(logs) != 2 || logs[1].AccountID != -9 || logs[1].StatusCode != 200 || logs[1].IsRetryAttempt {
 		t.Fatalf("missing terminal fallback: logs=%+v err=%v", logs, err)
+	}
+}
+
+func newLiveAttemptTestContext(t *testing.T, requestID string) *gin.Context {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{}`))
+	if requestID != "" {
+		c.Request.Header.Set("X-Request-ID", requestID)
+	}
+	return c
+}
+
+func TestBeginRelayAttemptTracksAndCleansUp(t *testing.T) {
+	c := newLiveAttemptTestContext(t, "live-attempt-basic")
+	account := &auth.Account{DBID: 5, Name: "acct-a"}
+	end := beginRelayAttempt(c, account, "gpt-5.4", true, false, 1)
+	snapshot := LiveAttemptsSnapshot()
+	var found *LiveAttemptInfo
+	for i := range snapshot {
+		if snapshot[i].ParentRequestID == "live-attempt-basic" {
+			found = &snapshot[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("in-flight attempt not visible in snapshot")
+	}
+	if found.AccountID != 5 || found.AccountName != "acct-a" || found.Model != "gpt-5.4" || !found.IsStream || found.UseWebsocket || found.AttemptIndex != 1 {
+		t.Fatalf("unexpected snapshot entry: %+v", found)
+	}
+	if found.Fallback {
+		t.Fatal("primary account misreported as fallback")
+	}
+	end()
+	for _, entry := range LiveAttemptsSnapshot() {
+		if entry.ParentRequestID == "live-attempt-basic" {
+			t.Fatal("entry still present after end()")
+		}
+	}
+	// end() must be safe to call more than once.
+	end()
+}
+
+func TestBeginRelayAttemptMultipleAttemptsSameParent(t *testing.T) {
+	c := newLiveAttemptTestContext(t, "live-attempt-rotation")
+	first := &auth.Account{DBID: 1, Name: "acct-1"}
+	second := &auth.Account{DBID: 2, Name: "acct-2"}
+	endFirst := beginRelayAttempt(c, first, "gpt-5.4", true, false, 1)
+	endSecond := beginRelayAttempt(c, second, "gpt-5.4", true, false, 2)
+
+	count := func() int {
+		n := 0
+		for _, entry := range LiveAttemptsSnapshot() {
+			if entry.ParentRequestID == "live-attempt-rotation" {
+				n++
+			}
+		}
+		return n
+	}
+	if count() != 2 {
+		t.Fatalf("expected 2 in-flight attempts for the same parent, got %d", count())
+	}
+	endFirst()
+	if count() != 1 {
+		t.Fatalf("ending the first attempt must not affect the second, got %d", count())
+	}
+	endSecond()
+	if count() != 0 {
+		t.Fatalf("expected 0 in-flight attempts after both ended, got %d", count())
+	}
+}
+
+func TestLiveAttemptsCapEnforced(t *testing.T) {
+	liveAttempts.Lock()
+	liveAttempts.byToken = make(map[uint64]*liveAttempt)
+	liveAttempts.byParent = make(map[string]map[uint64]struct{})
+	liveAttempts.dropped = 0
+	liveAttempts.Unlock()
+
+	account := &auth.Account{DBID: 1, Name: "acct-cap"}
+	var ends []func()
+	for i := 0; i < maxLiveAttempts+5; i++ {
+		c := newLiveAttemptTestContext(t, "live-attempt-cap")
+		ends = append(ends, beginRelayAttempt(c, account, "gpt-5.4", true, false, i+1))
+	}
+	if len(liveAttempts.byToken) != maxLiveAttempts {
+		t.Fatalf("registry exceeded cap: len=%d cap=%d", len(liveAttempts.byToken), maxLiveAttempts)
+	}
+	if !LiveAttemptsTruncated() {
+		t.Fatal("expected truncation to be reported once the cap was hit")
+	}
+	for _, end := range ends {
+		end()
+	}
+	if len(liveAttempts.byToken) != 0 {
+		t.Fatalf("registry did not drain after all ends: len=%d", len(liveAttempts.byToken))
+	}
+}
+
+func TestBeginRelayAttemptConcurrentSafety(t *testing.T) {
+	account := &auth.Account{DBID: 1, Name: "acct-race"}
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			c := newLiveAttemptTestContext(t, "live-attempt-race")
+			end := beginRelayAttempt(c, account, "gpt-5.4", true, false, n+1)
+			_ = LiveAttemptsSnapshot()
+			end()
+		}(i)
+	}
+	wg.Wait()
+	for _, entry := range LiveAttemptsSnapshot() {
+		if entry.ParentRequestID == "live-attempt-race" {
+			t.Fatal("registry did not fully drain after concurrent begin/end")
+		}
 	}
 }

@@ -609,7 +609,15 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			options = &forwardOptions
 		}
 	}
+	endLiveAttempt := func() {}
+	defer func() { endLiveAttempt() }()
 	for attempt := 0; ; attempt++ {
+		// Ends the previous iteration's in-flight registration, if any; a
+		// return earlier in the loop is covered by the defer above. This is
+		// also what makes end() effectively fire after streamResponsesWSUpstream
+		// (further below) returns, not right after ExecuteRequest: the next
+		// call only happens once this iteration is fully done.
+		endLiveAttempt()
 		if c.Request.Context().Err() != nil {
 			return errResponsesWSClientGone
 		}
@@ -779,6 +787,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		// WS 路径交给 ExecuteRequest 的 stateless 槽位池处理。
 		upstreamCtx = context.WithValue(upstreamCtx, encryptedContentSessionKey{}, sessionIdentity.affinityID)
 		upstreamSessionID := resolveUpstreamSessionID(apiKeyID, sessionIdentity.upstreamSeed, sessionIdentity.explicitUpstreamID, useWebsocket)
+		endLiveAttempt = beginRelayAttempt(c, account, attemptEffectiveModel, true, useWebsocket, attempt+1)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 			if account.IsExternalFallback() {
 				// The downstream stays WS. The fallback provider receives its own

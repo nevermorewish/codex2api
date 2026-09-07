@@ -3977,6 +3977,22 @@ export interface RelayChain {
   switch_count: number
 }
 
+export interface LiveStream {
+  request_id: string
+  model: string
+  protocol: string
+  api_key_id: number
+  api_key_name: string
+  started_at: ISODateString
+  attempts: RelayAttempt[]
+  status: 'in_progress' | 'success' | 'failed' | 'canceled' | 'incomplete'
+  disconnected: boolean
+  disconnect_reason?: string
+  total_ms: number
+  attempt_count: number
+  switch_count: number
+}
+
 export interface FallbackAccount {
   id: number
   name: string

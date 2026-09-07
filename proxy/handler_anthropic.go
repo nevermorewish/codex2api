@@ -581,7 +581,12 @@ func (h *Handler) Messages(c *gin.Context) {
 	var lastClaudePolicyErr *Error
 	fallbackState := h.newFallbackRouteState(accountFilter, len(rawBody))
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
+	endLiveAttempt := func() {}
+	defer func() { endLiveAttempt() }()
 	for attempt := 0; ; attempt++ {
+		// Ends the previous iteration's in-flight registration, if any; an
+		// early return from within the loop is covered by the defer above.
+		endLiveAttempt()
 		fallbackState.activateAfterRetryBudget(generalRetries, rateLimitRetries)
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
 		if !retainedHTTPFallback {
@@ -812,6 +817,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			}
 			// service_tier 记账按 payload 规则改写后的值归因（仅 Codex 路径套用规则）。
 			serviceTier = EffectiveRequestedServiceTier(codexBody, attemptEffectiveModel, downstreamHeaders, attemptIdentity)
+			endLiveAttempt = beginRelayAttempt(c, account, attemptEffectiveModel, isStream, useWebsocket, attempt+1)
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				return ExecuteRequest(upstreamCtx, account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 			})

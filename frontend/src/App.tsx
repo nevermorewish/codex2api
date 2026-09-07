@@ -29,6 +29,7 @@ const ThemeSettings = lazy(() => import('./pages/ThemeSettings'))
 const ModelPricing = lazy(() => import('./pages/ModelPricing'))
 const PayloadRules = lazy(() => import('./pages/PayloadRules'))
 const Concurrency = lazy(() => import('./pages/Concurrency'))
+const LiveStreams = lazy(() => import('./pages/LiveStreams'))
 const FallbackPool = lazy(() => import('./pages/FallbackPool'))
 const ErrorAnalysis = lazy(() => import('./pages/ErrorAnalysis'))
 const RobotMonitor = lazy(() => import('./pages/RobotMonitor'))
@@ -72,6 +73,7 @@ function AdminApp() {
           <Route path="/api-keys" element={<APIKeys />} />
           <Route path="/proxies" element={<Proxies />} />
           <Route path="/concurrency" element={<Concurrency />} />
+          <Route path="/live-streams" element={<LiveStreams />} />
           <Route path="/fallback-pool" element={<FallbackPool />} />
           <Route path="/error-analysis" element={<ErrorAnalysis />} />
           <Route path="/robot-monitor" element={<RobotMonitor />} />

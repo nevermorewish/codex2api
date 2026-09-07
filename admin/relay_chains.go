@@ -115,43 +115,10 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 
 	chains := make([]relayChainResponse, 0, len(groups))
 	for _, group := range groups {
+		group.logs = sortAndFilterChainLogs(group.logs)
 		if len(group.logs) == 0 {
 			continue
 		}
-		// Continuation/折叠 rounds are persisted with attempt_index=0 and share
-		// the parent request ID, while normal upstream failover attempts use the
-		// one-based attempt index. When a chain has indexed attempts, omit those
-		// auxiliary zero-index rows so they do not appear as account hops.
-		hasIndexedAttempt := false
-		for _, row := range group.logs {
-			if row.AttemptIndex > 0 {
-				hasIndexedAttempt = true
-				break
-			}
-		}
-		if hasIndexedAttempt {
-			filtered := group.logs[:0]
-			for _, row := range group.logs {
-				if row.AttemptIndex > 0 {
-					filtered = append(filtered, row)
-				}
-			}
-			group.logs = filtered
-		}
-		if len(group.logs) == 0 {
-			continue
-		}
-		sort.SliceStable(group.logs, func(i, j int) bool {
-			a, b := group.logs[i], group.logs[j]
-			if a.AttemptIndex != b.AttemptIndex {
-				// Some legacy rows have no attempt index; keep them in timestamp order.
-				if a.AttemptIndex == 0 || b.AttemptIndex == 0 {
-					return a.CreatedAt.Before(b.CreatedAt)
-				}
-				return a.AttemptIndex < b.AttemptIndex
-			}
-			return a.CreatedAt.Before(b.CreatedAt)
-		})
 		first := group.logs[0]
 		chain := relayChainResponse{
 			RequestID:  group.requestID,
@@ -205,6 +172,45 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 	}
 	sort.Slice(chains, func(i, j int) bool { return order[chains[i].RequestID] < order[chains[j].RequestID] })
 	c.JSON(http.StatusOK, gin.H{"chains": chains, "total": total, "page": page, "page_size": pageSize})
+}
+
+// sortAndFilterChainLogs drops continuation/折叠 auxiliary rounds (persisted
+// with attempt_index=0 sharing the parent request ID) once the chain also has
+// indexed attempts, then orders the remaining rows into attempt sequence.
+// Shared by GetRelayChains and GetLiveStreams so both endpoints reconstruct
+// one chain's hop order identically.
+func sortAndFilterChainLogs(logs []*database.UsageLog) []*database.UsageLog {
+	if len(logs) == 0 {
+		return logs
+	}
+	hasIndexedAttempt := false
+	for _, row := range logs {
+		if row.AttemptIndex > 0 {
+			hasIndexedAttempt = true
+			break
+		}
+	}
+	if hasIndexedAttempt {
+		filtered := logs[:0]
+		for _, row := range logs {
+			if row.AttemptIndex > 0 {
+				filtered = append(filtered, row)
+			}
+		}
+		logs = filtered
+	}
+	sort.SliceStable(logs, func(i, j int) bool {
+		a, b := logs[i], logs[j]
+		if a.AttemptIndex != b.AttemptIndex {
+			// Some legacy rows have no attempt index; keep them in timestamp order.
+			if a.AttemptIndex == 0 || b.AttemptIndex == 0 {
+				return a.CreatedAt.Before(b.CreatedAt)
+			}
+			return a.AttemptIndex < b.AttemptIndex
+		}
+		return a.CreatedAt.Before(b.CreatedAt)
+	})
+	return logs
 }
 
 func relayChainStatus(last *database.UsageLog, active bool) string {

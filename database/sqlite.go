@@ -813,6 +813,11 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_request_id ON usage_logs(request_id) WHERE request_id <> '';`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_upstream_request_id ON usage_logs(upstream_request_id) WHERE upstream_request_id <> '';`,
+		// Backs ListUsageLogsByParentRequestIDs (usage_logs_live.go): the live
+		// streams admin endpoint looks up a small, bounded set of active
+		// parent_request_id values on every poll and must never fall back to a
+		// sequential scan of this table.
+		`CREATE INDEX IF NOT EXISTS idx_usage_logs_parent_request_id ON usage_logs(parent_request_id) WHERE parent_request_id <> '';`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_account_id ON usage_logs(account_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_account_created_at ON usage_logs(account_id, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_account_generation_created_at ON usage_logs(account_id, credential_generation, created_at);`,

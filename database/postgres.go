@@ -569,6 +569,11 @@ func (db *DB) ensureUsageLogsGenerationIndex(parent context.Context) error {
 		{"idx_usage_logs_account_generation_created_at", "(account_id, credential_generation, created_at)"},
 		{"idx_usage_logs_request_id", "(request_id) WHERE request_id <> ''"},
 		{"idx_usage_logs_upstream_request_id", "(upstream_request_id) WHERE upstream_request_id <> ''"},
+		// Backs ListUsageLogsByParentRequestIDs (usage_logs_live.go): the live
+		// streams admin endpoint looks up a small, bounded set of active
+		// parent_request_id values on every poll and must never fall back to a
+		// sequential scan of this table.
+		{"idx_usage_logs_parent_request_id", "(parent_request_id) WHERE parent_request_id <> ''"},
 	} {
 		if err := ensureUsageLogsOnlineIndex(ctx, conn, index.name, index.definition); err != nil {
 			return err
