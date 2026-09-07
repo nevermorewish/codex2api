@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
-import { Activity, ArrowRight, CheckCircle2, ChevronDown, CircleHelp, CircleSlash, Gauge, GitBranch, KeyRound, Layers3, LoaderCircle, Search, Users, XCircle } from 'lucide-react'
+import { Activity, ArrowRight, CheckCircle2, ChevronDown, CircleHelp, CircleSlash, Gauge, GitBranch, Hourglass, KeyRound, Layers3, LoaderCircle, Search, Users, XCircle } from 'lucide-react'
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from 'recharts'
 import { api } from '../api'
 import type { ConcurrencyAccountRow, ConcurrencySnapshot, RelayAttempt, RelayChain } from '../types'
@@ -80,6 +80,29 @@ function formatRelayTime(value: string): string {
   return date.toLocaleString(undefined, {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
+}
+
+function cooldownRemainingSeconds(row: ConcurrencyAccountRow, now: number): number {
+  const until = Date.parse(row.cooldown_until || '')
+  return Number.isFinite(until) ? Math.max(0, Math.ceil((until - now) / 1000)) : 0
+}
+
+function AccountCooldown({ row, now, t }: { row: ConcurrencyAccountRow; now: number; t: TFunction }) {
+  const seconds = cooldownRemainingSeconds(row, now)
+  if (seconds === 0) return <span className="text-xs text-muted-foreground">{t('concurrency.noCooldown')}</span>
+  const remaining = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
+    .map((value) => String(value).padStart(2, '0')).join(':')
+  const reason = row.cooldown_reason?.trim() || 'cooldown'
+  return (
+    <div className="space-y-1 text-xs">
+      <span className="inline-flex max-w-56 items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-amber-700 dark:text-amber-300" title={reason}>
+        <Hourglass className="size-3 shrink-0" aria-hidden="true" />
+        <span className="whitespace-normal break-words">{t(`status.${reason}`, { defaultValue: reason })}</span>
+      </span>
+      <div className="font-mono tabular-nums text-amber-700 dark:text-amber-300">{t('concurrency.cooldownRemaining', { time: remaining })}</div>
+      <div className="text-[11px] text-muted-foreground">{t('concurrency.cooldownUntil', { time: formatRelayTime(row.cooldown_until!) })}</div>
+    </div>
+  )
 }
 
 function RelayChainDetails({ chain, t }: { chain: RelayChain; t: TFunction }) {
@@ -164,6 +187,7 @@ export default function Concurrency() {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [hideIdle, setHideIdle] = useState(false)
+  const [onlyCooling, setOnlyCooling] = useState(false)
   const [relayChains, setRelayChains] = useState<RelayChain[]>([])
   const [expandedRelay, setExpandedRelay] = useState<string | null>(null)
   const [relayPage, setRelayPage] = useState(1)
@@ -217,7 +241,7 @@ export default function Concurrency() {
   useEffect(() => {
     const loader = createSerialPoller({
       request: (signal) => api.getConcurrency(signal),
-      onResult: (result) => { setSnapshot(result); setError(null); setLoading(false) },
+      onResult: (result) => { setSnapshot(result); setNow(Date.now()); setError(null); setLoading(false) },
       onError: (err) => { setError(getErrorMessage(err)); setLoading(false) },
     })
     refreshSnapshot.current = () => { void loader.load() }
@@ -255,12 +279,16 @@ export default function Concurrency() {
   const accounts = useMemo(() => {
     const query = search.trim().toLowerCase()
     return (snapshot?.accounts ?? []).filter((row) => {
-      if (hideIdle && row.occupied === 0) return false
+      const cooling = cooldownRemainingSeconds(row, now) > 0
+      if (onlyCooling && !cooling) return false
+      if (hideIdle && row.occupied === 0 && !cooling) return false
       if (!query) return true
-      return [row.name, row.channel, String(row.id), ...row.group_names]
+      return [row.name, row.channel, String(row.id), row.cooldown_reason || '', ...row.group_names]
         .some((value) => value.toLowerCase().includes(query))
     })
-  }, [snapshot, search, hideIdle])
+  }, [snapshot, search, hideIdle, onlyCooling, now])
+
+  const coolingCount = (snapshot?.accounts ?? []).filter((row) => cooldownRemainingSeconds(row, now) > 0).length
 
   const updatedAt = snapshot?.collected_at
     ? new Date(snapshot.collected_at).toLocaleTimeString()
@@ -284,12 +312,13 @@ export default function Concurrency() {
       >
         {snapshot ? (
           <div className="space-y-5">
-            <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5">
+            <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-6">
               <StatTile label={t('concurrency.globalActive')} value={snapshot.global_active} icon={<Activity className="size-4" />} tone="info" />
               <StatTile label={t('concurrency.queueDepth')} value={snapshot.queue_depth} icon={<Layers3 className="size-4" />} tone={snapshot.queue_depth > 0 ? 'warning' : 'neutral'} />
               <StatTile label={t('concurrency.active')} value={snapshot.total_active} icon={<Gauge className="size-4" />} tone="success" />
               <StatTile label={t('concurrency.occupied')} value={snapshot.total_occupied} sub={t('concurrency.bufferedCount', { count: Math.max(0, snapshot.total_occupied - snapshot.total_active) })} icon={<Users className="size-4" />} />
               <StatTile label={t('concurrency.capacity')} value={snapshot.capacity} sub={t('concurrency.usableCapacity')} icon={<Gauge className="size-4" />} />
+              <StatTile label={t('concurrency.coolingAccounts')} value={coolingCount} icon={<Hourglass className="size-4" />} tone={coolingCount > 0 ? 'warning' : 'neutral'} />
             </div>
 
             <div className="grid items-start gap-5 lg:grid-cols-2">
@@ -372,9 +401,13 @@ export default function Concurrency() {
                     <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                     <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('concurrency.searchPlaceholder')} className="pl-8" />
                   </label>
-                  <label className="flex h-9 items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
+                  <label className="flex h-9 items-center gap-2 whitespace-nowrap text-sm text-muted-foreground" title={t('concurrency.hideIdleHint')}>
                     <Switch checked={hideIdle} onCheckedChange={setHideIdle} />
                     {t('concurrency.hideIdle')}
+                  </label>
+                  <label className="flex h-9 items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
+                    <Switch checked={onlyCooling} onCheckedChange={setOnlyCooling} />
+                    {t('concurrency.onlyCooling')}
                   </label>
                 </div>
               </div>
@@ -383,6 +416,7 @@ export default function Concurrency() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t('concurrency.account')}</TableHead>
+                      <TableHead className="min-w-44">{t('concurrency.cooldown')}</TableHead>
                       <TableHead className="min-w-28">{t('concurrency.pressure')}</TableHead>
                       <TableHead className="text-right">{t('concurrency.active')}</TableHead>
                       <TableHead className="text-right">{t('concurrency.occupied')}</TableHead>
@@ -404,6 +438,7 @@ export default function Concurrency() {
                             </div>
                           </div>
                         </TableCell>
+                        <TableCell><AccountCooldown row={row} now={now} t={t} /></TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
@@ -419,7 +454,7 @@ export default function Concurrency() {
                       </TableRow>
                     ))}
                     {accounts.length === 0 ? (
-                      <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">{t('concurrency.noAccounts')}</TableCell></TableRow>
+                      <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">{t('concurrency.noAccounts')}</TableCell></TableRow>
                     ) : null}
                   </TableBody>
                 </Table>

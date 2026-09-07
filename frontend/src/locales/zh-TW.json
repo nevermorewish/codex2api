@@ -11,6 +11,13 @@
     "edit": "編輯"
   },
   "concurrency": {
+    "cooldown": "冷卻情況",
+    "coolingAccounts": "冷卻帳號",
+    "onlyCooling": "僅看冷卻",
+    "noCooldown": "無冷卻",
+    "cooldownRemaining": "剩餘 {{time}}",
+    "cooldownUntil": "結束於 {{time}}",
+    "hideIdleHint": "隱藏無並行佔用的帳號，冷卻中的帳號仍顯示",
     "title": "即時並發",
     "description": "即時查看帳號、群組與 API 金鑰的程序內並發佔用。",
     "updatedAt": "更新時間：{{time}}",

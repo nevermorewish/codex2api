@@ -22,6 +22,13 @@
     "robotMonitor": "Bot Monitor"
   },
   "concurrency": {
+    "cooldown": "Cooldown",
+    "coolingAccounts": "Cooling accounts",
+    "onlyCooling": "Cooling only",
+    "noCooldown": "No cooldown",
+    "cooldownRemaining": "{{time}} remaining",
+    "cooldownUntil": "Ends {{time}}",
+    "hideIdleHint": "Hide accounts with no occupied slots; cooling accounts remain visible",
     "title": "Live Concurrency",
     "description": "Inspect process-local concurrency for accounts, groups, and API keys in real time.",
     "requestTrendTitle": "Today's request distribution",

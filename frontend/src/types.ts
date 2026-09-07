@@ -3917,6 +3917,8 @@ export interface ConcurrencyAccountRow {
   utilization: number
   available: boolean
   fallback: boolean
+  cooldown_reason?: string
+  cooldown_until?: ISODateString
 }
 
 export interface ConcurrencyGroupRow {

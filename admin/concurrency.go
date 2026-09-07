@@ -12,20 +12,22 @@ import (
 )
 
 type concurrencyAccountRow struct {
-	ID          int64    `json:"id"`
-	Name        string   `json:"name"`
-	Channel     string   `json:"channel"`
-	Status      string   `json:"status"`
-	HealthTier  string   `json:"health_tier"`
-	GroupIDs    []int64  `json:"group_ids"`
-	GroupNames  []string `json:"group_names"`
-	Active      int64    `json:"active"`
-	Occupied    int64    `json:"occupied"`
-	Buffered    int64    `json:"buffered"`
-	Limit       int64    `json:"limit"`
-	Utilization float64  `json:"utilization"`
-	Available   bool     `json:"available"`
-	Fallback    bool     `json:"fallback"`
+	ID             int64    `json:"id"`
+	Name           string   `json:"name"`
+	Channel        string   `json:"channel"`
+	Status         string   `json:"status"`
+	HealthTier     string   `json:"health_tier"`
+	GroupIDs       []int64  `json:"group_ids"`
+	GroupNames     []string `json:"group_names"`
+	Active         int64    `json:"active"`
+	Occupied       int64    `json:"occupied"`
+	Buffered       int64    `json:"buffered"`
+	Limit          int64    `json:"limit"`
+	Utilization    float64  `json:"utilization"`
+	Available      bool     `json:"available"`
+	Fallback       bool     `json:"fallback"`
+	CooldownReason string   `json:"cooldown_reason,omitempty"`
+	CooldownUntil  string   `json:"cooldown_until,omitempty"`
 }
 
 type concurrencyGroupRow struct {
@@ -96,13 +98,18 @@ func concurrencyAccount(account *auth.Account, groupNames map[int64]string) conc
 	if account.IsExternalFallback() {
 		id = -id
 	}
-	return concurrencyAccountRow{
+	row := concurrencyAccountRow{
 		ID: id, Name: name, Channel: concurrencyChannel(account), Status: snapshot.Status,
 		HealthTier: snapshot.HealthTier, GroupIDs: snapshot.GroupIDs, GroupNames: names,
 		Active: snapshot.ActiveRequests, Occupied: snapshot.OccupiedRequests, Buffered: buffered,
 		Limit: snapshot.DynamicConcurrencyLimit, Utilization: utilization,
 		Available: account.IsAvailable(), Fallback: account.IsExternalFallback(),
 	}
+	if snapshot.CooldownUntil.After(time.Now()) {
+		row.CooldownReason = snapshot.CooldownReason
+		row.CooldownUntil = snapshot.CooldownUntil.Format(time.RFC3339Nano)
+	}
+	return row
 }
 
 func (h *Handler) GetConcurrencySnapshot(c *gin.Context) {
