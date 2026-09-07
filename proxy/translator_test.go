@@ -4107,3 +4107,17 @@ func TestModelSupportsMaxReasoningEffort(t *testing.T) {
 		t.Fatalf("daybreak max effort clamped to %q", got)
 	}
 }
+
+func TestPrepareOpenAIResponsesBody_RemovesRelayIncompatibleAdditionalToolsCarrierFields(t *testing.T) {
+	raw := []byte(`{"model":"gpt-6-astra","input":[{"type":"additional_tools","role":"developer","id":"at_123","content":"internal context","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]}]}`)
+	got := PrepareOpenAIResponsesBody(raw)
+	if gjson.GetBytes(got, "input.0.type").String() != "message" || gjson.GetBytes(got, "input.0.content").String() != "internal context" {
+		t.Fatalf("additional_tools content was not preserved as a developer message: %s", got)
+	}
+	if gjson.GetBytes(got, "input.1.content").Exists() || gjson.GetBytes(got, "input.1.id").Exists() {
+		t.Fatalf("additional_tools id leaked: %s", got)
+	}
+	if !gjson.GetBytes(got, "input.1.tools.0").Exists() {
+		t.Fatalf("additional_tools tools were removed: %s", got)
+	}
+}

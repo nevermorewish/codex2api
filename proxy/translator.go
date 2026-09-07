@@ -2478,6 +2478,12 @@ func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 	normalizeResponsesToolChoice(body)
 	normalizeResponsesContentPartTypes(body)
 	normalizeResponsesInputMessageContent(body)
+	// Some OpenAI-compatible Responses relays accept the Responses Lite
+	// `additional_tools` carrier only as a tools declaration.  They reject the
+	// client-side context carrier's `content` and `id` fields with
+	// `Unknown parameter: 'input[0].content'`.  Keep the tools themselves, but
+	// remove those relay-incompatible fields before the request is sent.
+	normalizeResponsesAdditionalToolCarrier(body)
 	if shouldInjectOpenAIResponsesImageGenerationTool(body) {
 		ensureResponsesImageGenerationTool(body)
 	}
@@ -2490,6 +2496,36 @@ func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 	}
 	result = normalizeCompactionTriggerFinal(result, false)
 	return result
+}
+
+// normalizeResponsesAdditionalToolCarrier keeps the tool declarations in a
+// Responses Lite additional_tools item while removing fields rejected by
+// OpenAI-compatible relay endpoints.  Ordinary message items are untouched.
+func normalizeResponsesAdditionalToolCarrier(body map[string]any) {
+	input, ok := body["input"].([]any)
+	if !ok {
+		return
+	}
+	for index := 0; index < len(input); index++ {
+		raw := input[index]
+		item, ok := raw.(map[string]any)
+		if !ok || strings.TrimSpace(firstNonEmptyAnyString(item["type"])) != "additional_tools" {
+			continue
+		}
+		// Relay schemas reject content on the additional_tools carrier. Preserve
+		// that context as a normal developer message immediately before the
+		// carrier instead of silently dropping it.
+		if content, exists := item["content"]; exists && content != nil {
+			message := map[string]any{"type": "message", "role": "developer", "content": content}
+			input = append(input, nil)
+			copy(input[index+1:], input[index:])
+			input[index] = message
+			index++
+		}
+		delete(item, "id")
+		delete(item, "content")
+	}
+	body["input"] = input
 }
 
 // PrepareCompactResponsesBody 将 /responses/compact 请求转换为上游可接受的格式。
