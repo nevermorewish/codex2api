@@ -378,10 +378,43 @@ var codexAllowedForwardHeaders = []string{
 }
 
 func codexResponsesLiteRequested(requestBody []byte, headers http.Header) bool {
+	if codexResponsesLiteExplicitlyRequested(requestBody, headers) {
+		return true
+	}
+	input := gjson.GetBytes(requestBody, "input")
+	if input.IsArray() {
+		for _, item := range input.Array() {
+			if item.Get("type").String() == "additional_tools" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codexResponsesLiteExplicitlyRequested(requestBody []byte, headers http.Header) bool {
 	if headers != nil && strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true") {
 		return true
 	}
 	return strings.EqualFold(strings.TrimSpace(gjson.GetBytes(requestBody, codexResponsesLiteWSMetadataPath).String()), "true")
+}
+
+func codexResponsesLiteEnabled(requestBody []byte, headers http.Header, account *auth.Account) bool {
+	if codexResponsesLiteExplicitlyRequested(requestBody, headers) {
+		return gateResponsesLiteForAccount(true, requestBody, account)
+	}
+	if !codexResponsesLiteRequested(requestBody, headers) {
+		return false
+	}
+	// Recover a dropped feature header only when the target supports Lite.
+	model := gjson.GetBytes(requestBody, "model").String()
+	if account != nil {
+		if supported, known := account.ModelSupportsResponsesLite(model); known {
+			return supported
+		}
+	}
+	supported, known := responsesLiteSupportForModel(model)
+	return known && supported
 }
 
 // prepareCodexResponsesLiteTransport keeps the request-scoped Responses Lite
@@ -548,7 +581,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	// lite 信号收敛：签名在 payload 规则改写后采集（规则可注入/删除 WS 标记，改写
 	// 前采集会让注入失效、删除被回填），模型也已被入口映射/规则定稿——已知不支持
 	// lite 的模型带信号上游必 400，发出前剥离。
-	responsesLite := gateResponsesLiteForAccount(codexResponsesLiteRequested(requestBody, headers), requestBody, account)
+	responsesLite := codexResponsesLiteEnabled(requestBody, headers, account)
 	wantWebsocket := CurrentRuntimeSettings().CodexForceWebsocket
 	if len(useWebsocket) > 0 {
 		wantWebsocket = useWebsocket[0]
@@ -750,7 +783,7 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	var encryptedAttempt *encryptedContentAttempt
 	requestBody, encryptedAttempt = prepareEncryptedContentAttempt(ctx, account, requestBody, "", headers)
 	defer func() { encryptedAttempt.observeResponse(upstreamResponse, requestBody) }()
-	responsesLite := gateResponsesLiteForAccount(codexResponsesLiteRequested(requestBody, headers), requestBody, account)
+	responsesLite := codexResponsesLiteEnabled(requestBody, headers, account)
 	requestBody, headers = prepareCodexResponsesLiteTransport(requestBody, headers, false, responsesLite)
 	requestBody = normalizeCompactionTriggerFinal(requestBody, false)
 
@@ -897,7 +930,7 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 	var encryptedAttempt *encryptedContentAttempt
 	requestBody, encryptedAttempt = prepareEncryptedContentAttempt(ctx, account, requestBody, "", headers)
 	defer func() { encryptedAttempt.observeResponse(upstreamResponse, requestBody) }()
-	responsesLite := gateResponsesLiteForAccount(codexResponsesLiteRequested(requestBody, headers), requestBody, account)
+	responsesLite := codexResponsesLiteEnabled(requestBody, headers, account)
 	requestBody, headers = prepareCodexResponsesLiteTransport(requestBody, headers, false, responsesLite)
 
 	baseURL, apiKey := account.OpenAIResponsesCredentials()
@@ -944,7 +977,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	var encryptedAttempt *encryptedContentAttempt
 	requestBody, encryptedAttempt = prepareEncryptedContentAttempt(ctx, account, requestBody, sessionID, headers)
 	defer func() { encryptedAttempt.observeResponse(upstreamResponse, requestBody) }()
-	responsesLite := gateResponsesLiteForAccount(codexResponsesLiteRequested(requestBody, headers), requestBody, account)
+	responsesLite := codexResponsesLiteEnabled(requestBody, headers, account)
 
 	account.Mu().RLock()
 	accessToken := account.AccessToken

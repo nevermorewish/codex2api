@@ -527,7 +527,7 @@ func TestApplyCodexRequestHeadersForwardsResponsesLiteOnlyWhenPresent(t *testing
 	}
 }
 
-func TestCodexResponsesLiteRequestedRequiresExplicitTrue(t *testing.T) {
+func TestCodexResponsesLiteRequested(t *testing.T) {
 	headerTrue := make(http.Header)
 	headerTrue.Set(codexResponsesLiteHeader, " TRUE ")
 	headerFalse := make(http.Header)
@@ -543,6 +543,11 @@ func TestCodexResponsesLiteRequestedRequiresExplicitTrue(t *testing.T) {
 		{name: "websocket metadata", body: []byte(`{"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}}`), want: true},
 		{name: "false values", body: []byte(`{"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"false"}}`), headers: headerFalse, want: false},
 		{name: "model name alone", body: []byte(`{"model":"gpt-5.6-sol"}`), want: false},
+		{name: "additional tools without header", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","id":"at_test","content":"instructions","tools":[]}]}`), want: true},
+		{name: "additional tools after message", body: []byte(`{"input":[{"type":"message","role":"user","content":"hi"},{"type":"additional_tools","tools":[]}]}`), want: true},
+		{name: "text is not a carrier", body: []byte(`{"input":[{"type":"message","content":"additional_tools"}]}`), want: false},
+		{name: "input must be array", body: []byte(`{"input":{"type":"additional_tools"}}`), want: false},
+		{name: "nested tools are not a carrier", body: []byte(`{"input":[{"type":"message","tools":[{"type":"additional_tools"}]}]}`), want: false},
 	}
 
 	for _, tt := range tests {

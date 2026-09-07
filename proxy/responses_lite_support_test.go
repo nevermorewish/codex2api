@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,8 +10,82 @@ import (
 	"testing"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
 	"github.com/tidwall/gjson"
 )
+
+func TestCodexResponsesLiteInferenceRequiresKnownSupport(t *testing.T) {
+	resetLearnedResponsesLiteSupport(t)
+	for _, tc := range []struct {
+		name, model, accountFlag string
+		explicit, want           bool
+	}{
+		{name: "supported seed", model: "gpt-5.6-sol", want: true},
+		{name: "unsupported seed", model: "gpt-5.5"},
+		{name: "unknown model", model: "future-model"},
+		{name: "missing model"},
+		{name: "account manifest enables", model: "future-model", accountFlag: "true", want: true},
+		{name: "account manifest overrides seed", model: "gpt-5.6-sol", accountFlag: "false"},
+		{name: "explicit unknown remains supported", model: "future-model", explicit: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := &auth.Account{DBID: 9}
+			if tc.accountFlag != "" {
+				account.ApplyModelCapabilities(database.ModelCapabilitySnapshot{
+					AccountID: 9, ObservedAt: 1,
+					Models: map[string]map[string]json.RawMessage{tc.model: {"use_responses_lite": json.RawMessage(tc.accountFlag)}},
+				})
+			}
+			body := []byte(`{"model":"` + tc.model + `","input":[{"type":"additional_tools","content":"instructions","tools":[]}]}`)
+			headers := make(http.Header)
+			if tc.explicit {
+				headers.Set(codexResponsesLiteHeader, "true")
+			}
+			if got := codexResponsesLiteEnabled(body, headers, account); got != tc.want {
+				t.Fatalf("Lite enabled = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExecuteRequestRecoversLiteCarrierOnBothTransports(t *testing.T) {
+	resetLearnedResponsesLiteSupport(t)
+	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"additional_tools","role":"developer","id":"at_test","content":"instructions","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}]}`)
+	account := &auth.Account{DBID: 9, AccessToken: "at-9", AccountID: "acct-9"}
+	var wsBody []byte
+	wsHeaders := make(http.Header)
+	stubWebsocketExecute(t, &wsBody, &wsHeaders)
+	resp, err := ExecuteRequest(context.Background(), account, body, "", "", "sk-test", nil, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if gjson.GetBytes(wsBody, codexResponsesLiteWSMetadataPath).String() != "true" {
+		t.Fatalf("missing WS Lite marker: %s", wsBody)
+	}
+	if gjson.GetBytes(wsBody, "input").Raw != gjson.GetBytes(body, "input").Raw {
+		t.Fatalf("WS carrier changed: %s", wsBody)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamBody := readUpstreamRequestBody(r)
+		if r.Header.Get(codexResponsesLiteHeader) != "true" {
+			t.Error("missing HTTP Lite header")
+		}
+		if gjson.GetBytes(upstreamBody, "input").Raw != gjson.GetBytes(body, "input").Raw {
+			t.Errorf("HTTP carrier changed: %s", upstreamBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_test"}`))
+	}))
+	t.Cleanup(server.Close)
+	SetResinConfig(&ResinConfig{BaseURL: server.URL, PlatformName: "test"})
+	t.Cleanup(func() { SetResinConfig(nil) })
+	resp, err = ExecuteRequest(context.Background(), account, body, "", "", "sk-test", nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+}
 
 // resetLearnedResponsesLiteSupport 清空学习表并注册恢复，避免测试间串味。
 func resetLearnedResponsesLiteSupport(t *testing.T) {
