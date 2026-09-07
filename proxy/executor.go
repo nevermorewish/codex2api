@@ -1272,7 +1272,11 @@ func applyOpenAIResponsesRequestHeaders(req *http.Request, account *auth.Account
 		req.Header.Set("Version", version)
 	}
 	if headers != nil {
-		for _, key := range []string{"OpenAI-Organization", "OpenAI-Project", "Idempotency-Key", codexResponsesLiteHeader} {
+		applyCodexAllowedForwardHeaders(req, headers)
+		for _, key := range []string{
+			"OpenAI-Organization", "OpenAI-Project", "Idempotency-Key", "OpenAI-Beta",
+			"Originator", "Session-Id", "Thread-Id", "Conversation-Id", "Session_id", "Conversation_id",
+		} {
 			if value := firstNonEmptyHeader(headers, key, ""); value != "" {
 				req.Header.Set(key, value)
 			}

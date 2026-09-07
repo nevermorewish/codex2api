@@ -1094,6 +1094,12 @@ func repairResponsesToolCallPairing(body map[string]any) bool {
 		if !ok {
 			continue
 		}
+		if strings.TrimSpace(firstNonEmptyAnyString(item["type"])) == "item_reference" {
+			if id := strings.TrimSpace(firstNonEmptyAnyString(item["id"])); id != "" {
+				callIDs[id] = true
+			}
+			continue
+		}
 		callID := strings.TrimSpace(firstNonEmptyAnyString(item["call_id"]))
 		if callID == "" {
 			continue
@@ -1265,6 +1271,11 @@ func normalizeResponsesInputItemIDs(body map[string]any) bool {
 	for _, raw := range inputItems {
 		itemMap, ok := raw.(map[string]any)
 		if !ok {
+			continue
+		}
+		// A reference has no inline payload: its ID is the entire context.
+		// Removing it also makes the following tool output appear orphaned.
+		if strings.TrimSpace(firstNonEmptyAnyString(itemMap["type"])) == "item_reference" {
 			continue
 		}
 		if _, exists := itemMap["id"]; exists {
@@ -2459,7 +2470,7 @@ func prepareResponsesBodyWithOptions(rawBody []byte, opts responsesBodyPrepareOp
 		"temperature", "top_p", "frequency_penalty", "presence_penalty",
 		"logprobs", "top_logprobs", "n", "seed", "stop", "user",
 		"logit_bias", "response_format", "serviceTier", "metadata",
-		"stream_options", "reasoning_effort", "truncation", "context_management",
+		"reasoning_effort", "truncation", "context_management",
 		"disable_response_storage", "verbosity",
 		"prompt_cache_retention", "safety_identifier", "type",
 	} {
@@ -2643,10 +2654,14 @@ func normalizeResponsesAdditionalToolCarrier(body map[string]any) {
 			continue
 		}
 		// Relay schemas reject content on the additional_tools carrier. Preserve
-		// that context as a normal developer message immediately before the
-		// carrier instead of silently dropping it.
+		// that context as a message with the original role immediately before
+		// the carrier. Only absent roles default to developer.
 		if content, exists := item["content"]; exists && content != nil {
-			message := map[string]any{"type": "message", "role": "developer", "content": content}
+			role := firstNonEmptyAnyString(item["role"])
+			if role == "" {
+				role = "developer"
+			}
+			message := map[string]any{"type": "message", "role": role, "content": content}
 			input = append(input, nil)
 			copy(input[index+1:], input[index:])
 			input[index] = message
