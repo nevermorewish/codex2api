@@ -2493,6 +2493,19 @@ func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 		return rawBody
 	}
 
+	// max_tokens is the retired Chat Completions alias for max_output_tokens.
+	// Codex clients still send it on /v1/responses; forwarding it unchanged to
+	// an OpenAI-compatible relay produces "unrecognized request argument
+	// supplied: max_tokens" because the official Responses contract never
+	// accepted it. An explicit max_output_tokens already present is
+	// canonical and wins.
+	if raw, hasLegacy := body["max_tokens"]; hasLegacy {
+		if _, hasCanonical := body["max_output_tokens"]; !hasCanonical {
+			body["max_output_tokens"] = raw
+		}
+		delete(body, "max_tokens")
+	}
+
 	effortModel := firstNonEmptyAnyString(body["model"])
 	if re, ok := body["reasoning_effort"].(string); ok {
 		if normalized := normalizeReasoningEffortForModel(re, effortModel); normalized != "" {
@@ -2506,6 +2519,12 @@ func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 			}
 		}
 	}
+	// The legacy top-level alias must be removed in every case, mirroring
+	// max_tokens above: forwarding it verbatim alongside the now-populated
+	// reasoning.effort produced "unrecognized request argument supplied:
+	// reasoning_effort" from the same class of relay, since the official
+	// Responses contract only recognizes reasoning.effort.
+	delete(body, "reasoning_effort")
 	if reasoning, ok := body["reasoning"].(map[string]any); ok {
 		if effort, ok := reasoning["effort"].(string); ok {
 			if normalized := normalizeReasoningEffortForModel(effort, effortModel); normalized != "" {
@@ -2527,6 +2546,21 @@ func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 	// `Unknown parameter: 'input[0].content'`.  Keep the tools themselves, but
 	// remove those relay-incompatible fields before the request is sent.
 	normalizeResponsesAdditionalToolCarrier(body)
+	// Codex Desktop attaches internal telemetry to every input[] item
+	// (internal_chat_message_metadata_passthrough, which nests
+	// content_item_kinds and similar fields). Real OpenAI-compatible
+	// backends reject it with "Unknown parameter:
+	// 'input[N].internal_chat_message_metadata_passthrough...'" because it is
+	// not part of the official Responses contract; the Codex-native request
+	// path never forwards it upstream in the first place, but this
+	// OpenAI-compatible relay entrypoint previously did.
+	stripCodexInternalPassthroughFields(body)
+	// A replayed message-type input item may carry a stale item_*-prefixed id
+	// from an earlier, differently-shaped backend. The official contract
+	// requires either an official msg_* id or none at all; an id is not
+	// required to replay an item's content, so it is dropped rather than
+	// failing the whole request over one stale identifier.
+	stripLegacyItemPrefixedMessageIDs(body)
 	if shouldInjectOpenAIResponsesImageGenerationTool(body) {
 		ensureResponsesImageGenerationTool(body)
 	}
@@ -2539,6 +2573,59 @@ func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 	}
 	result = normalizeCompactionTriggerFinal(result, false)
 	return result
+}
+
+// stripCodexInternalPassthroughFields removes Codex-desktop-only telemetry
+// fields from every input[] item before an OpenAI-compatible relay ever sees
+// them. These fields carry no meaning to a backend that never advertised
+// support for them, so removing them is a pure compatibility narrowing, never
+// a loss of the caller's stated intent.
+func stripCodexInternalPassthroughFields(body map[string]any) bool {
+	inputItems, ok := body["input"].([]any)
+	if !ok {
+		return false
+	}
+	modified := false
+	for _, raw := range inputItems {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, exists := item["internal_chat_message_metadata_passthrough"]; exists {
+			delete(item, "internal_chat_message_metadata_passthrough")
+			modified = true
+		}
+	}
+	return modified
+}
+
+// stripLegacyItemPrefixedMessageIDs drops a message-type input item's id when
+// it uses the deprecated item_* prefix instead of an official msg_* replay
+// identifier or no id at all. Only message-shaped items (those carrying a
+// role) are touched; function_call/reasoning/etc. items legitimately use
+// item_*-style ids of their own and are left alone.
+func stripLegacyItemPrefixedMessageIDs(body map[string]any) bool {
+	inputItems, ok := body["input"].([]any)
+	if !ok {
+		return false
+	}
+	modified := false
+	for _, raw := range inputItems {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, messageLike := item["role"]; !messageLike {
+			continue
+		}
+		id, ok := item["id"].(string)
+		if !ok || !strings.HasPrefix(strings.TrimSpace(id), "item_") {
+			continue
+		}
+		delete(item, "id")
+		modified = true
+	}
+	return modified
 }
 
 // normalizeResponsesAdditionalToolCarrier keeps the tool declarations in a

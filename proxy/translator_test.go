@@ -4121,3 +4121,118 @@ func TestPrepareOpenAIResponsesBody_RemovesRelayIncompatibleAdditionalToolsCarri
 		t.Fatalf("additional_tools tools were removed: %s", got)
 	}
 }
+
+// TestPrepareOpenAIResponsesBody_NormalizesLegacyMaxTokens covers the largest
+// single category of production 400s traced on this relay path: a Codex
+// client sends the retired Chat Completions alias max_tokens on /v1/responses,
+// which a real OpenAI-compatible backend rejects with "unrecognized request
+// argument supplied: max_tokens". The value must be preserved on
+// max_output_tokens rather than dropped.
+func TestPrepareOpenAIResponsesBody_NormalizesLegacyMaxTokens(t *testing.T) {
+	raw := []byte(`{"model":"gpt-6-astra","input":"hi","max_tokens":512}`)
+
+	got := PrepareOpenAIResponsesBody(raw)
+
+	if gjson.GetBytes(got, "max_tokens").Exists() {
+		t.Fatalf("legacy max_tokens should have been removed: %s", got)
+	}
+	if v := gjson.GetBytes(got, "max_output_tokens").Int(); v != 512 {
+		t.Fatalf("max_output_tokens = %d, want 512; body=%s", v, got)
+	}
+}
+
+// An explicit max_output_tokens already present is canonical and must not be
+// overwritten by the deprecated alias.
+func TestPrepareOpenAIResponsesBody_PrefersExplicitMaxOutputTokensOverLegacyAlias(t *testing.T) {
+	raw := []byte(`{"model":"gpt-6-astra","input":"hi","max_tokens":512,"max_output_tokens":128}`)
+
+	got := PrepareOpenAIResponsesBody(raw)
+
+	if gjson.GetBytes(got, "max_tokens").Exists() {
+		t.Fatalf("legacy max_tokens should have been removed: %s", got)
+	}
+	if v := gjson.GetBytes(got, "max_output_tokens").Int(); v != 128 {
+		t.Fatalf("max_output_tokens = %d, want 128 (explicit value must win); body=%s", v, got)
+	}
+}
+
+// TestPrepareOpenAIResponsesBody_RemovesTopLevelReasoningEffortAfterMerge
+// covers the regression where reasoning_effort was merged into
+// reasoning.effort but the original top-level key was never deleted,
+// forwarding both to the relay and producing "unrecognized request argument
+// supplied: reasoning_effort" from the same backend.
+func TestPrepareOpenAIResponsesBody_RemovesTopLevelReasoningEffortAfterMerge(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.6-sol","input":"hi","reasoning_effort":"high"}`)
+
+	got := PrepareOpenAIResponsesBody(raw)
+
+	if gjson.GetBytes(got, "reasoning_effort").Exists() {
+		t.Fatalf("top-level reasoning_effort must be removed after merging into reasoning.effort: %s", got)
+	}
+	if effort := gjson.GetBytes(got, "reasoning.effort").String(); effort != "high" {
+		t.Fatalf("reasoning.effort = %q, want high; body=%s", effort, got)
+	}
+}
+
+// TestPrepareOpenAIResponsesBody_StripsInternalChatMessageMetadataPassthrough
+// covers the single largest error category identified in production: real
+// OpenAI-compatible backends reject Codex Desktop's internal telemetry field
+// with "Unknown parameter: 'input[N].internal_chat_message_metadata_passthrough...'".
+func TestPrepareOpenAIResponsesBody_StripsInternalChatMessageMetadataPassthrough(t *testing.T) {
+	raw := []byte(`{"model":"gpt-6-astra","input":[` +
+		`{"role":"user","content":"hi","internal_chat_message_metadata_passthrough":{"content_item_kinds":["text"]}},` +
+		`{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}` +
+		`]}`)
+
+	got := PrepareOpenAIResponsesBody(raw)
+
+	if gjson.GetBytes(got, "input.0.internal_chat_message_metadata_passthrough").Exists() {
+		t.Fatalf("internal_chat_message_metadata_passthrough should have been stripped: %s", got)
+	}
+	if gjson.GetBytes(got, "input.0.content").String() != "hi" {
+		t.Fatalf("message content should survive stripping: %s", got)
+	}
+	if gjson.GetBytes(got, "input.1.call_id").String() != "call_1" {
+		t.Fatalf("unrelated function_call item should be untouched: %s", got)
+	}
+}
+
+// TestPrepareOpenAIResponsesBody_DropsLegacyItemPrefixedMessageID covers the
+// input[N].id must use an official msg_* message identifier or be omitted;
+// item_* is not valid category on the OpenAI-compatible relay path: a
+// replayed history item carries a stale item_* id. It is dropped rather than
+// failing the whole request, since an id is not required to replay content.
+func TestPrepareOpenAIResponsesBody_DropsLegacyItemPrefixedMessageID(t *testing.T) {
+	raw := []byte(`{"model":"gpt-6-astra","input":[` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","id":"item_abc123","content":"reply"}` +
+		`]}`)
+
+	got := PrepareOpenAIResponsesBody(raw)
+
+	if gjson.GetBytes(got, "input.1.id").Exists() {
+		t.Fatalf("item_*-prefixed message id should have been dropped: %s", got)
+	}
+	if gjson.GetBytes(got, "input.1.content").String() != "reply" {
+		t.Fatalf("message content should survive id removal: %s", got)
+	}
+}
+
+// An official msg_* id must survive untouched, and a non-message item's
+// item_*-style id (e.g. a function_call) must not be touched -- those ids are
+// legitimate there.
+func TestPrepareOpenAIResponsesBody_PreservesOfficialIDsAndNonMessageItems(t *testing.T) {
+	raw := []byte(`{"model":"gpt-6-astra","input":[` +
+		`{"role":"assistant","id":"msg_abc123","content":"reply"},` +
+		`{"type":"function_call","id":"item_fc1","call_id":"call_1","name":"lookup","arguments":"{}"}` +
+		`]}`)
+
+	got := PrepareOpenAIResponsesBody(raw)
+
+	if id := gjson.GetBytes(got, "input.0.id").String(); id != "msg_abc123" {
+		t.Fatalf("official msg_* id should survive, got %q; body=%s", id, got)
+	}
+	if id := gjson.GetBytes(got, "input.1.id").String(); id != "item_fc1" {
+		t.Fatalf("non-message item's own id should not be touched, got %q; body=%s", id, got)
+	}
+}
