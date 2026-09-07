@@ -9105,6 +9105,7 @@ type settingsResponse struct {
 	FirstTokenTimeoutSeconds           int                              `json:"first_token_timeout_seconds"`
 	FeishuAlertEnabled                 bool                             `json:"feishu_alert_enabled"`
 	FeishuAppID                        string                           `json:"feishu_app_id"`
+	FeishuAppSecret                    string                           `json:"feishu_app_secret"`
 	FeishuAppSecretConfigured          bool                             `json:"feishu_app_secret_configured"`
 	FeishuChatIDs                      string                           `json:"feishu_chat_ids"`
 	FeishuAlertErrorCodes              string                           `json:"feishu_alert_error_codes"`
@@ -10117,6 +10118,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		FirstTokenTimeoutSeconds:            runtimeCfg.FirstTokenTimeoutSec,
 		FeishuAlertEnabled:                  feishuCfg.Enabled,
 		FeishuAppID:                         feishuCfg.AppID,
+		FeishuAppSecret:                     feishuCfg.AppSecret,
 		FeishuAppSecretConfigured:           feishuCfg.AppSecret != "",
 		FeishuChatIDs:                       feishuCfg.ChatIDs,
 		FeishuAlertErrorCodes:               feishuCfg.ErrorCodes,
@@ -11967,6 +11969,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		FirstTokenTimeoutSeconds:            runtimeCfg.FirstTokenTimeoutSec,
 		FeishuAlertEnabled:                  feishuCfg.Enabled,
 		FeishuAppID:                         feishuCfg.AppID,
+		FeishuAppSecret:                     feishuCfg.AppSecret,
 		FeishuAppSecretConfigured:           feishuCfg.AppSecret != "",
 		FeishuChatIDs:                       feishuCfg.ChatIDs,
 		FeishuAlertErrorCodes:               feishuCfg.ErrorCodes,

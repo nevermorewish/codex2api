@@ -17,7 +17,10 @@ export default function RobotMonitor() {
 
   useEffect(() => {
     api.getSettings()
-      .then((next) => setSettings({ ...next, feishu_alert_error_codes: next.feishu_alert_error_codes?.trim() || '400-599' }))
+      .then((next) => {
+        setSettings({ ...next, feishu_alert_error_codes: next.feishu_alert_error_codes?.trim() || '400-599' })
+        setSecret(next.feishu_app_secret ?? '')
+      })
       .catch((e) => setError(e instanceof Error ? e.message : '加载失败'))
   }, [])
 
@@ -41,7 +44,7 @@ export default function RobotMonitor() {
         ...(secret.trim() ? { feishu_app_secret: secret.trim() } : {}),
       })
       setSettings(next)
-      setSecret('')
+      setSecret(next.feishu_app_secret ?? secret.trim())
       setSaved(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败，请重试')

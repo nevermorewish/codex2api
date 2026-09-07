@@ -72,7 +72,7 @@ func TestFeishuSettingsPersistAcrossRestartAndPartialUpdates(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if recorder.Code != http.StatusOK || !response.FeishuAlertEnabled || response.FeishuAppID != want.AppID || !response.FeishuAppSecretConfigured || response.FeishuChatIDs != want.ChatIDs || response.FeishuAlertErrorCodes != want.ErrorCodes || response.FeishuFirstTokenTimeoutSeconds != want.FirstTokenTimeoutSeconds {
+	if recorder.Code != http.StatusOK || !response.FeishuAlertEnabled || response.FeishuAppID != want.AppID || response.FeishuAppSecret != want.AppSecret || !response.FeishuAppSecretConfigured || response.FeishuChatIDs != want.ChatIDs || response.FeishuAlertErrorCodes != want.ErrorCodes || response.FeishuFirstTokenTimeoutSeconds != want.FirstTokenTimeoutSeconds {
 		t.Fatal("GET settings did not return the saved bot monitor configuration")
 	}
 }
