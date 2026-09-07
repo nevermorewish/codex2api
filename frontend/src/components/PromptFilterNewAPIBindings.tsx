@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
@@ -356,7 +357,7 @@ export default function PromptFilterNewAPIBindings() {
   const copySecret = async () => {
     if (!secretReveal) return
     try {
-      await navigator.clipboard.writeText(secretReveal.secret)
+      await writeClipboardText(secretReveal.secret)
       setSecretCopied(true)
       showToast('绑定密钥已复制。')
     } catch {
@@ -614,3 +615,4 @@ export default function PromptFilterNewAPIBindings() {
     </>
   )
 }
+

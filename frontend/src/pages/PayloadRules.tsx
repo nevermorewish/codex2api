@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import type { ChangeEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
@@ -773,7 +774,7 @@ export default function PayloadRules() {
 
   const copySample = async (index: number) => {
     try {
-      await navigator.clipboard.writeText(samples[index].instructions)
+      await writeClipboardText(samples[index].instructions)
       setCopiedSample(index)
       setTimeout(() => setCopiedSample(null), 1500)
     } catch {
@@ -1785,3 +1786,4 @@ function PayloadRulesDocsView() {
     </div>
   )
 }
+

@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import { useEffect, useMemo, useState } from 'react'
 import { Check, Copy, ExternalLink } from 'lucide-react'
 import { api } from '../api'
@@ -105,7 +106,7 @@ function CodeBlock({ label, content }: { label: string; content: string }) {
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(content)
+      await writeClipboardText(content)
     } catch {
       const textarea = document.createElement('textarea')
       textarea.value = content
@@ -457,3 +458,4 @@ export default function Guide() {
     </>
   )
 }
+

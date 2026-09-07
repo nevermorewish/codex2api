@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -647,7 +648,7 @@ export default function ImageStudioPortal() {
       return
     }
     try {
-      await navigator.clipboard.writeText(value)
+      await writeClipboardText(value)
       showToast(t('common.copied'))
     } catch {
       showToast(t('common.copyFailed'))
@@ -1737,3 +1738,4 @@ function PortalImagePreviewDialog({
     </Dialog>
   )
 }
+

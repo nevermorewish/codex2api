@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -1703,7 +1704,7 @@ function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(text)
+      await writeClipboardText(text)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1500)
     } catch {
@@ -1751,3 +1752,4 @@ function CountPill({ tone, text }: { tone: 'success' | 'danger' | 'muted'; text:
         : 'bg-muted text-muted-foreground'
   return <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${cls}`}>{text}</span>
 }
+

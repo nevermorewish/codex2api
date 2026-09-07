@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, CheckCircle2, ChevronRight, Copy, Loader2, RefreshCw, XCircle } from "lucide-react";
@@ -152,7 +153,7 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
   const StatusIcon = running ? Loader2 : status === "success" ? CheckCircle2 : XCircle;
   const copyDiagnostics = async () => {
     try {
-      await navigator.clipboard.writeText(JSON.stringify({ status, error: errorMessage || undefined, output, diagnostics }, null, 2));
+      await writeClipboardText(JSON.stringify({ status, error: errorMessage || undefined, output, diagnostics }, null, 2));
       setCopied(true);
     } catch {
       showToast(t("claude.testCopyFailed"), "error");
@@ -271,3 +272,4 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
     </Modal>
   );
 }
+

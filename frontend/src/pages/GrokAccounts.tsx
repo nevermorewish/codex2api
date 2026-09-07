@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -314,10 +315,7 @@ const EMPTY_FORM: AddGrokAccountRequest = {
 };
 
 async function copyTextToClipboard(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
+  await writeClipboardText(text); return
   const ta = document.createElement("textarea");
   ta.value = text;
   ta.style.position = "fixed";
@@ -5691,3 +5689,5 @@ function downloadBlob(blob: Blob, filename: string) {
 
 // memo 边界:宿主 Accounts 组件的 codex 侧状态变化不应连带整棵 Grok 视图重渲染。
 export default memo(GrokAccounts);
+
+

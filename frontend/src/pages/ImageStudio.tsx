@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
@@ -1024,7 +1025,7 @@ export default function ImageStudio() {
 
   const copyPrompt = async (text: string) => {
     try {
-      await navigator.clipboard.writeText(text)
+      await writeClipboardText(text)
       showToast(t('common.copied'), 'success')
     } catch {
       showToast(t('common.copyFailed'), 'error')
@@ -2708,3 +2709,4 @@ function PreviewAction({
     </Tooltip>
   )
 }
+

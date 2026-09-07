@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import { type FormEvent, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -167,7 +168,7 @@ export default function AccountPortal() {
   const handleCopyAuthUrl = async () => {
     if (!authUrl) return
     try {
-      await navigator.clipboard.writeText(authUrl)
+      await writeClipboardText(authUrl)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
     } catch {
@@ -423,3 +424,4 @@ export default function AccountPortal() {
     </div>
   )
 }
+

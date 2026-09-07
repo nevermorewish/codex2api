@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import type { ChangeEvent, FormEvent, ReactNode } from "react";
 import {
   useCallback,
@@ -975,11 +976,7 @@ export default function APIKeys() {
 
   const handleCopy = async (text: string) => {
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        showToast(t("common.copied"));
-        return;
-      }
+      await writeClipboardText(text); showToast(t("common.copied")); return
 
       const textarea = document.createElement("textarea");
       textarea.value = text;
@@ -4542,3 +4539,5 @@ function FormField({
     </Component>
   );
 }
+
+

@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -698,15 +699,7 @@ function formatEndpoint(log: UsageLog): string {
 }
 
 async function copyTextToClipboard(text: string) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return
-    } catch {
-      // Fall back for non-secure contexts or browsers that block clipboard writes.
-    }
-  }
-
+  await writeClipboardText(text);
   const textarea = document.createElement('textarea')
   textarea.value = text
   textarea.setAttribute('readonly', 'true')
@@ -766,3 +759,9 @@ function getStatusBadgeClassName(statusCode: number): string {
   }
   return 'border-transparent bg-amber-500/14 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300'
 }
+
+
+
+
+
+

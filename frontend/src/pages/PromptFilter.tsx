@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import type { Dispatch, ReactNode, SetStateAction, TextareaHTMLAttributes } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useParams, useSearchParams } from 'react-router-dom'
@@ -4556,7 +4557,7 @@ function RulesView({
   const copyPreviewPattern = async () => {
     if (!previewRule?.pattern) return
     try {
-      await navigator.clipboard.writeText(previewRule.pattern)
+      await writeClipboardText(previewRule.pattern)
       setPreviewPatternCopied(true)
       window.setTimeout(() => setPreviewPatternCopied(false), 1500)
     } catch {
@@ -6014,3 +6015,4 @@ function parseLogMatches(raw: string): PromptFilterMatch[] {
     return []
   }
 }
+

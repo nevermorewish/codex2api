@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -179,7 +180,7 @@ function FieldBox({ label, children }: { label: string; children: ReactNode }) {
 
 async function copyToClipboard(text: string) {
   try {
-    await navigator.clipboard.writeText(text);
+    await writeClipboardText(text);
   } catch {
     const ta = document.createElement("textarea");
     ta.value = text;
@@ -397,7 +398,7 @@ function QuickToolCard({
       return;
     }
     try {
-      await navigator.clipboard.writeText(resolved);
+      await writeClipboardText(resolved);
     } catch {
       const ta = document.createElement("textarea");
       ta.value = resolved;
@@ -882,7 +883,7 @@ export default function Docs() {
       locale: docsLocale,
     });
     try {
-      await navigator.clipboard.writeText(md);
+      await writeClipboardText(md);
       showToast(t("docs.markdownCopied"), "success");
     } catch {
       const ta = document.createElement("textarea");
@@ -1665,3 +1666,4 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`;
     </>
   );
 }
+

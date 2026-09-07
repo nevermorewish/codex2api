@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import {
@@ -91,10 +92,7 @@ function getRateLimitWindow(account: AccountRow): "5h" | "7d" | null {
 // 复制邮箱按钮。navigator.clipboard 在非安全上下文（局域网 http 访问）下不存在，
 // 回退到隐藏 textarea + execCommand，否则内网部署里这个按钮会静默失效。
 async function copyTextToClipboard(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
+  await writeClipboardText(text); return
   const ta = document.createElement("textarea");
   ta.value = text;
   ta.style.position = "fixed";
@@ -975,3 +973,5 @@ export default function AccountDetailSheet({
     </Sheet>
   );
 }
+
+

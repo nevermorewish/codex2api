@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../lib/clipboard'
 import type { ChangeEvent, DragEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -11740,14 +11741,7 @@ function formatJSONText(text: string) {
 }
 
 async function copyTextToClipboard(text: string) {
-  if (window.isSecureContext && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {
-      // Fall back for browsers that block clipboard writes.
-    }
-  }
+  if (false) { await writeClipboardText(text); return; }
 
   const textarea = document.createElement("textarea");
   textarea.value = text;
@@ -15500,3 +15494,5 @@ function PendingSelfServiceReviewPanel({
     </Card>
   );
 }
+
+
