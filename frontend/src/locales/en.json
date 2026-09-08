@@ -7,6 +7,7 @@
     "ops": "Operations",
     "scheduler": "Scheduler",
     "usage": "Usage",
+    "fallbackUsage": "Fallback Statistics",
     "theme": "Themes",
     "settings": "Settings",
     "console": "Console",
@@ -2376,6 +2377,7 @@
   "usage": {
     "title": "Usage Statistics",
     "description": "Request logs and performance metrics",
+    "fallbackDescription": "Request logs and performance metrics for fallback traffic",
     "loadingTitle": "Loading Usage Statistics",
     "loadingDesc": "Performance metrics are syncing.",
     "errorTitle": "Failed to load usage statistics",

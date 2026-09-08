@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useLocation } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts'
 import { api } from '../api'
@@ -1754,6 +1755,8 @@ function persistUsageVisibleColumns(columns: Record<UsageTableColumn, boolean>) 
 
 export default function Usage() {
   const { t } = useTranslation()
+  const location = useLocation()
+  const isFallbackUsage = location.pathname === '/fallback-usage'
   const { toast, showToast } = useToast()
   const { confirm, confirmDialog } = useConfirmDialog()
   const [page, setPage] = useState(1)
@@ -1796,6 +1799,10 @@ export default function Usage() {
   )
   const [showAnalysis, setShowAnalysis] = useState(getInitialAnalysisVisibility)
   const [channel, setChannel] = useUsageChannel()
+  const activeChannel = isFallbackUsage ? 'fallback' : (channel === 'fallback' ? '' : channel)
+  useEffect(() => {
+    if (!isFallbackUsage && channel === 'fallback') setChannel('')
+  }, [channel, isFallbackUsage, setChannel])
 
   // 搜索防抖：输入停止 400ms 后触发查询
   const handleSearchChange = useCallback((value: string) => {
@@ -1814,20 +1821,18 @@ export default function Usage() {
   // 仅加载轻量统计（秒级）—— 联动同页 timeRange,与下方请求记录的范围保持一致
   const loadStats = useCallback(async () => {
     const { start, end } = resolveRangeISO(timeRange, customRange)
-    const [stats, settings, fallbackStats] = await Promise.all([
-      api.getUsageStats({ start, end, channel: channel || undefined }),
+    const [stats, settings] = await Promise.all([
+      api.getUsageStats({ start, end, channel: activeChannel || undefined }),
       api.getSettings().catch((): SystemSettings | null => null),
-      api.getUsageStats({ start, end, channel: 'fallback' }).catch((): UsageStats | null => null),
     ])
-    return { stats, settings, fallbackStats }
-  }, [timeRange, customRange, channel])
+    return { stats, settings }
+  }, [timeRange, customRange, activeChannel])
 
   const { data, loading, error, reload, reloadSilently } = useDataLoader<{
     stats: UsageStats | null
     settings: SystemSettings | null
-    fallbackStats: UsageStats | null
   }>({
-    initialData: { stats: null, settings: null, fallbackStats: null },
+    initialData: { stats: null, settings: null },
     load: loadStats,
   })
 
@@ -1856,14 +1861,14 @@ export default function Usage() {
       stream: filterType === 'stream' ? 'true' : filterType === 'sync' ? 'false' : undefined,
       compact: filterType === 'compact' ? 'true' : undefined,
       hasCompactionHistory: filterType === 'history' ? 'true' : undefined,
-      channel: channel || undefined,
+      channel: activeChannel || undefined,
       status: filterStatus && filterStatus !== 'error' ? filterStatus : undefined,
       errorOnly: filterStatus === 'error' ? 'true' : undefined,
       errorKind: filterErrorKind || undefined,
       retry: filterRetry || undefined,
       viaWebsocket: filterTransport === 'ws' ? 'true' : filterTransport === 'http' ? 'false' : undefined,
     }
-  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterType, channel, filterStatus, filterErrorKind, filterRetry, filterTransport])
+  }, [timeRange, customRange, searchQuery, filterModel, filterEndpoint, filterApiKeyId, filterAccountId, filterFast, filterType, activeChannel, filterStatus, filterErrorKind, filterRetry, filterTransport])
 
   // 服务端分页加载日志
   const loadLogs = useCallback(async () => {
@@ -1951,7 +1956,7 @@ export default function Usage() {
     persistAnalysisVisibility(showAnalysis)
   }, [showAnalysis])
 
-  const { stats, settings, fallbackStats } = data
+  const { stats, settings } = data
   const showFullUsageNumbers = settings?.show_full_usage_numbers ?? false
   const totalPages = Math.max(1, Math.ceil(logsTotal / pageSize))
   const currentPage = Math.min(page, totalPages)
@@ -1978,11 +1983,11 @@ export default function Usage() {
   const modelFilterOptions = useMemo(() => {
     const seen = new Set<string>()
     const merged: string[] = []
-    const catalog = channel === 'grok'
+    const catalog = activeChannel === 'grok'
       ? grokModelOptions
-      : channel === 'codex'
+      : activeChannel === 'codex'
         ? modelOptions
-        : channel === 'claude'
+        : activeChannel === 'claude'
           ? claudeModelOptions
           : [...modelOptions, ...grokModelOptions, ...claudeModelOptions]
     for (const m of catalog) {
@@ -1994,7 +1999,7 @@ export default function Usage() {
       if (key && key !== 'unknown' && !seen.has(key)) { seen.add(key); merged.push(key) }
     }
     return merged
-  }, [modelOptions, grokModelOptions, claudeModelOptions, modelStats, channel])
+  }, [modelOptions, grokModelOptions, claudeModelOptions, modelStats, activeChannel])
   const featureStats = stats?.feature_stats
   const endpointStats = stats?.endpoint_stats ?? []
   const apiKeyStats = stats?.api_key_stats ?? []
@@ -2076,10 +2081,10 @@ export default function Usage() {
     >
       <>
         <PageHeader
-          title={t('usage.title')}
-          description={t('usage.description')}
+          title={isFallbackUsage ? t('nav.fallbackUsage') : t('usage.title')}
+          description={isFallbackUsage ? t('usage.fallbackDescription') : t('usage.description')}
           onRefresh={() => { void reload(); void loadLogs(); void loadAPIKeys() }}
-          titleAdornment={<ChannelFilter value={channel} onChange={setChannel} />}
+          titleAdornment={!isFallbackUsage ? <ChannelFilter value={activeChannel} onChange={setChannel} includeFallback={false} /> : undefined}
           actions={
             <Button
               variant="outline"
@@ -2092,7 +2097,7 @@ export default function Usage() {
           }
         />
 
-        <div key={channel || 'all'} className="space-y-6 animate-channel-switch-in">
+        <div key={activeChannel || 'all'} className="space-y-6 animate-channel-switch-in">
         {/* Stat overview: 6 metrics in a single row */}
         <div className="grid grid-cols-2 gap-2.5 sm:gap-3 md:grid-cols-3 xl:grid-cols-6">
           <Card className="min-w-0 py-0">
@@ -2110,17 +2115,6 @@ export default function Usage() {
                 <span className="text-[hsl(var(--success))]">● {t('usage.success')}: {formatTokens(successRequests, showFullUsageNumbers)}</span>
                 <span>● {t('usage.cumulative')}: {formatTokens(cumulativeRequests, showFullUsageNumbers)}</span>
               </div>
-            </CardContent>
-          </Card>
-
-          <Card className="min-w-0 py-0">
-            <CardContent className={usageStatCardContentClass}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold uppercase text-muted-foreground">{t('usage.fallbackRequests')}</span>
-                <div className="flex size-9 items-center justify-center rounded-lg bg-amber-500/12 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300"><Route className="size-4" /></div>
-              </div>
-              <div className={usageStatValueClass}>{formatTokens(fallbackStats?.today_requests ?? 0, showFullUsageNumbers)}</div>
-              <div className="text-[11px] text-muted-foreground leading-snug">{t('usage.fallbackRequestsDesc')}</div>
             </CardContent>
           </Card>
 

@@ -7,6 +7,7 @@
     "ops": "系统运维",
     "scheduler": "调度面板",
     "usage": "使用统计",
+    "fallbackUsage": "兜底统计",
     "theme": "主题设置",
     "settings": "系统设置",
     "console": "控制台",
@@ -2376,6 +2377,7 @@
   "usage": {
     "title": "使用统计",
     "description": "请求日志与性能指标",
+    "fallbackDescription": "单独查看兜底请求的日志与性能指标",
     "loadingTitle": "正在加载使用统计",
     "loadingDesc": "性能指标正在同步。",
     "errorTitle": "统计页加载失败",

@@ -1,7 +1,8 @@
 {
   "nav": {
     "concurrency": "即時並發",
-    "fallbackPool": "備援池"
+    "fallbackPool": "備援池",
+    "fallbackUsage": "備援統計"
   },
   "common": {
     "success": "成功",

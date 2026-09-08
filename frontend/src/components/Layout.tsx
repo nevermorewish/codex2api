@@ -35,6 +35,7 @@ const navDefs: NavDef[] = [
   { to: '/error-analysis', labelKey: 'nav.errorAnalysis', icon: <Bug className="size-[18px]" /> },
   { to: '/robot-monitor', labelKey: 'nav.robotMonitor', icon: <Bot className="size-[18px]" /> },
   { to: '/usage', labelKey: 'nav.usage', icon: <Activity className="size-[18px]" /> },
+  { to: '/fallback-usage', labelKey: 'nav.fallbackUsage', icon: <LifeBuoy className="size-[18px]" /> },
   { to: '/model-pricing', labelKey: 'nav.modelPricing', icon: <CircleDollarSign className="size-[18px]" /> },
   { to: '/payload-rules/editor', labelKey: 'nav.payloadRules', icon: <Braces className="size-[18px]" />, activePrefix: '/payload-rules' },
   { to: '/theme', labelKey: 'nav.theme', icon: <Palette className="size-[18px]" /> },

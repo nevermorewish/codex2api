@@ -34,10 +34,13 @@ export default function ChannelFilter({
   value,
   onChange,
   className,
+  includeFallback = true,
 }: {
   value: UsageChannel;
   onChange: (next: UsageChannel) => void;
   className?: string;
+  /** 普通使用统计不再展示兜底渠道；仪表盘等仍可保留该选项。 */
+  includeFallback?: boolean;
 }) {
   const { t } = useTranslation();
   const { isChannelVisible } = useVisibleChannels();
@@ -53,7 +56,7 @@ export default function ChannelFilter({
     { key: "claude", label: "Claude", logo: "claude" },
     { key: "fallback", label: t("usage.channelFallback") },
   ];
-  const options = allOptions.filter((o) => !o.logo || isChannelVisible(o.logo));
+  const options = allOptions.filter((o) => (includeFallback || o.key !== "fallback") && (!o.logo || isChannelVisible(o.logo)));
   const count = options.length;
   // 当前选中的渠道被设置页隐藏后回到「全部」，否则过滤条件停在一个看不见的选项上。
   const hiddenSelection = value !== "" && !options.some((o) => o.key === value);

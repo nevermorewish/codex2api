@@ -87,6 +87,7 @@ function AdminApp() {
           <Route path="/ops/errors" element={<OperationsErrors />} />
           <Route path="/ops/scheduler" element={<SchedulerBoard />} />
           <Route path="/usage" element={<Usage />} />
+          <Route path="/fallback-usage" element={<Usage />} />
           <Route path="/model-pricing" element={<ModelPricing />} />
           <Route path="/payload-rules" element={<Navigate to="/payload-rules/editor" replace />} />
           <Route path="/payload-rules/:view" element={<PayloadRules />} />
