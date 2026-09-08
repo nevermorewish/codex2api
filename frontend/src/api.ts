@@ -535,7 +535,10 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
 export const api = {
   getBranding: () => requestPublic<SiteBranding>('/api/branding'),
   getConcurrency: (signal?: AbortSignal) => request<ConcurrencySnapshot>('/concurrency', { signal }),
-  getLiveStreams: (signal?: AbortSignal) => request<{ streams: LiveStream[]; total: number; truncated: boolean }>('/live-streams', { signal }),
+  getLiveStreams: (signal?: AbortSignal) => request<{ schema_version?: number; collected_at?: string; streams: LiveStream[]; total: number; truncated: boolean }>('/live-streams', { signal }),
+  getLiveStream: (streamId: string, signal?: AbortSignal) => request<Record<string, unknown>>(`/live-streams/${encodeURIComponent(streamId)}`, { signal }),
+  getLiveStreamRequests: (streamId: string, signal?: AbortSignal) => request<Record<string, unknown>>(`/live-streams/${encodeURIComponent(streamId)}/requests`, { signal }),
+  getLiveStreamRequestAttempts: (requestId: string, signal?: AbortSignal) => request<Record<string, unknown>>(`/live-stream-requests/${encodeURIComponent(requestId)}/attempts`, { signal }),
   getRelayChains: (page = 1, signal?: AbortSignal) => request<{ chains: RelayChain[]; total: number; page: number; page_size: number }>(`/dashboard/relay-chains?page=${encodeURIComponent(String(page))}`, { signal }),
   listFallbackAccounts: () => request<{ accounts: FallbackAccount[] }>('/fallback/accounts'),
   createFallbackAccount: (data: FallbackAccountPayload) =>

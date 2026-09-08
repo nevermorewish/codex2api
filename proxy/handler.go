@@ -3820,6 +3820,8 @@ func (h *Handler) Responses(c *gin.Context) {
 		return
 	}
 	isStream := gjson.GetBytes(rawBody, "stream").Bool()
+	finishHTTPStream := beginHTTPStream(c, "sse", model, isStream)
+	defer finishHTTPStream()
 	continuousRetryPolicy := continuousRetryPolicyForCall(nil)
 	rememberContinuousRetryPolicyForRequest(c, continuousRetryPolicy)
 	sessionIdentity := resolveRequestSessionIdentity(c.Request.Header, rawBody)
@@ -6753,6 +6755,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	}
 
 	isStream := gjson.GetBytes(rawBody, "stream").Bool()
+	finishHTTPStream := beginHTTPStream(c, "sse", model, isStream)
+	defer finishHTTPStream()
 	continuousRetryPolicy := continuousRetryPolicyForCall(nil)
 	rememberContinuousRetryPolicyForRequest(c, continuousRetryPolicy)
 	reasoningEffort := extractReasoningEffort(rawBody)

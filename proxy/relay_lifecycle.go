@@ -33,7 +33,20 @@ func beginRelayRequest(c *gin.Context) func() {
 	previous, _ := c.Get(relayActivityContextKey)
 	activity := &relayRequestActivity{}
 	c.Set(relayActivityContextKey, activity)
+	var finishStreamRequest func(string)
+	if streamID := resolveParentRequestID(c); streamID != "" {
+		requestID := streamID
+		if value, exists := c.Get(liveStreamRequestContextKey); exists {
+			if candidate, ok := value.(string); ok && strings.TrimSpace(candidate) != "" {
+				requestID = candidate
+			}
+		}
+		finishStreamRequest = BeginLiveStreamRequest(streamID, requestID, 0)
+	}
 	return func() {
+		if finishStreamRequest != nil {
+			finishStreamRequest("")
+		}
 		relayActivities.Lock()
 		if !activity.finished {
 			activity.finished = true
@@ -46,6 +59,36 @@ func beginRelayRequest(c *gin.Context) func() {
 		}
 		relayActivities.Unlock()
 		c.Set(relayActivityContextKey, previous)
+	}
+}
+
+// beginHTTPStream is the HTTP/SSE counterpart of the WebSocket connection
+// observer. It is intentionally attached only after the request body has been
+// parsed and stream=true is known, so ordinary JSON requests cannot pollute
+// the stream list.
+func beginHTTPStream(c *gin.Context, protocol, model string, isStream bool) func() {
+	if c == nil || !isStream {
+		return func() {}
+	}
+	id := resolveParentRequestID(c)
+	if id == "" {
+		return func() {}
+	}
+	finishStream := BeginLiveStream(id, protocol, model)
+	finishRequest := BeginLiveStreamRequest(id, id, 1)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			outcome, reason := "success", "request_completed"
+			if c.Request != nil && c.Request.Context().Err() != nil {
+				outcome, reason = "canceled", "client_canceled"
+			}
+			if c.Writer != nil && c.Writer.Status() >= 400 {
+				outcome, reason = "failed", "request_failed"
+			}
+			finishRequest(outcome)
+			finishStream(reason, "downstream")
+		})
 	}
 }
 
@@ -103,6 +146,9 @@ func resolveParentRequestID(c *gin.Context) string {
 		if id := strings.TrimSpace(requestContext.RequestID); id != "" {
 			return id
 		}
+	}
+	if c.Request == nil {
+		return ""
 	}
 	return strings.TrimSpace(c.GetHeader("X-Request-ID"))
 }

@@ -237,6 +237,10 @@ func (h *Handler) ResponsesWebSocket(c *gin.Context) {
 		log.Printf("Responses WebSocket upgrade failed: %v", err)
 		return
 	}
+	streamID := resolveParentRequestID(c)
+	finishStream := BeginLiveStream(streamID, "websocket", "")
+	streamEndReason, streamEndSource := "client_closed", "downstream"
+	defer func() { finishStream(streamEndReason, streamEndSource) }()
 	conn.SetReadLimit(int64(security.MaxRequestBodySize))
 	requestCtx, messages, readPumpDone, cancel := startResponsesWSReadPump(c.Request.Context(), conn)
 	c.Request = c.Request.WithContext(requestCtx)
@@ -255,13 +259,16 @@ func (h *Handler) ResponsesWebSocket(c *gin.Context) {
 			return
 		}
 		if !ok {
+			streamEndReason, streamEndSource = "normal_close", "websocket"
 			return
 		}
 		message.releaseQueueBudget()
 		if message.err != nil {
 			if websocket.IsCloseError(message.err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+				streamEndReason, streamEndSource = "normal_close", "websocket"
 				return
 			}
+			streamEndReason, streamEndSource = "read_error", "downstream"
 			if message.turn == 0 {
 				log.Printf("Responses WebSocket first message read failed: %v", message.err)
 			}
@@ -282,7 +289,9 @@ func (h *Handler) ResponsesWebSocket(c *gin.Context) {
 		if forwardedEventID == "" {
 			forwardedEventID = fmt.Sprintf("responses:%d", message.turn)
 		}
+		c.Set(liveStreamRequestContextKey, streamID+":"+forwardedEventID)
 		if err := h.forwardResponsesWebSocketTurn(c, conn, payload, forwardedEventID, nil); err != nil {
+			streamEndReason, streamEndSource = "proxy_error", "gateway"
 			if errors.Is(err, errResponsesWSClientGone) {
 				return
 			}

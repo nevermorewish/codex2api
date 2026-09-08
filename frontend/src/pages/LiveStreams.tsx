@@ -14,12 +14,9 @@ import { liveStreamDisconnectReasonKey } from '@/lib/liveStreamDisconnectReason'
 import { liveStreamElapsedMs, liveStreamIsDisconnected, liveStreamStatus } from '@/lib/liveStreamStatus'
 import { createSerialPoller } from '@/lib/serialPoller'
 
-// A stream leaves the backend's in-flight registry the instant its final
-// attempt is recorded, so a poll only ever gets one chance to see it in a
-// disconnected state before it stops being returned at all. Retaining it
-// client-side for this long keeps the disconnect reason visible without any
-// server-side history buffer (see the design plan's grace-window discussion).
-const RECENTLY_DISCONNECTED_RETENTION_MS = 30_000
+// Keep a short client-side cache for older servers that do not yet expose the
+// lifecycle observer's persisted terminal snapshot.
+const RECENTLY_DISCONNECTED_RETENTION_MS = 5 * 60_000
 
 function StreamStatusBadge({ stream, t }: { stream: LiveStream; t: TFunction }) {
   const status = liveStreamStatus(stream)
@@ -48,6 +45,11 @@ function formatDuration(value: number): string {
   if (!Number.isFinite(value) || value < 0) return '-'
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)} s`
   return `${Math.round(value)} ms`
+}
+
+function streamDuration(stream: LiveStream, now: number): number {
+  if (typeof stream.elapsed_ms === 'number' && Number.isFinite(stream.elapsed_ms)) return stream.elapsed_ms
+  return liveStreamElapsedMs(stream, now)
 }
 
 function formatStreamTime(value: string): string {
@@ -136,8 +138,8 @@ export default function LiveStreams() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now)
   const [updatedAt, setUpdatedAt] = useState<string | null>(null)
-  // Recently-disconnected streams are retained client-side for a short grace
-  // window after the server stops returning them (see the constant above).
+  // Older compatible servers may drop a terminal row immediately; retain it
+  // briefly so the reason does not flash away between polls.
   const recentlyGoneRef = useRef(new Map<string, { stream: LiveStream; disconnectedAt: number }>())
 
   const refreshRef = useRef<() => void>(() => {})
@@ -272,9 +274,10 @@ export default function LiveStreams() {
                           ) : null}
                         </div>
                         <div className="ml-auto flex shrink-0 items-center gap-2">
+                          <span className="text-xs text-muted-foreground">{t('liveStreams.requests', { defaultValue: 'Requests' })}: {stream.request_count ?? 1}</span>
                           <span className="text-xs text-muted-foreground">{t('liveStreams.attempts')}: {stream.attempt_count}</span>
                           <StreamStatusBadge stream={stream} t={t} />
-                          <span className="text-right text-xs tabular-nums text-muted-foreground">{formatDuration(liveStreamElapsedMs(stream, now))}</span>
+                          <span className="text-right text-xs tabular-nums text-muted-foreground">{formatDuration(streamDuration(stream, now))}</span>
                         </div>
                       </button>
                       {isExpanded ? <StreamDetails stream={stream} t={t} /> : null}

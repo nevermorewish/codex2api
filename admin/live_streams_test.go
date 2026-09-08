@@ -169,6 +169,19 @@ func TestGetLiveStreamsDisconnectReasonFromUpstreamErrorKind(t *testing.T) {
 	}
 }
 
+func TestGetLiveStreamsExcludesExplicitlyNonStreamingUsage(t *testing.T) {
+	h, db := newLiveStreamsTestHandler(t, "live-excludes-non-stream.db")
+	ctx := context.Background()
+	if err := db.InsertUsageLog(ctx, &database.UsageLogInput{AccountID: 1, ParentRequestID: "ordinary-request", Endpoint: "/v1/responses", InboundEndpoint: "/v1/responses", Stream: false, StatusCode: 200, DurationMs: 5}); err != nil {
+		t.Fatal(err)
+	}
+	db.FlushUsageLogs()
+	_, response := doGetLiveStreams(t, h)
+	if len(response.Streams) != 0 {
+		t.Fatalf("non-streaming request appeared in live streams: %+v", response.Streams)
+	}
+}
+
 // queryCounter wraps a *database.DB is not directly instrumentable here (the
 // DB type has no query-count hook), so this test instead asserts the
 // behavior that guarantees no N+1 pattern: exactly one merged history lookup

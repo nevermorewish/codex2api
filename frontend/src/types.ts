@@ -3980,6 +3980,8 @@ export interface RelayChain {
 }
 
 export interface LiveStream {
+    schema_version?: number
+    stream_id?: string
   request_id: string
   model: string
   protocol: string
@@ -3992,8 +3994,14 @@ export interface LiveStream {
   disconnect_reason?: string
   total_ms: number
   attempt_count: number
-  switch_count: number
-}
+    switch_count: number
+    request_count?: number
+    ended_at?: ISODateString | null
+    elapsed_ms?: number
+    end_reason?: string
+    end_source?: string
+    data_complete?: boolean
+  }
 
 export interface FallbackAccount {
   id: number
