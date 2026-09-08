@@ -3476,10 +3476,10 @@ func (h *Handler) waitBeforeRetryWithBudget(ctx context.Context, retryOrdinal, r
 	return h.waitBeforeRetryWithBudgetMode(ctx, retryOrdinal, retryLimit, true, responses...)
 }
 
-// waitBeforeRetryWithFirstTokenTimeout preserves the finite TTFT shortcut, but
-// 无限预算必须走统一退避，避免首字超时形成零等待循环。
+// 首字超时本身已经等待了完整阈值，换号不再叠加重试退避；仍遵守请求总截止时间。
 func (h *Handler) waitBeforeRetryWithFirstTokenTimeout(ctx context.Context, firstTokenTimeout bool, retryOrdinal, retryLimit int, responses ...*http.Response) bool {
-	if firstTokenTimeout && retryLimit != -1 {
+	if firstTokenTimeout {
+		activateContinuousRetryDeadlineForLimit(ctx, retryLimit)
 		return ctx == nil || ctx.Err() == nil
 	}
 	return h.waitBeforeRetryWithBudget(ctx, retryOrdinal, retryLimit, responses...)
@@ -4529,7 +4529,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						}
 						parsed := gjson.ParseBytes(data)
 						eventType := normalizedUpstreamSSEEventType(sseEvent, data)
-						ttftGuard.MarkProgress(eventType)
+						ttftGuard.MarkPayload(data)
 						isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 						if !ttftRecorded && isFirstToken {
 							firstTokenMs = int(time.Since(start).Milliseconds())
@@ -4659,7 +4659,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				if candidatePromoted && isStream {
 					abortedForHTTPError = true
 				}
-				if ttftGuard.TimedOut() && !ttftRecorded && !gotTerminal {
+				if ttftGuard.TimedOut() && !gotTerminal {
 					outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
 				}
 				outcome = annotateStreamBreakDiagnostics(outcome, streamDiag)
@@ -5212,7 +5212,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					eventType := normalizedUpstreamSSEEventType(sseEvent, data)
 
 					// TTFT: 记录第一个实际内容事件的时间
-					ttftGuard.MarkProgress(eventType)
+					ttftGuard.MarkPayload(data)
 					isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 					if !ttftRecorded && isFirstToken {
 						firstTokenMs = int(time.Since(start).Milliseconds())
@@ -5376,7 +5376,7 @@ func (h *Handler) Responses(c *gin.Context) {
 							// ttftRecorded/firstTokenMs：客户端此刻尚未收到任何字节，真正的
 							// 首 token 计时在 flushBuffered 经 forward 冲刷时才发生，
 							// 否则会破坏首包前 response.failed 的抑制/换号语义。
-							ttftGuard.MarkProgress(gjson.GetBytes(data, "type").String())
+							ttftGuard.MarkPayload(data)
 						},
 						clientGone: func() bool {
 							downstreamMu.Lock()
@@ -5503,7 +5503,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					if imageOutput, ok := extractResponseImageGenerationOutput(data, seenImageOutputs); ok {
 						imageOutputs = append(imageOutputs, imageOutput)
 					}
-					ttftGuard.MarkProgress(eventType)
+					ttftGuard.MarkPayload(data)
 					if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
 						firstTokenMs = int(time.Since(start).Milliseconds())
 						ttftRecorded = true
@@ -5554,7 +5554,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			if candidatePromoted && isStream {
 				abortedForHTTPError = true
 			}
-			if ttftGuard.TimedOut() && !ttftRecorded && !gotTerminal {
+			if ttftGuard.TimedOut() && !gotTerminal {
 				outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
 			}
 			outcome = annotateStreamBreakDiagnostics(outcome, streamDiag)
@@ -7392,7 +7392,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 							parsed = gjson.ParseBytes(data)
 						}
 					}
-					ttftGuard.MarkProgress(eventType)
+					ttftGuard.MarkPayload(data)
 					isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 					if !ttftRecorded && isFirstToken {
 						firstTokenMs = int(time.Since(start).Milliseconds())
@@ -7546,7 +7546,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					outputCollector.Add(data)
 					parsed := gjson.ParseBytes(data)
 					eventType := normalizedUpstreamSSEEventType(sseEvent, data)
-					ttftGuard.MarkProgress(eventType)
+					ttftGuard.MarkPayload(data)
 					if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
 						firstTokenMs = int(time.Since(start).Milliseconds())
 						ttftRecorded = true
@@ -7603,7 +7603,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if candidatePromoted && isStream {
 				abortedForHTTPError = true
 			}
-			if ttftGuard.TimedOut() && !ttftRecorded && !gotTerminal {
+			if ttftGuard.TimedOut() && !gotTerminal {
 				outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
 			}
 			ttftGuard.Stop()

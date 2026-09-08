@@ -1264,7 +1264,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		// 一旦要透传给客户端就改写为可重试的 server_error。冷却/计费/日志用的
 		// terminalFailurePayload 取改写前的原始 data，不受影响。
 		clientData = sanitizeCapacityShedEventForClient(eventType, clientData)
-		ttftGuard.MarkProgress(eventType)
+		ttftGuard.MarkPayload(data)
 		isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 		if !ttftRecorded && isFirstToken {
 			firstTokenMs = int(time.Since(start).Milliseconds())
@@ -1438,7 +1438,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	} else if len(terminalFailurePayload) > 0 && terminalFailureEventType == "" {
 		terminalFailureEventType = gjson.GetBytes(terminalFailurePayload, "type").String()
 	}
-	if ttftGuard.TimedOut() && !ttftRecorded && !gotTerminal {
+	if ttftGuard.TimedOut() && !gotTerminal {
 		outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
 	}
 	ttftGuard.Stop()

@@ -89,21 +89,6 @@ func (g *firstTokenTimeoutGuard) MarkFirstToken() {
 	g.Stop()
 }
 
-// MarkProgress 在首个非生命周期帧（response.created / response.in_progress 之外的
-// 任意帧）到来时解除首字看门狗。任何这样的帧都证明上游已经开始流式产出真实响应，
-// 因此一个先输出结构/推理帧、内容 token 延迟到来的长推理请求不应被首字超时中断
-// （issue #207）。当上游在超时内什么都不发（或只发 created/in_progress）时看门狗
-// 仍会触发，这与 v2.2.7 之前"首个响应迹象"的语义一致。
-func (g *firstTokenTimeoutGuard) MarkProgress(eventType string) {
-	if g == nil || isPreContentLifecycleEvent(eventType) {
-		return
-	}
-	if g.onProgress != nil {
-		g.onProgress()
-	}
-	g.Stop()
-}
-
 func (g *firstTokenTimeoutGuard) TimedOut() bool {
 	return g != nil && g.fired.Load()
 }
@@ -112,7 +97,7 @@ func firstTokenTimeoutOutcome(timeout time.Duration) streamOutcome {
 	return streamOutcome{
 		logStatusCode:  logStatusUpstreamStreamBreak,
 		failureKind:    "timeout",
-		failureMessage: fmt.Sprintf("上游首字超时：%s 内未收到首个响应事件", timeout.Round(time.Millisecond)),
+		failureMessage: fmt.Sprintf("上游首字超时：%s 内未收到首个内容", timeout.Round(time.Millisecond)),
 		penalize:       true,
 	}
 }

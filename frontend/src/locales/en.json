@@ -4408,7 +4408,7 @@
     "firstTokenExcludesWsAcquire": "First Token Excludes Conn Acquire",
     "firstTokenExcludesWsAcquireDesc": "When enabled, the first-token time recorded in usage logs excludes the WS connection acquire time (queueing/probing/handshake) of the request, reflecting only how fast the upstream produced the first content. Acquire time is still recorded separately in the Conn Acquire column; the two columns add up to the full duration. Off by default to keep the historical semantics. Only affects newly written logs.",
     "firstTokenTimeout": "First Token Timeout",
-    "firstTokenTimeoutDesc": "For streaming requests, cancel the current upstream call and retry with another account if the upstream returns no response event (other than response.created / in_progress) within N seconds; 0 = disabled. Structural and reasoning frames emitted during the thinking phase count as 'response started', so long reasoning turns are not interrupted by mistake.",
+    "firstTokenTimeoutDesc": "Cancel each upstream attempt and immediately retry with another account if no actual content (text, reasoning or tool arguments) arrives within N seconds. Lifecycle events, structural events and empty deltas do not stop the timer. Applies to streaming and non-streaming requests; retry counts and total deadlines still apply. 0 disables the timeout. Compaction turns remain exempt.",
     "imageStorage": "Image Storage",
     "imageStorageDesc": "Choose where generated images are persisted: local disk or any S3-compatible object store (AWS S3 / Cloudflare R2 / MinIO / Aliyun OSS / Tencent COS / B2, etc.).",
     "imageStorageBackend": "Backend",

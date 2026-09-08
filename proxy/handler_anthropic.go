@@ -1329,7 +1329,7 @@ func (h *Handler) Messages(c *gin.Context) {
 					eventType := normalizedUpstreamSSEEventType(sseEvent, data)
 
 					// TTFT 跟踪
-					ttftGuard.MarkProgress(eventType)
+					ttftGuard.MarkPayload(data)
 					isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 					if !ttftRecorded && isFirstToken {
 						firstTokenMs = int(time.Since(start).Milliseconds())
@@ -1501,7 +1501,7 @@ func (h *Handler) Messages(c *gin.Context) {
 						return false
 					}
 
-					ttftGuard.MarkProgress(eventType)
+					ttftGuard.MarkPayload(data)
 					if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
 						firstTokenMs = int(time.Since(start).Milliseconds())
 						ttftRecorded = true
@@ -1540,7 +1540,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			outcome := classifyStreamOutcome(continuousRetryContextError(c.Request.Context()), readErr, writeErr, gotTerminal)
 			outcome = overlayContinuousRetryLocalFailure(outcome, readErr, writeErr)
 			terminalFailurePayload, _ = resolvePreContentRetryErrorCandidate(terminalFailurePayload, preContentErrorCandidate, contentStarted, wroteAnyBody, gotTerminal, readErr, c.Request.Context().Err(), writeErr)
-			if ttftGuard.TimedOut() && !ttftRecorded && !gotTerminal {
+			if ttftGuard.TimedOut() && !gotTerminal {
 				outcome = firstTokenTimeoutOutcome(attemptFirstTokenTimeout)
 			}
 			ttftGuard.Stop()

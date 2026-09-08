@@ -242,16 +242,19 @@ func TestFirstTokenTimeoutRetryWaitPolicy(t *testing.T) {
 		}
 	})
 
-	t.Run("unlimited retry uses cancellable backoff", func(t *testing.T) {
-		store.SetRetryIntervalMS(0)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	t.Run("unlimited timeout retry switches immediately", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		started := time.Now()
-		if h.waitBeforeRetryWithFirstTokenTimeout(ctx, true, 1, -1) {
-			t.Fatal("unlimited first-token timeout retry ignored cancellation")
+		if !h.waitBeforeRetryWithFirstTokenTimeout(ctx, true, 1, -1) {
+			t.Fatal("active timeout retry was canceled")
 		}
-		if elapsed := time.Since(started); elapsed < 10*time.Millisecond {
-			t.Fatalf("unlimited first-token timeout backoff was skipped: %v", elapsed)
+		if time.Since(started) > 100*time.Millisecond {
+			t.Fatal("timeout retry added backoff")
+		}
+		cancel()
+		if h.waitBeforeRetryWithFirstTokenTimeout(ctx, true, 2, -1) {
+			t.Fatal("timeout retry ignored request cancellation")
 		}
 	})
 }

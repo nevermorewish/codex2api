@@ -48,21 +48,21 @@ func TestFirstTokenTimeoutGuardHooksRunWithoutUpstreamTimeout(t *testing.T) {
 	if guard == nil {
 		t.Fatal("hook-only guard is nil")
 	}
-	guard.MarkProgress("response.output_text.delta")
+	guard.MarkPayload([]byte(`{"type":"response.output_text.delta","delta":"hello"}`))
 	if !progress.Load() || !stopped.Load() {
 		t.Fatalf("hooks progress=%v stopped=%v, want both true", progress.Load(), stopped.Load())
 	}
 }
 
-func TestFirstTokenTimeoutGuardMarkProgressIgnoresLifecycle(t *testing.T) {
+func TestFirstTokenTimeoutGuardIgnoresLifecycle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	guard := newFirstTokenTimeoutGuard(30*time.Millisecond, cancel)
 	defer guard.Stop()
 
 	// created / in_progress 不应解除看门狗：上游只发生命周期帧仍视为未开始响应。
-	guard.MarkProgress("response.created")
-	guard.MarkProgress("response.in_progress")
+	guard.MarkPayload([]byte(`{"type":"response.created"}`))
+	guard.MarkPayload([]byte(`{"type":"response.in_progress"}`))
 
 	select {
 	case <-ctx.Done():
@@ -74,22 +74,29 @@ func TestFirstTokenTimeoutGuardMarkProgressIgnoresLifecycle(t *testing.T) {
 	}
 }
 
-func TestFirstTokenTimeoutGuardMarkProgressDisarmsOnStructuralFrame(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	guard := newFirstTokenTimeoutGuard(30*time.Millisecond, cancel)
-	defer guard.Stop()
-
-	guard.MarkProgress("response.created")           // 生命周期帧：不解除
-	guard.MarkProgress("response.output_item.added") // 首个非生命周期帧：解除看门狗
-
-	select {
-	case <-ctx.Done():
-		t.Fatal("guard fired after a structural frame proved upstream liveness")
-	case <-time.After(120 * time.Millisecond):
-	}
-	if guard.TimedOut() {
-		t.Fatal("guard TimedOut() = true, want false")
+func TestFirstTokenTimeoutGuardStructuralAndEmptyFramesStillTimeout(t *testing.T) {
+	for _, payload := range []string{
+		`{"type":"response.output_item.added","item":{"type":"reasoning"}}`,
+		`{"type":"response.content_part.added","part":{"type":"output_text","text":""}}`,
+		`{"type":"response.output_text.delta","delta":""}`,
+		`{"type":"response.reasoning_summary_text.delta","delta":""}`,
+		`{"type":"response.function_call_arguments.delta","delta":""}`,
+	} {
+		t.Run(payload, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			guard := newFirstTokenTimeoutGuard(30*time.Millisecond, cancel)
+			defer guard.Stop()
+			guard.MarkPayload([]byte(payload))
+			select {
+			case <-ctx.Done():
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("content-free frame disabled first-token timeout")
+			}
+			if !guard.TimedOut() {
+				t.Fatal("expected first-token timeout")
+			}
+		})
 	}
 }
 
