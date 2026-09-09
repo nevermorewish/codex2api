@@ -1,4 +1,5 @@
 import type {
+  AccountFirstTokenStat,
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
   AccountPortalSubmitResponse,
@@ -1284,6 +1285,7 @@ export const api = {
     request<MessageResponse>('/usage/logs', { method: 'DELETE' }),
   getSetupHints: () => request<SetupHintsResponse>('/setup-hints'),
   getSettings: () => request<SystemSettings>('/settings'),
+  getFirstTokenStats: () => request<{ stats: AccountFirstTokenStat[] }>('/usage/first-token-stats'),
   getClaudeConfig: () =>
     request<ClaudeGlobalConfig>('/settings/claude-config'),
   updateClaudeConfig: (data: ClaudeGlobalConfig) =>

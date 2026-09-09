@@ -20,7 +20,8 @@
     "modelPricing": "模型定价",
     "payloadRules": "请求体重写",
     "errorAnalysis": "错误分析",
-    "robotMonitor": "机器人监控"
+    "robotMonitor": "机器人监控",
+    "firstTokenAnalysis": "首 Token 分析"
   },
   "concurrency": {
     "cooldown": "冷却情况",
@@ -76,7 +77,11 @@
     "relayCompletedAttempts": "已完成 {{count}} 次",
     "relayWaitingFinal": "请求尚未结束，正在等待后续尝试或流式响应完成；以上不是最终失败原因。",
     "relayElapsed": "已等待 {{duration}}",
-    "relayReasonLabels": { "final": "最终失败原因", "canceled": "取消原因", "latest": "最近尝试错误（非最终结果）" },
+    "relayReasonLabels": {
+      "final": "最终失败原因",
+      "canceled": "取消原因",
+      "latest": "最近尝试错误（非最终结果）"
+    },
     "relayReasonHTTPOnly": "HTTP {{code}}，日志未记录更详细的错误原因",
     "relayReasonUnavailable": "尚未记录错误详情，不能确定最终原因",
     "relaySwitchesLabel": "账号切换次数",

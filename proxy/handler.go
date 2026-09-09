@@ -3920,6 +3920,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	var lastRetryAfter string
 	retryExclusions := newRetryAccountExclusions()
 	var wsHTTPFallback websocketHTTPFallbackState
+	wsHTTPFallback.SetBodySizes(len(rawBody), len(codexBody))
 	invalidEncryptedContentRetried := false
 	antigravityRefreshRetried := map[int64]bool{}
 	relayContinuationAttempted := false
@@ -4100,7 +4101,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						Endpoint: "/v1/responses", Model: logModel, Stream: true,
 					}, feishuFirstTokenTimeoutForAttempt(start))
 					ttftGuard = newFirstTokenTimeoutGuardWithHooks(
-						firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)),
+						firstTokenTimeoutAfterTransport(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)), wsHTTPFallback.WSElapsed()),
 						upstreamCancel,
 						func() { feishuWatch.MarkProgress() },
 						func() { feishuWatch.Stop() },
@@ -4885,7 +4886,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				Endpoint: "/v1/responses", Model: logModel, Stream: isStream, ViaWebsocket: useWebsocket,
 			}, feishuFirstTokenTimeoutForAttempt(start))
 			ttftGuard := newFirstTokenTimeoutGuardWithHooks(
-				firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)),
+				firstTokenTimeoutAfterTransport(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)), wsHTTPFallback.WSElapsed()),
 				upstreamCancel,
 				func() { feishuWatch.MarkProgress() },
 				func() { feishuWatch.Stop() },
@@ -6815,6 +6816,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	var lastBody []byte
 	retryExclusions := newRetryAccountExclusions()
 	var wsHTTPFallback websocketHTTPFallbackState
+	wsHTTPFallback.SetBodySizes(len(rawBody), len(codexBody))
 	antigravityRefreshRetried := map[int64]bool{}
 
 	// 上游 ctx 生命周期：每次 attempt 开始前用新的 drainable ctx 替换，

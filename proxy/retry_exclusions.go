@@ -24,13 +24,15 @@ type retryAccountExclusions struct {
 // a one-time WebSocket -> HTTP transport downgrade. A close 1009 is a transport
 // limitation, not a reason to release the account and run the scheduler again.
 type websocketHTTPFallbackState struct {
-	forcedHTTP bool
-	account    *auth.Account
-	proxyURL   string
-	wsElapsed  time.Duration
-	source     string
-	fallbackID string
-	startedAt  time.Time
+	forcedHTTP          bool
+	account             *auth.Account
+	proxyURL            string
+	wsElapsed           time.Duration
+	source              string
+	fallbackID          string
+	startedAt           time.Time
+	rawBodyBytes        int
+	compressedBodyBytes int
 }
 
 func (s *websocketHTTPFallbackState) Retain(account *auth.Account, proxyURL string, wsElapsed time.Duration, source string) {
@@ -48,6 +50,13 @@ func (s *websocketHTTPFallbackState) Retain(account *auth.Account, proxyURL stri
 	if s.fallbackID == "" {
 		s.fallbackID = uuid.NewString()
 	}
+}
+
+func (s *websocketHTTPFallbackState) SetBodySizes(raw, compressed int) {
+	if s == nil {
+		return
+	}
+	s.rawBodyBytes, s.compressedBodyBytes = raw, compressed
 }
 
 func (s *websocketHTTPFallbackState) Take() (*auth.Account, string, bool) {
@@ -106,8 +115,8 @@ func (s *websocketHTTPFallbackState) LogHTTPAttemptCompletion(endpoint string, a
 			totalFirstEventMs = 0
 		}
 	}
-	log.Printf("WebSocket 1009 HTTP 降级尝试结束 (fallback_id=%s, source=%s, attempt=%d, account=%d, endpoint=%s, status=%d, ws_elapsed_ms=%d, http_elapsed_ms=%d, http_first_event_ms=%d, total_first_event_ms=%d, total_elapsed_ms=%d)",
-		s.fallbackID, s.Source(), attemptIndex, accountID, endpoint, statusCode, wsElapsedMs, httpElapsedMs, httpFirstEventMs,
+	log.Printf("WebSocket 1009 HTTP 降级尝试结束 (fallback_id=%s, source=%s, attempt=%d, account=%d, endpoint=%s, status=%d, raw_body_bytes=%d, compressed_body_bytes=%d, ws_elapsed_ms=%d, http_elapsed_ms=%d, http_first_event_ms=%d, total_first_event_ms=%d, total_elapsed_ms=%d)",
+		s.fallbackID, s.Source(), attemptIndex, accountID, endpoint, statusCode, s.rawBodyBytes, s.compressedBodyBytes, wsElapsedMs, httpElapsedMs, httpFirstEventMs,
 		totalFirstEventMs, totalElapsedMs)
 }
 

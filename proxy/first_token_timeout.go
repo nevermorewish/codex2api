@@ -133,3 +133,15 @@ func firstTokenTimeoutForRequest(base time.Duration, isCompactionTrigger bool, b
 	}
 	return base
 }
+
+// firstTokenTimeoutAfterTransport subtracts time already spent in a failed
+// WebSocket attempt so HTTP fallback shares the same first-token budget.
+func firstTokenTimeoutAfterTransport(timeout, transportElapsed time.Duration) time.Duration {
+	if timeout <= 0 || transportElapsed <= 0 {
+		return timeout
+	}
+	if remaining := timeout - transportElapsed; remaining > 0 {
+		return remaining
+	}
+	return time.Millisecond
+}

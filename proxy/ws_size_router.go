@@ -21,6 +21,10 @@ type websocketSizeRouter struct {
 // 1009 几乎必然是误分类;同时避免异常小样本长期劫持路由。
 const wsSizeRouterMinSample = 64 * 1024
 
+// Requests above this size are always sent over HTTP. WebSocket framing and
+// replay add avoidable latency for very large contexts, even before a 1009.
+const wsSizeRouterHardHTTPBytes = 2 * 1024 * 1024
+
 // wsSizeRouterTTL 学习结果有效期:上游帧上限可能随部署调整,过期后
 // 回到"先试 WS"的默认行为,由下一次真实 1009 重新校准。
 const wsSizeRouterTTL = 6 * time.Hour
@@ -55,6 +59,9 @@ func (r *websocketSizeRouter) RecordMessageTooBig(bodySize int) {
 
 // PreferHTTP 判断该体积的请求是否应跳过 WebSocket 直接走 HTTP 上游。
 func (r *websocketSizeRouter) PreferHTTP(bodySize int) bool {
+	if bodySize >= wsSizeRouterHardHTTPBytes {
+		return true
+	}
 	if wsSizeRouterDisabled() {
 		return false
 	}

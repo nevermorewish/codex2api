@@ -1192,6 +1192,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/event-trend", h.GetAccountEventTrend)
 	api.POST("/accounts/usage/probe", h.ForceUsageProbe)
 	api.GET("/usage/stats", h.GetUsageStats)
+	api.GET("/usage/first-token-stats", h.GetFirstTokenStats)
 	api.GET("/usage/api-keys", h.GetAPIKeyTokenStats)
 	api.GET("/usage/api-keys/:id/accounts", h.GetAPIKeyAccountStats)
 	api.GET("/usage/logs", h.GetUsageLogs)

@@ -32,6 +32,7 @@ const Concurrency = lazy(() => import('./pages/Concurrency'))
 const LiveStreams = lazy(() => import('./pages/LiveStreams'))
 const FallbackPool = lazy(() => import('./pages/FallbackPool'))
 const ErrorAnalysis = lazy(() => import('./pages/ErrorAnalysis'))
+const FirstTokenAnalysis = lazy(() => import('./pages/FirstTokenAnalysis'))
 const RobotMonitor = lazy(() => import('./pages/RobotMonitor'))
 
 export default function App() {
@@ -76,6 +77,7 @@ function AdminApp() {
           <Route path="/live-streams" element={<LiveStreams />} />
           <Route path="/fallback-pool" element={<FallbackPool />} />
           <Route path="/error-analysis" element={<ErrorAnalysis />} />
+          <Route path="/first-token-analysis" element={<FirstTokenAnalysis />} />
           <Route path="/robot-monitor" element={<RobotMonitor />} />
           <Route path="/images" element={<Navigate to="/images/studio" replace />} />
           <Route path="/images/:view" element={<ImageStudio />} />

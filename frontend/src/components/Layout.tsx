@@ -33,6 +33,7 @@ const navDefs: NavDef[] = [
   { to: '/prompt-filter/overview', labelKey: 'nav.promptFilter', icon: <ShieldAlert className="size-[18px]" />, activePrefix: '/prompt-filter' },
   { to: '/ops/overview', labelKey: 'nav.ops', icon: <Server className="size-[18px]" />, activePrefix: '/ops' },
   { to: '/error-analysis', labelKey: 'nav.errorAnalysis', icon: <Bug className="size-[18px]" /> },
+  { to: '/first-token-analysis', labelKey: 'nav.firstTokenAnalysis', icon: <Activity className="size-[18px]" /> },
   { to: '/robot-monitor', labelKey: 'nav.robotMonitor', icon: <Bot className="size-[18px]" /> },
   { to: '/usage', labelKey: 'nav.usage', icon: <Activity className="size-[18px]" /> },
   { to: '/fallback-usage', labelKey: 'nav.fallbackUsage', icon: <LifeBuoy className="size-[18px]" /> },

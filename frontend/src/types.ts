@@ -4050,3 +4050,4 @@ export interface FallbackTestResult {
   latency_ms: number
   error?: string
 }
+export type AccountFirstTokenStat = { account_id: number; account_name: string; account_email: string; samples: number; p50_ms: number; p95_ms: number; timeout_count: number; upstream_500_count: number; upstream_502_count: number; upstream_503_count: number; score: number }

@@ -584,6 +584,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		return hasPreviousResponse && !continuationDegraded
 	}
 	var wsHTTPFallback websocketHTTPFallbackState
+	wsHTTPFallback.SetBodySizes(len(rawBody), len(codexBody))
 	var lastUpstreamCancel context.CancelFunc
 	defer func() {
 		if lastUpstreamCancel != nil {
@@ -750,7 +751,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			Endpoint: "/v1/responses", Model: logModel, Stream: true, ViaWebsocket: useWebsocket,
 		}, feishuFirstTokenTimeoutForAttempt(start))
 		ttftGuard := newFirstTokenTimeoutGuardWithHooks(
-			firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)),
+			firstTokenTimeoutAfterTransport(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)), wsHTTPFallback.WSElapsed()),
 			upstreamCancel,
 			func() { feishuWatch.MarkProgress() },
 			func() { feishuWatch.Stop() },

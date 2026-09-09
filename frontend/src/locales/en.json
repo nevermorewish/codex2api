@@ -20,7 +20,8 @@
     "modelPricing": "Model Pricing",
     "payloadRules": "Payload Rules",
     "errorAnalysis": "Error Analysis",
-    "robotMonitor": "Bot Monitor"
+    "robotMonitor": "Bot Monitor",
+    "firstTokenAnalysis": "First Token Analysis"
   },
   "concurrency": {
     "cooldown": "Cooldown",
@@ -76,7 +77,11 @@
     "relayCompletedAttempts": "{{count}} completed",
     "relayWaitingFinal": "The request has not ended. Waiting for a later attempt or streaming response to finish; the error above is not a final failure.",
     "relayElapsed": "Elapsed {{duration}}",
-    "relayReasonLabels": { "final": "Final failure reason", "canceled": "Cancellation reason", "latest": "Latest attempt error (not final)" },
+    "relayReasonLabels": {
+      "final": "Final failure reason",
+      "canceled": "Cancellation reason",
+      "latest": "Latest attempt error (not final)"
+    },
     "relayReasonHTTPOnly": "HTTP {{code}}; no more detailed error was recorded",
     "relayReasonUnavailable": "Error details are not yet recorded; the final reason is unknown",
     "relaySwitchesLabel": "Account switches",

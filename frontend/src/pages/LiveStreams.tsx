@@ -216,7 +216,7 @@ export default function LiveStreams() {
 
   useEffect(() => {
     const end = new Date(); const start = new Date(Date.now() - 24 * 3600_000)
-    api.getUsageLogsPaged({ start: start.toISOString(), end: end.toISOString(), page: 1, pageSize: 30, errorOnly: true })
+    api.getUsageLogsPaged({ start: start.toISOString(), end: end.toISOString(), page: 1, pageSize: 30, errorOnly: 'true' })
       .then((r) => setAnomalies(r.logs ?? [])).catch(() => setAnomalies([]))
   }, [updatedAt])
 
