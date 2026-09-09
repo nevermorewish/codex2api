@@ -4659,7 +4659,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				if candidatePromoted && isStream {
 					abortedForHTTPError = true
 				}
-				if ttftGuard.TimedOut() && !gotTerminal {
+				if ttftGuard.TimedOut() {
 					outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
 				}
 				outcome = annotateStreamBreakDiagnostics(outcome, streamDiag)
@@ -4668,7 +4668,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					h.store.VerifyAccountAuthAsync(account)
 				}
 				var responseFailedDecision codex429Decision
-				if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
+				if len(terminalFailurePayload) > 0 && !outcome.terminalLocal && !ttftGuard.TimedOut() {
 					outcome = classifyResponseFailedOutcome(terminalFailurePayload)
 					if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
 						responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, attemptEffectiveModel)
@@ -5554,7 +5554,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			if candidatePromoted && isStream {
 				abortedForHTTPError = true
 			}
-			if ttftGuard.TimedOut() && !gotTerminal {
+			if ttftGuard.TimedOut() {
 				outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
 			}
 			outcome = annotateStreamBreakDiagnostics(outcome, streamDiag)
@@ -5563,7 +5563,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				h.store.VerifyAccountAuthAsync(account)
 			}
 			var responseFailedDecision codex429Decision
-			if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
+			if len(terminalFailurePayload) > 0 && !outcome.terminalLocal && !ttftGuard.TimedOut() {
 				outcome = classifyResponseFailedOutcome(terminalFailurePayload)
 				if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
 					responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, effectiveModel)
@@ -7603,7 +7603,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if candidatePromoted && isStream {
 				abortedForHTTPError = true
 			}
-			if ttftGuard.TimedOut() && !gotTerminal {
+			if ttftGuard.TimedOut() {
 				outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
 			}
 			ttftGuard.Stop()
@@ -7611,7 +7611,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				h.store.VerifyAccountAuthAsync(account)
 			}
 			var responseFailedDecision codex429Decision
-			if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
+			if len(terminalFailurePayload) > 0 && !outcome.terminalLocal && !ttftGuard.TimedOut() {
 				outcome = classifyResponseFailedOutcome(terminalFailurePayload)
 				if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
 					responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, attemptEffectiveModel)

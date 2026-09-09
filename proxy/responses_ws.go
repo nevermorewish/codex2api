@@ -1438,13 +1438,13 @@ func (h *Handler) streamResponsesWSUpstream(
 	} else if len(terminalFailurePayload) > 0 && terminalFailureEventType == "" {
 		terminalFailureEventType = gjson.GetBytes(terminalFailurePayload, "type").String()
 	}
-	if ttftGuard.TimedOut() && !gotTerminal {
+	if ttftGuard.TimedOut() {
 		outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
 	}
 	ttftGuard.Stop()
 	var responseFailedDecision codex429Decision
 	promptPolicyIncidentID := ""
-	if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
+	if len(terminalFailurePayload) > 0 && !outcome.terminalLocal && !ttftGuard.TimedOut() {
 		outcome = classifyResponseFailedOutcome(terminalFailurePayload)
 		if withContinuousRetryDeadlinePending(c.Request.Context(), func() {
 			responseFailedDecision = h.applyResponseFailedCooldown(account, terminalFailurePayload, resp, effectiveModel)

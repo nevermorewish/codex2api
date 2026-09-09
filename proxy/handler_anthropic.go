@@ -1540,11 +1540,11 @@ func (h *Handler) Messages(c *gin.Context) {
 			outcome := classifyStreamOutcome(continuousRetryContextError(c.Request.Context()), readErr, writeErr, gotTerminal)
 			outcome = overlayContinuousRetryLocalFailure(outcome, readErr, writeErr)
 			terminalFailurePayload, _ = resolvePreContentRetryErrorCandidate(terminalFailurePayload, preContentErrorCandidate, contentStarted, wroteAnyBody, gotTerminal, readErr, c.Request.Context().Err(), writeErr)
-			if ttftGuard.TimedOut() && !gotTerminal {
+			if ttftGuard.TimedOut() {
 				outcome = firstTokenTimeoutOutcome(attemptFirstTokenTimeout)
 			}
 			ttftGuard.Stop()
-			if len(terminalFailurePayload) > 0 && !outcome.terminalLocal {
+			if len(terminalFailurePayload) > 0 && !outcome.terminalLocal && !ttftGuard.TimedOut() {
 				outcome = classifyResponseFailedOutcome(terminalFailurePayload)
 				if !upstreamCyberPolicyLogged {
 					promptPolicyIncidentID = acceptedPromptPolicyIncidentID(h.logUpstreamCyberPolicy(c, "/v1/messages", model, responseFailedErrorBody(terminalFailurePayload), upstreamCyberPolicyAttempt{
