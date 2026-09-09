@@ -270,7 +270,11 @@ export default function LiveStreams() {
             {anomalies.length ? <div className="divide-y divide-border">{anomalies.map((log) => <div key={log.id} className="grid gap-2 px-5 py-4 md:grid-cols-[150px_1fr_auto] md:items-center"><div className="text-xs text-muted-foreground">{formatStreamTime(log.created_at)}</div><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-medium">{log.model || '-'}</span><span className="rounded bg-red-500/10 px-2 py-0.5 text-xs text-red-600">HTTP {log.status_code}</span><span className="text-xs text-muted-foreground">账号：{log.account_name || `#${log.account_id}`}</span></div><div className="mt-1 truncate text-xs text-red-600/90">{log.error_message || log.upstream_error_kind || '上游异常'}</div></div><button className="inline-flex items-center gap-1 text-xs text-primary" onClick={() => { const s = streams.find(x => x.request_id === log.parent_request_id); if (s) { setTab('streams'); void openDetail(s) } }} disabled={!streams.some(x => x.request_id === log.parent_request_id)}>查看流 <ExternalLink className="size-3" /></button></div>)}</div> : <div className="px-5 py-12 text-center text-sm text-muted-foreground">暂无异常日志</div>}
           </section> : <section className="overflow-hidden rounded-xl border border-border bg-card/70">
             {sorted.length > 0 ? (
-              <div className="divide-y divide-border">
+              <div className="overflow-x-auto">
+                <div className="grid min-w-[1100px] grid-cols-[180px_1.2fr_100px_1.5fr_80px_80px_140px_100px] items-center gap-3 border-b bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
+                  <span>时间</span><span>模型</span><span>协议</span><span>账号链路</span><span>请求数</span><span>尝试数</span><span>状态</span><span>耗时</span>
+                </div>
+                <div className="min-w-[1100px] divide-y divide-border">
                 {sorted.map((stream) => {
                   const isExpanded = expanded === stream.request_id
                   return (
@@ -314,6 +318,7 @@ export default function LiveStreams() {
                     </div>
                   )
                 })}
+                </div>
               </div>
             ) : (
               <div className="px-4 py-10 text-center text-sm text-muted-foreground">{t('liveStreams.noStreams')}</div>
