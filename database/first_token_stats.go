@@ -67,13 +67,13 @@ func (db *DB) GetAccountFirstTokenStats(ctx context.Context, start, end time.Tim
 		sort.Slice(result, func(i, j int) bool { return result[i].P95Ms > result[j].P95Ms })
 		return result, nil
 	}
-	q := `SELECT u.account_id, COALESCE(a.name,''), COALESCE(a.email,''),
+	q := `SELECT u.account_id, COALESCE(a.name,''), COALESCE(a.credentials->>'email',''),
  COALESCE(count(*) FILTER (WHERE u.first_token_ms > 0),0),
  COALESCE(percentile_cont(0.50) WITHIN GROUP (ORDER BY NULLIF(u.first_token_ms,0)),0),
  COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY NULLIF(u.first_token_ms,0)),0),
  COALESCE(count(*) FILTER (WHERE COALESCE(u.error_message,'') ILIKE '%first token timeout%' OR COALESCE(u.error_message,'') ILIKE '%首字超时%'),0),
  COALESCE(count(*) FILTER (WHERE u.status_code=500),0), COALESCE(count(*) FILTER (WHERE u.status_code=502),0), COALESCE(count(*) FILTER (WHERE u.status_code=503),0)
- FROM usage_logs u LEFT JOIN accounts a ON a.id=u.account_id WHERE u.created_at >= $1 AND u.created_at <= $2 GROUP BY u.account_id,a.name,a.email ORDER BY 6 DESC`
+ FROM usage_logs u LEFT JOIN accounts a ON a.id=u.account_id WHERE u.created_at >= $1 AND u.created_at <= $2 GROUP BY u.account_id,a.name,a.credentials ORDER BY 6 DESC`
 	rows, err := db.conn.QueryContext(ctx, q, start, end)
 	if err != nil {
 		return nil, err
