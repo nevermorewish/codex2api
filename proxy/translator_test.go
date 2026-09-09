@@ -4122,14 +4122,20 @@ func TestPrepareOpenAIResponsesBody_RemovesRelayIncompatibleAdditionalToolsCarri
 	}
 }
 
-func TestPrepareResponsesBody_ExpandsStringMessageContentForNativeCodex(t *testing.T) {
-	raw := []byte(`{"model":"gpt-5.6-terra","input":[{"role":"user","content":"hello"}]}`)
+func TestPrepareResponsesBody_RemovesNativeAdditionalToolsContent(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.6-terra","input":[{"type":"additional_tools","role":"developer","id":"at_123","content":[{"type":"input_text","text":"internal context"}],"tools":[]}]}`)
 	got, _ := PrepareResponsesBody(raw)
-	if typ := gjson.GetBytes(got, "input.0.content.0.type").String(); typ != "input_text" {
-		t.Fatalf("content type = %q, want input_text; body=%s", typ, got)
+	if typ := gjson.GetBytes(got, "input.0.type").String(); typ != "message" {
+		t.Fatalf("context item type = %q, want message; body=%s", typ, got)
 	}
-	if text := gjson.GetBytes(got, "input.0.content.0.text").String(); text != "hello" {
-		t.Fatalf("content text = %q, want hello; body=%s", text, got)
+	if text := gjson.GetBytes(got, "input.0.content.0.text").String(); text != "internal context" {
+		t.Fatalf("context text = %q, want internal context; body=%s", text, got)
+	}
+	if gjson.GetBytes(got, "input.1.content").Exists() || gjson.GetBytes(got, "input.1.id").Exists() {
+		t.Fatalf("native carrier retained rejected fields: %s", got)
+	}
+	if !gjson.GetBytes(got, "input.1.tools").Exists() {
+		t.Fatalf("native carrier tools were removed: %s", got)
 	}
 }
 
