@@ -2110,6 +2110,7 @@ export interface SystemSettings {
   stream_flush_interval_ms: number
   first_token_mode: 'strict' | 'loose' | string
   first_token_timeout_seconds: number
+  first_token_timeout_mode: 'first_token' | 'request_size'
   feishu_alert_enabled: boolean
   feishu_app_id: string
   feishu_app_secret?: string

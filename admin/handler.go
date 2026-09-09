@@ -9140,6 +9140,7 @@ type settingsResponse struct {
 	StreamFlushIntervalMS              int                              `json:"stream_flush_interval_ms"`
 	FirstTokenMode                     string                           `json:"first_token_mode"`
 	FirstTokenTimeoutSeconds           int                              `json:"first_token_timeout_seconds"`
+	FirstTokenTimeoutMode              string                           `json:"first_token_timeout_mode"`
 	FeishuAlertEnabled                 bool                             `json:"feishu_alert_enabled"`
 	FeishuAppID                        string                           `json:"feishu_app_id"`
 	FeishuAppSecret                    string                           `json:"feishu_app_secret"`
@@ -9314,6 +9315,7 @@ type updateSettingsReq struct {
 	StreamFlushIntervalMS               *int                             `json:"stream_flush_interval_ms"`
 	FirstTokenMode                      *string                          `json:"first_token_mode"`
 	FirstTokenTimeoutSeconds            *int                             `json:"first_token_timeout_seconds"`
+	FirstTokenTimeoutMode               *string                          `json:"first_token_timeout_mode"`
 	FeishuAlertEnabled                  *bool                            `json:"feishu_alert_enabled"`
 	FeishuAppID                         *string                          `json:"feishu_app_id"`
 	FeishuAppSecret                     *string                          `json:"feishu_app_secret"`
@@ -10157,6 +10159,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		StreamFlushIntervalMS:               runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenMode:                      runtimeCfg.FirstTokenMode,
 		FirstTokenTimeoutSeconds:            runtimeCfg.FirstTokenTimeoutSec,
+		FirstTokenTimeoutMode:               runtimeCfg.FirstTokenTimeoutMode,
 		FeishuAlertEnabled:                  feishuCfg.Enabled,
 		FeishuAppID:                         feishuCfg.AppID,
 		FeishuAppSecret:                     feishuCfg.AppSecret,
@@ -11233,6 +11236,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.FirstTokenTimeoutSec = *req.FirstTokenTimeoutSeconds
 		log.Printf("设置已更新: first_token_timeout_seconds = %d", runtimeCfg.FirstTokenTimeoutSec)
 	}
+	if req.FirstTokenTimeoutMode != nil && (*req.FirstTokenTimeoutMode == "first_token" || *req.FirstTokenTimeoutMode == "request_size") {
+		runtimeCfg.FirstTokenTimeoutMode = *req.FirstTokenTimeoutMode
+	}
 	feishuChanged := req.FeishuAlertEnabled != nil || req.FeishuAppID != nil || req.FeishuAppSecret != nil || req.FeishuChatIDs != nil || req.FeishuAlertErrorCodes != nil || req.FeishuFirstTokenTimeoutSeconds != nil
 	feishuConfigToPersist := ""
 	if feishuChanged {
@@ -11672,6 +11678,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		StreamFlushIntervalMS:               runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenMode:                      runtimeCfg.FirstTokenMode,
 		FirstTokenTimeoutSeconds:            runtimeCfg.FirstTokenTimeoutSec,
+		FirstTokenTimeoutMode:               runtimeCfg.FirstTokenTimeoutMode,
 		BillingTierPolicy:                   runtimeCfg.BillingTierPolicy,
 		ShowFullUsageNumbers:                showFullUsageNumbers,
 		PublicKeyUsagePageEnabled:           publicKeyUsagePageEnabled,
@@ -12023,6 +12030,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		StreamFlushIntervalMS:               runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenMode:                      runtimeCfg.FirstTokenMode,
 		FirstTokenTimeoutSeconds:            runtimeCfg.FirstTokenTimeoutSec,
+		FirstTokenTimeoutMode:               runtimeCfg.FirstTokenTimeoutMode,
 		FeishuAlertEnabled:                  feishuCfg.Enabled,
 		FeishuAppID:                         feishuCfg.AppID,
 		FeishuAppSecret:                     feishuCfg.AppSecret,

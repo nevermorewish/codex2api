@@ -1424,6 +1424,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS stream_flush_interval_ms INT DEFAULT 20;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_mode VARCHAR(20) DEFAULT 'strict';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_seconds INT DEFAULT 0;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_mode TEXT DEFAULT 'request_size';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_under_50kb INT DEFAULT 10;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_under_100kb INT DEFAULT 20;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_under_200kb INT DEFAULT 30;
@@ -2366,6 +2367,7 @@ type SystemSettings struct {
 	StreamFlushIntervalMS              int
 	FirstTokenMode                     string
 	FirstTokenTimeoutSeconds           int
+	FirstTokenTimeoutMode              string
 	BillingTierPolicy                  string
 	ImageStorageConfig                 string // JSON: {"backend":"s3","endpoint":"...","region":"...","bucket":"...","access_key":"...","secret_key":"...","prefix":"...","force_path_style":false}
 	ShowFullUsageNumbers               bool

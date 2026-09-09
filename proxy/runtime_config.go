@@ -71,6 +71,7 @@ type RuntimeSettings struct {
 	StreamFlushPolicy      string
 	StreamFlushIntervalMS  int
 	FirstTokenMode         string
+	FirstTokenTimeoutMode  string // first_token or request_size
 	FirstTokenTimeoutSec   int
 	BillingTierPolicy      string
 	// ModelsListReadMaxBytes 是上游 /v1/models 与 Codex 模型清单成功响应的读取上限。
@@ -180,6 +181,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		StreamFlushPolicy:                defaultStreamFlushPolicy,
 		StreamFlushIntervalMS:            defaultStreamFlushIntervalMS,
 		FirstTokenMode:                   defaultFirstTokenMode,
+		FirstTokenTimeoutMode:            "request_size",
 		FirstTokenTimeoutSec:             defaultFirstTokenTimeoutSec,
 		FirstTokenSizeTimeouts:           database.DefaultFirstTokenTimeoutSettings(),
 		BillingTierPolicy:                defaultBillingTierPolicy,
@@ -297,6 +299,9 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	if settings.FirstTokenTimeoutSec < 0 {
 		settings.FirstTokenTimeoutSec = defaultFirstTokenTimeoutSec
 	}
+	if settings.FirstTokenTimeoutMode != "first_token" && settings.FirstTokenTimeoutMode != "request_size" {
+		settings.FirstTokenTimeoutMode = "request_size"
+	}
 	if settings.FirstTokenTimeoutSec > maxFirstTokenTimeoutSec {
 		settings.FirstTokenTimeoutSec = maxFirstTokenTimeoutSec
 	}
@@ -352,6 +357,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.StreamFlushIntervalMS = settings.StreamFlushIntervalMS
 		next.FirstTokenMode = settings.FirstTokenMode
 		next.FirstTokenTimeoutSec = settings.FirstTokenTimeoutSeconds
+		next.FirstTokenTimeoutMode = "request_size"
 		next.FirstTokenSizeTimeouts = settings.FirstTokenSizeTimeouts
 		next.BillingTierPolicy = settings.BillingTierPolicy
 		next.ModelsListReadMaxBytes = settings.ModelsListReadMaxBytes

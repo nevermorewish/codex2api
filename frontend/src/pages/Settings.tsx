@@ -2352,6 +2352,7 @@ export default function Settings() {
     stream_flush_interval_ms: 20,
     first_token_mode: 'strict',
     first_token_timeout_seconds: 0,
+    first_token_timeout_mode: 'request_size',
     feishu_alert_enabled: false,
     feishu_app_id: '',
     feishu_app_secret_configured: false,
@@ -5367,6 +5368,9 @@ export default function Settings() {
                         onChange={(value) => autoSaveStringField('first_token_mode', value)}
                         options={firstTokenModeOptions}
                       />
+                    </SettingField>
+                    <SettingField label="请求超时模式" description="默认按请求体大小；也可恢复传统首 Token 超时。">
+                      <SegmentedPillGroup value={settingsForm.first_token_timeout_mode} onChange={(value) => autoSaveStringField('first_token_timeout_mode', value)} options={[{ value: 'request_size', label: '按请求体大小' }, { value: 'first_token', label: '传统首 Token' }]} />
                     </SettingField>
                     <FirstTokenTimeoutFields />
                   </div>

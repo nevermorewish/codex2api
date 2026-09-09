@@ -117,6 +117,9 @@ func firstTokenTimeoutForRequest(base time.Duration, isCompactionTrigger bool, b
 		return 0
 	}
 	if len(bodySize) > 0 {
+		if CurrentRuntimeSettings().FirstTokenTimeoutMode == "first_token" {
+			return base
+		}
 		size := bodySize[0]
 		settings := CurrentRuntimeSettings().FirstTokenSizeTimeouts
 		switch {
