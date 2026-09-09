@@ -13,7 +13,7 @@ type AccountFirstTokenStats struct {
 	AccountEmail string  `json:"account_email"`
 	Samples      int64   `json:"samples"`
 	P50Ms        float64 `json:"p50_ms"`
-	P95Ms        float64 `json:"p95_ms"`
+	P90Ms        float64 `json:"p90_ms"`
 	Timeouts     int64   `json:"timeout_count"`
 	Upstream500  int64   `json:"upstream_500_count"`
 	Upstream502  int64   `json:"upstream_502_count"`
@@ -56,9 +56,9 @@ func (db *DB) GetAccountFirstTokenStats(ctx context.Context, start, end time.Tim
 			s.Samples = int64(len(values[id]))
 			if len(values[id]) > 0 {
 				s.P50Ms = float64(values[id][len(values[id])/2])
-				s.P95Ms = float64(values[id][int(float64(len(values[id])-1)*.95)])
+				s.P90Ms = float64(values[id][int(float64(len(values[id])-1)*.90)])
 			}
-			s.Score = 1000/(1+s.P95Ms/1000) - float64(s.Timeouts*20+s.Upstream500*2+s.Upstream502*3+s.Upstream503*3)
+			s.Score = 1000/(1+s.P90Ms/1000) - float64(s.Timeouts*20+s.Upstream500*2+s.Upstream502*3+s.Upstream503*3)
 		}
 		result := make([]AccountFirstTokenStats, 0, len(byID))
 		for _, s := range byID {
@@ -70,7 +70,7 @@ func (db *DB) GetAccountFirstTokenStats(ctx context.Context, start, end time.Tim
 	q := `SELECT u.account_id, COALESCE(a.name,''), COALESCE(a.credentials->>'email',''),
  COALESCE(count(*) FILTER (WHERE u.first_token_ms > 0),0),
  COALESCE(percentile_cont(0.50) WITHIN GROUP (ORDER BY NULLIF(u.first_token_ms,0)),0),
- COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY NULLIF(u.first_token_ms,0)),0),
+ COALESCE(percentile_cont(0.90) WITHIN GROUP (ORDER BY NULLIF(u.first_token_ms,0)),0),
  COALESCE(count(*) FILTER (WHERE COALESCE(u.error_message,'') ILIKE '%first token timeout%' OR COALESCE(u.error_message,'') ILIKE '%首字超时%'),0),
  COALESCE(count(*) FILTER (WHERE u.status_code=500),0), COALESCE(count(*) FILTER (WHERE u.status_code=502),0), COALESCE(count(*) FILTER (WHERE u.status_code=503),0)
  FROM usage_logs u LEFT JOIN accounts a ON a.id=u.account_id WHERE u.created_at >= $1 AND u.created_at <= $2 GROUP BY u.account_id,a.name,a.credentials ORDER BY 6 DESC`
@@ -86,7 +86,7 @@ func (db *DB) GetAccountFirstTokenStats(ctx context.Context, start, end time.Tim
 			return nil, err
 		}
 		// Higher score means a healthier account. P95 and timeout/error rates dominate.
-		s.Score = 1000/(1+s.P95Ms/1000) - float64(s.Timeouts*20+s.Upstream500*2+s.Upstream502*3+s.Upstream503*3)
+		s.Score = 1000/(1+s.P90Ms/1000) - float64(s.Timeouts*20+s.Upstream500*2+s.Upstream502*3+s.Upstream503*3)
 		result = append(result, s)
 	}
 	return result, rows.Err()
