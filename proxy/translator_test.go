@@ -4122,6 +4122,17 @@ func TestPrepareOpenAIResponsesBody_RemovesRelayIncompatibleAdditionalToolsCarri
 	}
 }
 
+func TestPrepareResponsesBody_ExpandsStringMessageContentForNativeCodex(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.6-terra","input":[{"role":"user","content":"hello"}]}`)
+	got, _ := PrepareResponsesBody(raw)
+	if typ := gjson.GetBytes(got, "input.0.content.0.type").String(); typ != "input_text" {
+		t.Fatalf("content type = %q, want input_text; body=%s", typ, got)
+	}
+	if text := gjson.GetBytes(got, "input.0.content.0.text").String(); text != "hello" {
+		t.Fatalf("content text = %q, want hello; body=%s", text, got)
+	}
+}
+
 // TestPrepareOpenAIResponsesBody_NormalizesLegacyMaxTokens covers the largest
 // single category of production 400s traced on this relay path: a Codex
 // client sends the retired Chat Completions alias max_tokens on /v1/responses,

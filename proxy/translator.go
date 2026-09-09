@@ -1244,6 +1244,43 @@ func normalizeResponsesInputMessageContent(body map[string]any) bool {
 	return modified
 }
 
+// Codex's native Responses schema models message content as an array of
+// typed content parts.  Clients commonly use the Responses shorthand string;
+// expand it before sending to the native upstream.  Leaving the shorthand in
+// place makes the upstream validator report the misleading
+// `Unknown parameter: 'input[0].content'` error.
+func normalizeResponsesMessageStringContent(body map[string]any) bool {
+	// The terra upstream currently rejects the Responses string shorthand;
+	// keep the official shorthand for other models whose validators accept it.
+	model := strings.ToLower(strings.TrimSpace(firstNonEmptyAnyString(body["model"])))
+	if model != "gpt-5.6-terra" {
+		return false
+	}
+	inputItems, ok := body["input"].([]any)
+	if !ok {
+		return false
+	}
+	modified := false
+	for _, raw := range inputItems {
+		item, ok := raw.(map[string]any)
+		if !ok || !isResponsesMessageInputItem(item) {
+			continue
+		}
+		content, ok := item["content"].(string)
+		if !ok {
+			continue
+		}
+		role := strings.TrimSpace(firstNonEmptyAnyString(item["role"]))
+		partType := "input_text"
+		if role == "assistant" {
+			partType = "output_text"
+		}
+		item["content"] = []any{map[string]any{"type": partType, "text": content}}
+		modified = true
+	}
+	return modified
+}
+
 func isResponsesMessageInputItem(item map[string]any) bool {
 	itemType := strings.TrimSpace(firstNonEmptyAnyString(item["type"]))
 	if itemType == "message" {
@@ -2447,6 +2484,7 @@ func prepareResponsesBodyWithOptions(rawBody []byte, opts responsesBodyPrepareOp
 	normalizeResponsesSystemRoleMessages(body)
 	normalizeResponsesContentPartTypes(body)
 	normalizeResponsesInputMessageContent(body)
+	normalizeResponsesMessageStringContent(body)
 	normalizeResponsesToolCallArgumentTypes(body)
 	sanitizeMalformedResponsesFunctionCalls(body)
 	normalizeResponsesInputItemIDs(body)
