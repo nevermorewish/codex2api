@@ -201,6 +201,22 @@ func TestFirstTokenTimeoutForRequestExemptsCompaction(t *testing.T) {
 	}
 }
 
+func TestFirstTokenTimeoutForRequestByBodySize(t *testing.T) {
+	cases := []struct {
+		size int
+		want time.Duration
+	}{
+		{1, 10 * time.Second}, {50 * 1024, 20 * time.Second},
+		{100 * 1024, 30 * time.Second}, {200 * 1024, 50 * time.Second},
+		{500 * 1024, 90 * time.Second}, {1 << 20, 90 * time.Second},
+	}
+	for _, tc := range cases {
+		if got := firstTokenTimeoutForRequest(time.Minute, false, tc.size); got != tc.want {
+			t.Errorf("size %d: got %s, want %s", tc.size, got, tc.want)
+		}
+	}
+}
+
 func TestNormalizeBillingTierPolicy(t *testing.T) {
 	if got := NormalizeBillingTierPolicy(""); got != BillingTierPolicyActual {
 		t.Fatalf("empty policy = %q, want actual", got)

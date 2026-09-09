@@ -112,9 +112,24 @@ func firstTokenTimeoutError(timeout time.Duration) error {
 // 而这一轮的 encrypted_content 绑定原账号，超时换号重试大概率继续失败并耗尽
 // attempt，导致会话彻底废掉（issue #381）。故对压缩轮返回 0（关闭看门狗），
 // 让其思考时间不受限；异常挂死仍由客户端自身超时兜底。
-func firstTokenTimeoutForRequest(base time.Duration, isCompactionTrigger bool) time.Duration {
+func firstTokenTimeoutForRequest(base time.Duration, isCompactionTrigger bool, bodySize ...int) time.Duration {
 	if isCompactionTrigger {
 		return 0
+	}
+	if len(bodySize) > 0 {
+		size := bodySize[0]
+		switch {
+		case size < 50*1024:
+			return 10 * time.Second
+		case size < 100*1024:
+			return 20 * time.Second
+		case size < 200*1024:
+			return 30 * time.Second
+		case size < 500*1024:
+			return 50 * time.Second
+		default:
+			return 90 * time.Second
+		}
 	}
 	return base
 }

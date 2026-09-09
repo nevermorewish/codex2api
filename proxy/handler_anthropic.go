@@ -712,7 +712,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			feishuWatch := newFeishuFirstTokenWatch(upstreamCtx, database.UsageLogInput{
 				Endpoint: "/v1/messages", Model: model, Stream: isStream, ViaWebsocket: useWebsocket,
 			}, feishuFirstTokenTimeoutForAttempt(start))
-			attemptFirstTokenTimeout := claudeFirstTokenTimeoutFor(h.store, account)
+			attemptFirstTokenTimeout := firstTokenTimeoutForRequest(claudeFirstTokenTimeoutFor(h.store, account), false, len(rawBody))
 			ttftGuard := newFirstTokenTimeoutGuardWithHooks(
 				attemptFirstTokenTimeout, upstreamCancel,
 				func() { feishuWatch.MarkProgress() },
