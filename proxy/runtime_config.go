@@ -64,14 +64,15 @@ const (
 )
 
 type RuntimeSettings struct {
-	ClientCompatMode      string
-	CodexMinCLIVersion    string
-	CodexUserAgentConfig  string
-	StreamFlushPolicy     string
-	StreamFlushIntervalMS int
-	FirstTokenMode        string
-	FirstTokenTimeoutSec  int
-	BillingTierPolicy     string
+	FirstTokenSizeTimeouts database.FirstTokenTimeoutSettings
+	ClientCompatMode       string
+	CodexMinCLIVersion     string
+	CodexUserAgentConfig   string
+	StreamFlushPolicy      string
+	StreamFlushIntervalMS  int
+	FirstTokenMode         string
+	FirstTokenTimeoutSec   int
+	BillingTierPolicy      string
 	// ModelsListReadMaxBytes 是上游 /v1/models 与 Codex 模型清单成功响应的读取上限。
 	ModelsListReadMaxBytes int64
 	CodexForceWebsocket    bool // 强制 Codex 上游走 WebSocket（默认 false）
@@ -178,6 +179,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		StreamFlushIntervalMS:            defaultStreamFlushIntervalMS,
 		FirstTokenMode:                   defaultFirstTokenMode,
 		FirstTokenTimeoutSec:             defaultFirstTokenTimeoutSec,
+		FirstTokenSizeTimeouts:           database.DefaultFirstTokenTimeoutSettings(),
 		BillingTierPolicy:                defaultBillingTierPolicy,
 		ModelsListReadMaxBytes:           database.DefaultModelsListReadMaxBytes,
 		CodexRequestCompression:          defaultCodexRequestCompression,
@@ -270,6 +272,7 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.ClientCompatMode = NormalizeClientCompatMode(settings.ClientCompatMode)
 	settings.StreamFlushPolicy = NormalizeStreamFlushPolicy(settings.StreamFlushPolicy)
 	settings.FirstTokenMode = NormalizeFirstTokenMode(settings.FirstTokenMode)
+	settings.FirstTokenSizeTimeouts = database.NormalizeFirstTokenTimeoutSettings(settings.FirstTokenSizeTimeouts)
 	settings.BillingTierPolicy = NormalizeBillingTierPolicy(settings.BillingTierPolicy)
 	settings.ModelsListReadMaxBytes = database.NormalizeModelsListReadMaxBytes(settings.ModelsListReadMaxBytes)
 	settings.RequestIsolationMode = NormalizeRequestIsolationMode(settings.RequestIsolationMode)
@@ -347,6 +350,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.StreamFlushIntervalMS = settings.StreamFlushIntervalMS
 		next.FirstTokenMode = settings.FirstTokenMode
 		next.FirstTokenTimeoutSec = settings.FirstTokenTimeoutSeconds
+		next.FirstTokenSizeTimeouts = settings.FirstTokenSizeTimeouts
 		next.BillingTierPolicy = settings.BillingTierPolicy
 		next.ModelsListReadMaxBytes = settings.ModelsListReadMaxBytes
 		next.CodexForceWebsocket = settings.CodexForceWebsocket

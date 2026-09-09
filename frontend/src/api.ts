@@ -1285,6 +1285,8 @@ export const api = {
     request<MessageResponse>('/usage/logs', { method: 'DELETE' }),
   getSetupHints: () => request<SetupHintsResponse>('/setup-hints'),
   getSettings: () => request<SystemSettings>('/settings'),
+  getFirstTokenTimeouts: () => request<{under_50kb:number;under_100kb:number;under_200kb:number;under_500kb:number;over_500kb:number}>('/settings/first-token-timeouts'),
+  updateFirstTokenTimeouts: (data: {under_50kb:number;under_100kb:number;under_200kb:number;under_500kb:number;over_500kb:number}) => request<typeof data>('/settings/first-token-timeouts', { method:'PUT', body: JSON.stringify(data) }),
   getFirstTokenStats: () => request<{ stats: AccountFirstTokenStat[] }>('/usage/first-token-stats'),
   getClaudeConfig: () =>
     request<ClaudeGlobalConfig>('/settings/claude-config'),

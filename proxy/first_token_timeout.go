@@ -118,17 +118,18 @@ func firstTokenTimeoutForRequest(base time.Duration, isCompactionTrigger bool, b
 	}
 	if len(bodySize) > 0 {
 		size := bodySize[0]
+		settings := CurrentRuntimeSettings().FirstTokenSizeTimeouts
 		switch {
 		case size < 50*1024:
-			return 10 * time.Second
+			return time.Duration(settings.Under50KB) * time.Second
 		case size < 100*1024:
-			return 20 * time.Second
+			return time.Duration(settings.Under100KB) * time.Second
 		case size < 200*1024:
-			return 30 * time.Second
+			return time.Duration(settings.Under200KB) * time.Second
 		case size < 500*1024:
-			return 50 * time.Second
+			return time.Duration(settings.Under500KB) * time.Second
 		default:
-			return 90 * time.Second
+			return time.Duration(settings.Over500KB) * time.Second
 		}
 	}
 	return base

@@ -1193,6 +1193,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/usage/probe", h.ForceUsageProbe)
 	api.GET("/usage/stats", h.GetUsageStats)
 	api.GET("/usage/first-token-stats", h.GetFirstTokenStats)
+	api.GET("/settings/first-token-timeouts", h.GetFirstTokenTimeoutSettings)
+	api.PUT("/settings/first-token-timeouts", h.UpdateFirstTokenTimeoutSettings)
 	api.GET("/usage/api-keys", h.GetAPIKeyTokenStats)
 	api.GET("/usage/api-keys/:id/accounts", h.GetAPIKeyAccountStats)
 	api.GET("/usage/logs", h.GetUsageLogs)

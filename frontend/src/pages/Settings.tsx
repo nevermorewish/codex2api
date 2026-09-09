@@ -2,6 +2,7 @@ import type { ChangeEvent, FocusEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, resetAdminAuthState, setAdminKey } from '../api'
+import FirstTokenTimeoutFields from '../components/FirstTokenTimeoutFields'
 import { formatBeijingTime, getTimezone, setTimezone } from '../utils/time'
 import PageHeader from '../components/PageHeader'
 import StateShell from '../components/StateShell'
@@ -5368,6 +5369,7 @@ export default function Settings() {
                         onValueChange={(value) => setSettingsForm(f => ({ ...f, first_token_timeout_seconds: value }))}
                       />
                     </SettingField>
+                    <FirstTokenTimeoutFields />
                   </div>
                   <div className={SETTINGS_SWITCH_ROW}>
                     <SettingField label={t('settings.firstTokenExcludesWsAcquire')} description={t('settings.firstTokenExcludesWsAcquireDesc')} layout="switch" channels={CHANNELS_CODEX_ONLY}>

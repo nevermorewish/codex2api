@@ -826,7 +826,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			timedOut := ttftGuard.TimedOut()
 			ttftGuard.Stop()
 			if timedOut {
-				reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
+				reqErr = firstTokenTimeoutError(ttftGuard.timeout)
 			}
 			kind := classifyTransportFailure(reqErr)
 			if wsHTTPFallback.ForceHTTP() && !useWebsocket {
@@ -1440,7 +1440,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		terminalFailureEventType = gjson.GetBytes(terminalFailurePayload, "type").String()
 	}
 	if ttftGuard.TimedOut() {
-		outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
+		outcome = firstTokenTimeoutOutcome(ttftGuard.timeout)
 	}
 	ttftGuard.Stop()
 	var responseFailedDecision codex429Decision

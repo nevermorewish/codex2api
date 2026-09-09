@@ -1424,6 +1424,11 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS stream_flush_interval_ms INT DEFAULT 20;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_mode VARCHAR(20) DEFAULT 'strict';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_seconds INT DEFAULT 0;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_under_50kb INT DEFAULT 10;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_under_100kb INT DEFAULT 20;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_under_200kb INT DEFAULT 30;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_under_500kb INT DEFAULT 50;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_over_500kb INT DEFAULT 90;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS billing_tier_policy VARCHAR(20) DEFAULT 'actual';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS image_storage_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS show_full_usage_numbers BOOLEAN DEFAULT FALSE;
@@ -2284,6 +2289,7 @@ func NormalizeModelsListReadMaxBytes(value int64) int64 {
 
 // SystemSettings 运行时设置项
 type SystemSettings struct {
+ FirstTokenSizeTimeouts FirstTokenTimeoutSettings // Loaded separately; narrow updates preserve these fields.
 	FeishuConfig                       string
 	SiteName                           string
 	SiteLogo                           string
@@ -2753,7 +2759,10 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	if strings.TrimSpace(s.PayloadRules) == "" {
 		s.PayloadRules = "{}"
 	}
-	var continuousRetryRaw sql.NullString
+	var sizeTimeoutErr error
+ s.FirstTokenSizeTimeouts, sizeTimeoutErr = db.GetFirstTokenTimeoutSettings(ctx)
+ if sizeTimeoutErr != nil { return nil, sizeTimeoutErr }
+ var continuousRetryRaw sql.NullString
 	if policyErr := db.conn.QueryRowContext(ctx, `SELECT COALESCE(continuous_retry_policy, '') FROM system_settings WHERE id = 1`).Scan(&continuousRetryRaw); policyErr == nil {
 		s.ContinuousRetryPolicy = continuousRetryRaw.String
 	} else if !errors.Is(policyErr, sql.ErrNoRows) {

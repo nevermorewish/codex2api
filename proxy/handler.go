@@ -4164,7 +4164,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					timedOut := ttftTimedOut()
 					stopTTFTGuard()
 					if timedOut {
-						reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
+						reqErr = firstTokenTimeoutError(ttftGuard.timeout)
 					}
 					kind := classifyTransportFailure(reqErr)
 					if wsHTTPFallback.ForceHTTP() {
@@ -4661,7 +4661,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					abortedForHTTPError = true
 				}
 				if ttftGuard.TimedOut() {
-					outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
+					outcome = firstTokenTimeoutOutcome(ttftGuard.timeout)
 				}
 				outcome = annotateStreamBreakDiagnostics(outcome, streamDiag)
 				ttftGuard.Stop()
@@ -4918,7 +4918,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				timedOut := ttftGuard.TimedOut()
 				ttftGuard.Stop()
 				if timedOut {
-					reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
+					reqErr = firstTokenTimeoutError(ttftGuard.timeout)
 				}
 				kind := classifyTransportFailure(reqErr)
 				if wsHTTPFallback.ForceHTTP() && !useWebsocket {
@@ -5556,7 +5556,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				abortedForHTTPError = true
 			}
 			if ttftGuard.TimedOut() {
-				outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
+				outcome = firstTokenTimeoutOutcome(ttftGuard.timeout)
 			}
 			outcome = annotateStreamBreakDiagnostics(outcome, streamDiag)
 			ttftGuard.Stop()
@@ -7016,7 +7016,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				timedOut := ttftGuard.TimedOut()
 				ttftGuard.Stop()
 				if timedOut {
-					reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
+					reqErr = firstTokenTimeoutError(ttftGuard.timeout)
 				}
 				kind := classifyTransportFailure(reqErr)
 				if wsHTTPFallback.ForceHTTP() && !useWebsocket {
@@ -7606,7 +7606,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				abortedForHTTPError = true
 			}
 			if ttftGuard.TimedOut() {
-				outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
+				outcome = firstTokenTimeoutOutcome(ttftGuard.timeout)
 			}
 			ttftGuard.Stop()
 			if outcome.verifyAccountAuth {
