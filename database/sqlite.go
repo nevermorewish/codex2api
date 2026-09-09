@@ -649,6 +649,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "github_token", "TEXT DEFAULT ''"},
 		{"system_settings", "github_proxy_url", "TEXT DEFAULT ''"},
 		{"system_settings", "codex_overload_pause_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_overload_code_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_overload_message_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "codex_overload_threshold_percent", "INTEGER DEFAULT 20"},
 		{"system_settings", "codex_overload_pause_minutes", "INTEGER DEFAULT 30"},
 		{"system_settings", "codex_overload_window_minutes", "INTEGER DEFAULT 5"},

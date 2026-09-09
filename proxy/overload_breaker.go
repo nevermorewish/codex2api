@@ -93,8 +93,13 @@ func shouldTripOverload(total, overloaded, thresholdPercent int) bool {
 
 // isOverloadedUsageError 报告该条用量日志是否为上游过载错误。
 func isOverloadedUsageError(input *database.UsageLogInput) bool {
-	return input != nil && input.StatusCode >= 400 &&
-		strings.Contains(input.ErrorMessage, overloadErrorCode)
+	if input == nil || input.StatusCode < 400 {
+		return false
+	}
+	settings := CurrentRuntimeSettings()
+	code := strings.Contains(input.ErrorMessage, overloadErrorCode)
+	message := strings.Contains(input.ErrorMessage, "Our servers are currently overloaded. Please try again.")
+	return (settings.CodexOverloadCodeEnabled && code) || (settings.CodexOverloadMessageEnabled && message)
 }
 
 // noteOverloadOutcome 在用量日志落库前记入过载统计，达到阈值时暂停该账号调度。

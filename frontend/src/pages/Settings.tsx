@@ -2260,6 +2260,8 @@ export default function Settings() {
     github_token_configured: false,
     github_proxy_url: '',
     codex_overload_pause_enabled: false,
+    codex_overload_code_enabled: false,
+    codex_overload_message_enabled: false,
     codex_overload_threshold_percent: 20,
     codex_overload_pause_minutes: 30,
     codex_overload_window_minutes: 5,
@@ -3747,6 +3749,12 @@ export default function Settings() {
                         checked={settingsForm.codex_overload_pause_enabled}
                         onCheckedChange={(checked) => autoSaveBooleanField('codex_overload_pause_enabled', checked)}
                       />
+                    </SettingField>
+                    <SettingField label="按错误码熔断 server_is_overloaded" description="默认关闭；开启后匹配 server_is_overloaded 才会计入过载熔断。" layout="switch">
+                      <Switch checked={settingsForm.codex_overload_code_enabled} onCheckedChange={(checked) => autoSaveBooleanField('codex_overload_code_enabled', checked)} />
+                    </SettingField>
+                    <SettingField label="按过载文案熔断" description="默认关闭；开启后匹配 Our servers are currently overloaded... 才会计入过载熔断。" layout="switch">
+                      <Switch checked={settingsForm.codex_overload_message_enabled} onCheckedChange={(checked) => autoSaveBooleanField('codex_overload_message_enabled', checked)} />
                     </SettingField>
                   </div>
                   <div className={cn(SETTINGS_FIELD_GRID_3, !settingsForm.codex_overload_pause_enabled && 'opacity-60')}>

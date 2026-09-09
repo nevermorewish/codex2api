@@ -1450,6 +1450,8 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS github_token TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS github_proxy_url TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_overload_pause_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_overload_code_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_overload_message_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_overload_threshold_percent INT DEFAULT 20;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_overload_pause_minutes INT DEFAULT 30;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_overload_window_minutes INT DEFAULT 5;
@@ -2289,7 +2291,9 @@ func NormalizeModelsListReadMaxBytes(value int64) int64 {
 
 // SystemSettings 运行时设置项
 type SystemSettings struct {
- FirstTokenSizeTimeouts FirstTokenTimeoutSettings // Loaded separately; narrow updates preserve these fields.
+	CodexOverloadCodeEnabled           bool
+	CodexOverloadMessageEnabled        bool
+	FirstTokenSizeTimeouts             FirstTokenTimeoutSettings // Loaded separately; narrow updates preserve these fields.
 	FeishuConfig                       string
 	SiteName                           string
 	SiteLogo                           string
@@ -2741,6 +2745,13 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
+	if err == nil {
+		var code, message bool
+		if settingsErr := db.conn.QueryRowContext(ctx, `SELECT COALESCE(codex_overload_code_enabled,false), COALESCE(codex_overload_message_enabled,false) FROM system_settings WHERE id=1`).Scan(&code, &message); settingsErr != nil {
+			return nil, settingsErr
+		}
+		s.CodexOverloadCodeEnabled, s.CodexOverloadMessageEnabled = code, message
+	}
 	s.SiteName = NormalizeSiteName(s.SiteName)
 	s.SiteLogo = strings.TrimSpace(s.SiteLogo)
 	s.TestContent = strings.TrimSpace(s.TestContent)
@@ -2760,9 +2771,11 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		s.PayloadRules = "{}"
 	}
 	var sizeTimeoutErr error
- s.FirstTokenSizeTimeouts, sizeTimeoutErr = db.GetFirstTokenTimeoutSettings(ctx)
- if sizeTimeoutErr != nil { return nil, sizeTimeoutErr }
- var continuousRetryRaw sql.NullString
+	s.FirstTokenSizeTimeouts, sizeTimeoutErr = db.GetFirstTokenTimeoutSettings(ctx)
+	if sizeTimeoutErr != nil {
+		return nil, sizeTimeoutErr
+	}
+	var continuousRetryRaw sql.NullString
 	if policyErr := db.conn.QueryRowContext(ctx, `SELECT COALESCE(continuous_retry_policy, '') FROM system_settings WHERE id = 1`).Scan(&continuousRetryRaw); policyErr == nil {
 		s.ContinuousRetryPolicy = continuousRetryRaw.String
 	} else if !errors.Is(policyErr, sql.ErrNoRows) {

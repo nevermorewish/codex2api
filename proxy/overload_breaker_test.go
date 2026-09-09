@@ -65,6 +65,7 @@ func TestNoteOverloadOutcomePausesAccountAndResetsWindow(t *testing.T) {
 	prev := CurrentRuntimeSettings()
 	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings {
 		s.CodexOverloadPauseEnabled = true
+		s.CodexOverloadCodeEnabled = true
 		s.CodexOverloadThresholdPercent = 20
 		s.CodexOverloadPauseMinutes = 30
 		s.CodexOverloadWindowMinutes = 5
@@ -115,6 +116,9 @@ func TestNoteOverloadOutcomePausesAccountAndResetsWindow(t *testing.T) {
 }
 
 func TestIsOverloadedUsageErrorMatchesByCode(t *testing.T) {
+	prev := CurrentRuntimeSettings()
+	UpdateRuntimeSettings(func(s RuntimeSettings) RuntimeSettings { s.CodexOverloadCodeEnabled = true; return s })
+	t.Cleanup(func() { UpdateRuntimeSettings(func(RuntimeSettings) RuntimeSettings { return prev }) })
 	overloaded := &database.UsageLogInput{
 		StatusCode:   503,
 		ErrorMessage: "server_is_overloaded · service_unavailable_error · Our servers are currently overloaded. Please try again later.",

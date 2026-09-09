@@ -9046,6 +9046,8 @@ type settingsResponse struct {
 	GithubTokenConfigured               bool   `json:"github_token_configured"`
 	GithubProxyURL                      string `json:"github_proxy_url"`
 	CodexOverloadPauseEnabled           bool   `json:"codex_overload_pause_enabled"`
+	CodexOverloadCodeEnabled            bool   `json:"codex_overload_code_enabled"`
+	CodexOverloadMessageEnabled         bool   `json:"codex_overload_message_enabled"`
 	CodexOverloadThresholdPercent       int    `json:"codex_overload_threshold_percent"`
 	CodexOverloadPauseMinutes           int    `json:"codex_overload_pause_minutes"`
 	CodexOverloadWindowMinutes          int    `json:"codex_overload_window_minutes"`
@@ -9232,6 +9234,8 @@ type updateSettingsReq struct {
 	GithubToken                         *string                          `json:"github_token"`
 	GithubProxyURL                      *string                          `json:"github_proxy_url"`
 	CodexOverloadPauseEnabled           *bool                            `json:"codex_overload_pause_enabled"`
+	CodexOverloadCodeEnabled            *bool                            `json:"codex_overload_code_enabled"`
+	CodexOverloadMessageEnabled         *bool                            `json:"codex_overload_message_enabled"`
 	CodexOverloadThresholdPercent       *int                             `json:"codex_overload_threshold_percent"`
 	CodexOverloadPauseMinutes           *int                             `json:"codex_overload_pause_minutes"`
 	CodexOverloadWindowMinutes          *int                             `json:"codex_overload_window_minutes"`
@@ -10067,6 +10071,8 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		GithubTokenConfigured:               h.store.GithubToken() != "",
 		GithubProxyURL:                      h.store.GithubProxyURL(),
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
+		CodexOverloadCodeEnabled:            runtimeCfg.CodexOverloadCodeEnabled,
+		CodexOverloadMessageEnabled:         runtimeCfg.CodexOverloadMessageEnabled,
 		CodexOverloadThresholdPercent:       runtimeCfg.CodexOverloadThresholdPercent,
 		CodexOverloadPauseMinutes:           runtimeCfg.CodexOverloadPauseMinutes,
 		CodexOverloadWindowMinutes:          runtimeCfg.CodexOverloadWindowMinutes,
@@ -10869,6 +10875,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.CodexOverloadPauseEnabled = *req.CodexOverloadPauseEnabled
 		log.Printf("设置已更新: codex_overload_pause_enabled = %t", *req.CodexOverloadPauseEnabled)
 	}
+	if req.CodexOverloadCodeEnabled != nil {
+		runtimeCfg.CodexOverloadCodeEnabled = *req.CodexOverloadCodeEnabled
+	}
+	if req.CodexOverloadMessageEnabled != nil {
+		runtimeCfg.CodexOverloadMessageEnabled = *req.CodexOverloadMessageEnabled
+	}
 	if req.CodexOverloadThresholdPercent != nil {
 		v := database.NormalizeCodexOverloadThresholdPercent(*req.CodexOverloadThresholdPercent)
 		runtimeCfg.CodexOverloadThresholdPercent = v
@@ -11598,6 +11610,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		GithubToken:                         h.store.GithubToken(),
 		GithubProxyURL:                      h.store.GithubProxyURL(),
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
+		CodexOverloadCodeEnabled:            runtimeCfg.CodexOverloadCodeEnabled,
+		CodexOverloadMessageEnabled:         runtimeCfg.CodexOverloadMessageEnabled,
 		CodexOverloadThresholdPercent:       runtimeCfg.CodexOverloadThresholdPercent,
 		CodexOverloadPauseMinutes:           runtimeCfg.CodexOverloadPauseMinutes,
 		CodexOverloadWindowMinutes:          runtimeCfg.CodexOverloadWindowMinutes,
@@ -11718,6 +11732,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	} else {
+		if err := h.db.UpdateOverloadConditionSettings(c.Request.Context(), runtimeCfg.CodexOverloadCodeEnabled, runtimeCfg.CodexOverloadMessageEnabled); err != nil {
+			log.Printf("无法持久化过载条件开关: %v", err)
+			writeError(c, http.StatusInternalServerError, "保存过载熔断条件失败")
+			return
+		}
 		if feishuChanged {
 			proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 				current.FeishuConfig = feishuConfigToPersist
@@ -11919,6 +11938,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		GithubTokenConfigured:               h.store.GithubToken() != "",
 		GithubProxyURL:                      h.store.GithubProxyURL(),
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
+		CodexOverloadCodeEnabled:            runtimeCfg.CodexOverloadCodeEnabled,
+		CodexOverloadMessageEnabled:         runtimeCfg.CodexOverloadMessageEnabled,
 		CodexOverloadThresholdPercent:       runtimeCfg.CodexOverloadThresholdPercent,
 		CodexOverloadPauseMinutes:           runtimeCfg.CodexOverloadPauseMinutes,
 		CodexOverloadWindowMinutes:          runtimeCfg.CodexOverloadWindowMinutes,
