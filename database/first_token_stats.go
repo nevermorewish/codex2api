@@ -64,7 +64,7 @@ func (db *DB) GetAccountFirstTokenStats(ctx context.Context, start, end time.Tim
 		for _, s := range byID {
 			result = append(result, *s)
 		}
-		sort.Slice(result, func(i, j int) bool { return result[i].P95Ms > result[j].P95Ms })
+		sort.Slice(result, func(i, j int) bool { return result[i].P90Ms > result[j].P90Ms })
 		return result, nil
 	}
 	q := `SELECT u.account_id, COALESCE(a.name,''), COALESCE(a.credentials->>'email',''),
@@ -82,10 +82,10 @@ func (db *DB) GetAccountFirstTokenStats(ctx context.Context, start, end time.Tim
 	result := []AccountFirstTokenStats{}
 	for rows.Next() {
 		var s AccountFirstTokenStats
-		if err := rows.Scan(&s.AccountID, &s.AccountName, &s.AccountEmail, &s.Samples, &s.P50Ms, &s.P95Ms, &s.Timeouts, &s.Upstream500, &s.Upstream502, &s.Upstream503); err != nil {
+		if err := rows.Scan(&s.AccountID, &s.AccountName, &s.AccountEmail, &s.Samples, &s.P50Ms, &s.P90Ms, &s.Timeouts, &s.Upstream500, &s.Upstream502, &s.Upstream503); err != nil {
 			return nil, err
 		}
-		// Higher score means a healthier account. P95 and timeout/error rates dominate.
+		// Higher score means a healthier account. P90 and timeout/error rates dominate.
 		s.Score = 1000/(1+s.P90Ms/1000) - float64(s.Timeouts*20+s.Upstream500*2+s.Upstream502*3+s.Upstream503*3)
 		result = append(result, s)
 	}
