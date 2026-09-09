@@ -751,7 +751,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			Endpoint: "/v1/responses", Model: logModel, Stream: true, ViaWebsocket: useWebsocket,
 		}, feishuFirstTokenTimeoutForAttempt(start))
 		ttftGuard := newFirstTokenTimeoutGuardWithHooks(
-			firstTokenTimeoutAfterTransport(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)), wsHTTPFallback.WSElapsed()),
+			firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)),
 			upstreamCancel,
 			func() { feishuWatch.MarkProgress() },
 			func() { feishuWatch.Stop() },

@@ -4101,7 +4101,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						Endpoint: "/v1/responses", Model: logModel, Stream: true,
 					}, feishuFirstTokenTimeoutForAttempt(start))
 					ttftGuard = newFirstTokenTimeoutGuardWithHooks(
-						firstTokenTimeoutAfterTransport(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)), wsHTTPFallback.WSElapsed()),
+						firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)),
 						upstreamCancel,
 						func() { feishuWatch.MarkProgress() },
 						func() { feishuWatch.Stop() },
@@ -4886,7 +4886,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				Endpoint: "/v1/responses", Model: logModel, Stream: isStream, ViaWebsocket: useWebsocket,
 			}, feishuFirstTokenTimeoutForAttempt(start))
 			ttftGuard := newFirstTokenTimeoutGuardWithHooks(
-				firstTokenTimeoutAfterTransport(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)), wsHTTPFallback.WSElapsed()),
+				firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, len(codexBody)),
 				upstreamCancel,
 				func() { feishuWatch.MarkProgress() },
 				func() { feishuWatch.Stop() },
