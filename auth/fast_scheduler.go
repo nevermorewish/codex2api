@@ -532,7 +532,7 @@ func (s *FastScheduler) acquireExcludingWithDispatch(apiKeyID int64, exclude map
 				var zeroCursor atomic.Uint64
 				// remaining_quota / fill_first 不走轮询游标：每次都从排序后的
 				// 队首开始扫，保证严格按排序语义取号。
-				if s.schedulerMode == "remaining_quota" || s.schedulerMode == "fill_first" {
+				if s.schedulerMode == "remaining_quota" || s.schedulerMode == "fill_first" || s.schedulerMode == "occupancy_first" {
 					cursor = &zeroCursor
 				}
 				acc, stale := s.scanRangeLocked(tier, segStart, segEnd, cursor, affinityHash, baseLimit, now, apiKeyID, exclude, filter, policy)
@@ -563,6 +563,45 @@ func (s *FastScheduler) scanRangeLocked(expectedTier AccountHealthTier, rangeSta
 	start := int(cursor.Add(1)-1) % rangeLen
 	if affinityHash != nil {
 		start = int(*affinityHash % uint64(rangeLen))
+	}
+	// occupancy_first：在当前优先级/健康层级内，先把并发均匀铺开。
+	// 每次选号动态比较占用槽位，避免并发变化导致排序缓存过期。
+	if s.schedulerMode == "occupancy_first" && affinityHash == nil {
+		var best *Account
+		var bestLimit int64
+		var bestOccupied int64
+		for offset := 0; offset < rangeLen; offset++ {
+			entry := bucket[rangeStart+(start+offset)%rangeLen]
+			if entry.acc == nil || exclude != nil && exclude[entry.dbID] || !entry.acc.AllowsAPIKey(apiKeyID) || s.groupCheck != nil && !s.groupCheck(apiKeyID, entry.acc) || filter != nil && !filter(entry.acc) {
+				continue
+			}
+			tier, score, limit, proven, available := entry.acc.fastSchedulerSnapshotForPolicy(baseLimit, now, policy)
+			tier, keep := s.normalizeRetainedTier(tier, expectedTier)
+			if !keep {
+				s.removeLocked(entry.dbID)
+				return nil, true
+			}
+			if tier != expectedTier {
+				s.removeLocked(entry.dbID)
+				if s.retainUnavailable || entry.acc.fastSchedulerKeepInPool(baseLimit, now, tier, limit, available) {
+					s.insertLocked(entry.acc, now)
+				}
+				return nil, true
+			}
+			if !available || limit <= 0 {
+				continue
+			}
+			occupied := accountOccupiedRequests(entry.acc)
+			if best == nil || occupied < bestOccupied {
+				best, bestOccupied, bestLimit = entry.acc, occupied, limit
+			}
+			_ = score
+			_ = proven
+		}
+		if best != nil && s.tryAcquireAccount(best, bestLimit) {
+			return best, false
+		}
+		return nil, false
 	}
 	for offset := 0; offset < rangeLen; offset++ {
 		entry := bucket[rangeStart+(start+offset)%rangeLen]

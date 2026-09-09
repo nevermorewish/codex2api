@@ -3342,7 +3342,7 @@ type Store struct {
 	codexModelMapping             atomic.Value // Codex 模型映射 JSON 字符串
 	payloadRules                  atomic.Value // Payload 请求体重写规则 JSON 字符串
 	reasoningEffortModels         atomic.Value // 带思考强度的模型别名 JSON 数组
-	schedulerMode                 atomic.Value // string: "round_robin" / "remaining_quota" / "fill_first"
+	schedulerMode                 atomic.Value // string: "round_robin" / "remaining_quota" / "fill_first" / "occupancy_first"
 	affinityMode                  atomic.Value // string: "bounded" / "off" / "strict"
 	affinitySpreadEnabled         atomic.Bool  // 新亲和键按 HRW 哈希散列选号(issue #484)
 	claudeFingerprintDefault      atomic.Value // string: Claude 指纹模式全局默认（preserve/force;空=preserve）
@@ -7876,7 +7876,7 @@ func (s *Store) GetSchedulerMode() string {
 // SetSchedulerMode 设置调度模式并传播到 FastScheduler
 func (s *Store) SetSchedulerMode(mode string) {
 	switch mode {
-	case "round_robin", "remaining_quota", "fill_first":
+	case "round_robin", "remaining_quota", "fill_first", "occupancy_first":
 		// ok
 	default:
 		mode = "round_robin"

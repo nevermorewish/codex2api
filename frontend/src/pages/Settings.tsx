@@ -2092,6 +2092,7 @@ export default function Settings() {
     { label: t('settings.schedulerModeRoundRobin'), value: 'round_robin' },
     { label: t('settings.schedulerModeRemainingQuota'), value: 'remaining_quota' },
     { label: t('settings.schedulerModeFillFirst'), value: 'fill_first' },
+    { label: t('settings.schedulerModeOccupancyFirst'), value: 'occupancy_first' },
   ]
   const schedulerEngineOptions = [
     { label: t('settings.schedulerEngineLegacy'), value: 'legacy' },
