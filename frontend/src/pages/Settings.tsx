@@ -5368,15 +5368,6 @@ export default function Settings() {
                         options={firstTokenModeOptions}
                       />
                     </SettingField>
-                    <SettingField label={t('settings.firstTokenTimeout')} description={t('settings.firstTokenTimeoutDesc')}>
-                      <DraftNumberInput
-                        min={0}
-                        max={600}
-                        value={settingsForm.first_token_timeout_seconds}
-                        emptyValue={0}
-                        onValueChange={(value) => setSettingsForm(f => ({ ...f, first_token_timeout_seconds: value }))}
-                      />
-                    </SettingField>
                     <FirstTokenTimeoutFields />
                   </div>
                   <div className={SETTINGS_SWITCH_ROW}>
