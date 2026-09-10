@@ -5372,6 +5372,16 @@ export default function Settings() {
                     <SettingField label="请求超时模式" description="选择首 token 超时策略；关闭后不会因首 token 等待时间触发网关超时。">
                       <SegmentedPillGroup value={settingsForm.first_token_timeout_mode} onChange={(value) => autoSaveStringField('first_token_timeout_mode', value)} options={[{ value: 'request_size', label: '按请求体大小' }, { value: 'first_token', label: '固定首 Token' }, { value: 'disabled', label: '关闭超时' }]} />
                     </SettingField>
+                    {settingsForm.first_token_timeout_mode === 'first_token' && (
+                      <SettingField label="固定首 Token 超时时间（秒）" description="上游在此时间内没有返回首个内容时，才判定为超时并进入重试。范围 1～600 秒。">
+                        <DraftNumberInput
+                          min={1}
+                          max={600}
+                          value={settingsForm.first_token_timeout_seconds || 120}
+                          onValueChange={(value) => setSettingsForm(f => ({ ...f, first_token_timeout_seconds: value }))}
+                        />
+                      </SettingField>
+                    )}
                     <FirstTokenTimeoutFields />
                   </div>
                   <div className={SETTINGS_SWITCH_ROW}>
