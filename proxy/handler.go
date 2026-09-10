@@ -919,16 +919,22 @@ func clientFacingHTTPStatus(status int) int {
 // fallbackSucceededWithoutUsage 判定"兜底账号自称成功、却既没有 token 计数
 // 也没有交付任何内容"的伪成功。
 //
-// 生产现象(2026-09-10)：关掉全部主账号后请求切入兜底号池，上游返回
+// 生产现象(2026-09-10)：主账号池全被降载后请求切入兜底号池，上游返回
 // HTTP 200 + response.completed，但既无 usage 也无 output。此时若原样放行，
 // 下游按 200 收尾且拿不到计费信息，只能打出「上游没有返回计费信息，无法
 // 扣费」：既不计费也不报错，失败被彻底隐藏。这类响应只出现在兜底号池账号
-// 上（7 天内主账号池零例），因此只对兜底账号收紧，避免影响主池的合法空回复。
-func fallbackSucceededWithoutUsage(account *auth.Account, outcome streamOutcome, usage *UsageInfo) bool {
+// 上（7 天内主账号池零例）。
+//
+// 必须同时满足"无 usage"与"无内容"：只缺 usage 但有正文的回复是上游漏发
+// 计费信息，交给下游按有内容处理；只有两者都缺才是可判定的伪成功。
+func fallbackSucceededWithoutUsage(account *auth.Account, outcome streamOutcome, usage *UsageInfo, deliveredContent bool) bool {
 	if account == nil || !account.IsExternalFallback() {
 		return false
 	}
 	if outcome.logStatusCode != http.StatusOK || outcome.terminalLocal {
+		return false
+	}
+	if deliveredContent {
 		return false
 	}
 	if usage == nil {
@@ -946,6 +952,12 @@ func emptyFallbackSuccessOutcome() streamOutcome {
 		failureKind:    "usage_missing",
 		failureMessage: "Fallback upstream completed the response without any usage or output",
 	}
+}
+
+// responsesDeliveredContent 判断本次 attempt 是否真的向下游交付了内容。
+// 用于区分"上游漏发 usage 但有正文"（合法）与"既无 usage 又无内容"（伪成功）。
+func responsesDeliveredContent(deltaChars, completedBytes, responseJSONBytes, images int) bool {
+	return deltaChars > 0 || completedBytes > 0 || responseJSONBytes > 0 || images > 0
 }
 
 func (h *Handler) sendGrokNativeHTTPError(c *gin.Context, protocol GrokProtocol, outcome streamOutcome) {
@@ -5637,7 +5649,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			}
 			// 兜底账号自称成功却没有任何计费信息：不能当 200 成功交付，
 			// 否则下游「不计费也不报错」。降级为可感知的上游错误重试/上报。
-			if fallbackSucceededWithoutUsage(account, outcome, usage) {
+			if fallbackSucceededWithoutUsage(account, outcome, usage, responsesDeliveredContent(deltaCharCount, len(completedResponseData), len(responseJSON), imageLogInfo.Count)) {
 				outcome = emptyFallbackSuccessOutcome()
 			}
 			if outcome.logStatusCode == http.StatusOK {
@@ -7690,7 +7702,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			}
 			// 兜底账号自称成功却没有任何计费信息：不能当 200 成功交付，
 			// 否则下游「不计费也不报错」。降级为可感知的上游错误重试/上报。
-			if fallbackSucceededWithoutUsage(account, outcome, usage) {
+			if fallbackSucceededWithoutUsage(account, outcome, usage, responsesDeliveredContent(deltaCharCount, len(compactResult), 0, 0)) {
 				outcome = emptyFallbackSuccessOutcome()
 			}
 			if outcome.logStatusCode == http.StatusOK {

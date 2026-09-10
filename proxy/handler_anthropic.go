@@ -1635,10 +1635,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				// 流式：首包前上游失败、未向下游写过任何字节（收尾 flush 有 wroteAnyBody 守卫，
 				// 200 header 尚未提交）——按真实错误码返回 Anthropic 错误 JSON，而不是空 200 流，
 				// 让下游网关/客户端能感知失败并自行重试（issue #412）。
-				statusCode := outcome.logStatusCode
-				if statusCode < 400 || statusCode > 599 || statusCode == logStatusUpstreamStreamBreak {
-					statusCode = http.StatusBadGateway
-				}
+				statusCode := clientFacingHTTPStatus(outcome.logStatusCode)
 				if !writeCommittedAnthropicRetryError(c, mapHTTPStatusToAnthropicError(statusCode), outcome.failureMessage) {
 					c.Header("Content-Type", "application/json; charset=utf-8")
 					sendAnthropicError(c, statusCode, mapHTTPStatusToAnthropicError(statusCode), outcome.failureMessage)
@@ -1648,10 +1645,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolAnthropic) {
 					// The deadline owns the terminal response.
 				} else if account.IsExternalFallback() && outcome.logStatusCode != http.StatusOK {
-					statusCode := outcome.logStatusCode
-					if statusCode < 400 || statusCode > 599 || statusCode == logStatusUpstreamStreamBreak {
-						statusCode = http.StatusBadGateway
-					}
+					statusCode := clientFacingHTTPStatus(outcome.logStatusCode)
 					sendAnthropicError(c, statusCode, mapHTTPStatusToAnthropicError(statusCode), outcome.failureMessage)
 				} else if anthropicResp != nil {
 					c.JSON(http.StatusOK, anthropicResp)

@@ -36,6 +36,10 @@ const (
 	ErrorCodeUpstreamError       = "upstream_error"
 	ErrorCodeUpstreamTimeout     = "upstream_timeout"
 	ErrorCodeUpstreamStreamBreak = "upstream_stream_break"
+	// ErrorCodeUpstreamUsageMissing：上游自称成功却没有返回任何计费信息。
+	// 下游计费型中转拿到这种响应只能报「上游没有返回计费信息，无法扣费」，
+	// 既不计费也不报错；因此必须显式暴露成失败并给出可重试的稳定错误码。
+	ErrorCodeUpstreamUsageMissing = "upstream_usage_missing"
 
 	// Server errors
 	ErrorCodeNoAvailableAccount = "no_available_account"

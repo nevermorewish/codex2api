@@ -407,10 +407,9 @@ func writeContinuousRetryTimeoutResponse(c *gin.Context, protocol continuousRetr
 }
 
 func writeContinuousRetryLastFailure(c *gin.Context, protocol continuousRetryHTTPProtocol, failure continuousRetryFailure) {
-	status := failure.status
-	if status < 400 || status > 599 {
-		status = http.StatusBadGateway
-	}
+	// 记住的失败里既有真实上游 HTTP 状态，也有 598/499 这类内部日志状态
+	// (rememberContinuousRetryStreamFailure 写入)。它们不能直接当 HTTP 码下发。
+	status := clientFacingHTTPStatus(failure.status)
 	message := usageLogErrorMessage(status, failure.body)
 	if message == "" {
 		message = fmt.Sprintf("Upstream returned HTTP %d", status)
