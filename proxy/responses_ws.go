@@ -1254,6 +1254,8 @@ func (h *Handler) streamResponsesWSUpstream(
 		outputCollector.Add(data)
 		parsed := gjson.ParseBytes(data)
 		eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+		eventType, data = validateFallbackTerminalEvent(account, eventType, data)
+		parsed = gjson.ParseBytes(data)
 		clientData := data
 		if options != nil && options.transformClientEvent != nil {
 			if transformed := options.transformClientEvent(data); len(transformed) > 0 {
@@ -1556,7 +1558,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	}
 	if outcome.logStatusCode != http.StatusOK {
 		log.Printf("Responses WebSocket stream ended abnormally (account %d, status %d): %s, relayed about %d chars", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
-		if deltaCharCount > 0 && usage == nil {
+		if deltaCharCount > 0 && usage == nil && outcome.failureKind != "usage_missing" {
 			estOutputTokens := deltaCharCount / 3
 			if estOutputTokens < 1 {
 				estOutputTokens = 1

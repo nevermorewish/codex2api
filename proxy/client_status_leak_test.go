@@ -90,9 +90,9 @@ func TestFallbackSucceededWithoutUsageDetection(t *testing.T) {
 			t.Fatal("real usage must not be treated as pseudo success")
 		}
 	})
-	t.Run("fallback with content but missing usage stays a success", func(t *testing.T) {
-		if fallbackSucceededWithoutUsage(fallback, streamOutcome{logStatusCode: http.StatusOK}, nil, true) {
-			t.Fatal("delivered content must not be reclassified: upstream merely omitted usage")
+	t.Run("fallback with content but missing usage is still a failure", func(t *testing.T) {
+		if !fallbackSucceededWithoutUsage(fallback, streamOutcome{logStatusCode: http.StatusOK}, nil, true) {
+			t.Fatal("fallback content without usage must not be delivered as 200")
 		}
 	})
 	t.Run("primary account is never reclassified", func(t *testing.T) {

@@ -1328,6 +1328,8 @@ func (h *Handler) Messages(c *gin.Context) {
 					eventType := normalizedUpstreamSSEEventType(sseEvent, data)
 
 					// TTFT 跟踪
+					eventType, data = validateFallbackTerminalEvent(account, eventType, data)
+					parsed = gjson.ParseBytes(data)
 					ttftGuard.MarkPayload(data)
 					isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 					if !ttftRecorded && isFirstToken {
@@ -1487,6 +1489,8 @@ func (h *Handler) Messages(c *gin.Context) {
 				readErr = readSSEStreamWithContinuousRetryKeepalive(c.Request.Context(), resp.Body, func(sseEvent string, data []byte) bool {
 					parsed := gjson.ParseBytes(data)
 					eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+					eventType, data = validateFallbackTerminalEvent(account, eventType, data)
+					parsed = gjson.ParseBytes(data)
 					if eventType == "error" {
 						terminalFailurePayload = terminalUpstreamErrorPayload(data)
 						gotTerminal = true
@@ -1601,7 +1605,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				}
 				resp.Body.Close()
 				h.store.Release(account)
-					h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
+				h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
 				if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
 					retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				}
@@ -1662,7 +1666,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			if outcome.logStatusCode != http.StatusOK {
 				log.Printf("流异常结束 (account %d, /v1/messages, status %d): %s，已转发约 %d 字符",
 					account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
-				if deltaCharCount > 0 {
+				if deltaCharCount > 0 && outcome.failureKind != "usage_missing" {
 					estOutputTokens := deltaCharCount / 3
 					if estOutputTokens < 1 {
 						estOutputTokens = 1

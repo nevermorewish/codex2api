@@ -916,8 +916,7 @@ func clientFacingHTTPStatus(status int) int {
 	return status
 }
 
-// fallbackSucceededWithoutUsage 判定"兜底账号自称成功、却既没有 token 计数
-// 也没有交付任何内容"的伪成功。
+// fallbackSucceededWithoutUsage 判定兜底账号的零用量伪成功。
 //
 // 生产现象(2026-09-10)：主账号池全被降载后请求切入兜底号池，上游返回
 // HTTP 200 + response.completed，但既无 usage 也无 output。此时若原样放行，
@@ -925,8 +924,9 @@ func clientFacingHTTPStatus(status int) int {
 // 扣费」：既不计费也不报错，失败被彻底隐藏。这类响应只出现在兜底号池账号
 // 上（7 天内主账号池零例）。
 //
-// 必须同时满足"无 usage"与"无内容"：只缺 usage 但有正文的回复是上游漏发
-// 计费信息，交给下游按有内容处理；只有两者都缺才是可判定的伪成功。
+// 兜底账号的响应必须同时提供可计费的 usage。实际线上上游会发送结构帧、
+// response.completed 空壳或正文但不带 usage；这些都不能以 200 结束，否则
+// 下游会把请求当成功但无法扣费。对兜底账号统一转成可重试的上游错误。
 func fallbackSucceededWithoutUsage(account *auth.Account, outcome streamOutcome, usage *UsageInfo, deliveredContent bool) bool {
 	if account == nil || !account.IsExternalFallback() {
 		return false
@@ -934,9 +934,9 @@ func fallbackSucceededWithoutUsage(account *auth.Account, outcome streamOutcome,
 	if outcome.logStatusCode != http.StatusOK || outcome.terminalLocal {
 		return false
 	}
-	if deliveredContent {
-		return false
-	}
+	// deliveredContent 仅保留在签名中，供调用点记录真实转发情况；它不能
+	// 把缺少计费信息的兜底响应重新判定为成功。
+	_ = deliveredContent
 	if usage == nil {
 		return true
 	}
@@ -950,7 +950,7 @@ func emptyFallbackSuccessOutcome() streamOutcome {
 	return streamOutcome{
 		logStatusCode:  http.StatusBadGateway,
 		failureKind:    "usage_missing",
-		failureMessage: "Fallback upstream completed the response without any usage or output",
+		failureMessage: fallbackUsageMissingMessage,
 	}
 }
 
@@ -2304,6 +2304,9 @@ func classifyResponseFailedOutcome(payload []byte) streamOutcome {
 		kind = "cyber_policy"
 	} else if safetyPolicy {
 		kind = "safety_policy"
+	}
+	if gjson.GetBytes(errorBody, "error.code").String() == ErrorCodeUpstreamUsageMissing {
+		kind = "usage_missing"
 	}
 	if kind == "" {
 		if statusCode >= 500 {
@@ -4547,6 +4550,8 @@ func (h *Handler) Responses(c *gin.Context) {
 						}
 						parsed := gjson.ParseBytes(data)
 						eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+						eventType, data = validateFallbackTerminalEvent(account, eventType, data)
+						parsed = gjson.ParseBytes(data)
 						ttftGuard.MarkPayload(data)
 						isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 						if !ttftRecorded && isFirstToken {
@@ -4662,6 +4667,14 @@ func (h *Handler) Responses(c *gin.Context) {
 							failureCopy := failure
 							nonStreamFailure = &failureCopy
 							terminalFailurePayload = append([]byte(nil), respBody...)
+						} else if fallbackSucceededWithoutUsage(account, streamOutcome{logStatusCode: http.StatusOK}, usage, false) {
+							failure := emptyFallbackSuccessOutcome()
+							nonStreamFailure = &failure
+							// Do not return the original successful JSON with an error status.
+							nonStreamResponseBody, _ = json.Marshal(gin.H{"error": gin.H{
+								"message": failure.failureMessage, "type": ErrorTypeUpstreamError, "code": ErrorCodeUpstreamUsageMissing,
+							}})
+							nonStreamContentType = "application/json"
 						}
 					}
 				}
@@ -4732,7 +4745,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 					resp.Body.Close()
 					h.store.Release(account)
-				h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
+					h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
 					if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
 						retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 					}
@@ -4816,7 +4829,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 				if outcome.logStatusCode != http.StatusOK {
 					log.Printf("OpenAI Responses 流异常结束 (account %d, status %d): %s，已转发约 %d 字符", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
-					if deltaCharCount > 0 {
+					if deltaCharCount > 0 && outcome.failureKind != "usage_missing" {
 						estOutputTokens := deltaCharCount / 3
 						if estOutputTokens < 1 {
 							estOutputTokens = 1
@@ -5230,6 +5243,8 @@ func (h *Handler) Responses(c *gin.Context) {
 					eventType := normalizedUpstreamSSEEventType(sseEvent, data)
 
 					// TTFT: 记录第一个实际内容事件的时间
+					eventType, data = validateFallbackTerminalEvent(account, eventType, data)
+					parsed = gjson.ParseBytes(data)
 					ttftGuard.MarkPayload(data)
 					isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 					if !ttftRecorded && isFirstToken {
@@ -5507,6 +5522,8 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 					parsed := gjson.ParseBytes(data)
 					eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+					eventType, data = validateFallbackTerminalEvent(account, eventType, data)
+					parsed = gjson.ParseBytes(data)
 					if eventType == "error" {
 						terminalFailurePayload = terminalUpstreamErrorPayload(data)
 						gotTerminal = true
@@ -5636,7 +5653,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 				resp.Body.Close()
 				h.store.Release(account)
-					h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
+				h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
 				if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
 					retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				}
@@ -5686,7 +5703,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			}
 			if outcome.logStatusCode != http.StatusOK {
 				log.Printf("流异常结束 (account %d, /v1/responses, status %d): %s，已转发约 %d 字符", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
-				if deltaCharCount > 0 {
+				if deltaCharCount > 0 && outcome.failureKind != "usage_missing" {
 					estOutputTokens := deltaCharCount / 3 // 粗略估算: 约 3 字符 = 1 token
 					if estOutputTokens < 1 {
 						estOutputTokens = 1
@@ -7401,6 +7418,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					defer downstreamMu.Unlock()
 					parsed := gjson.ParseBytes(data)
 					eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+					eventType, data = validateFallbackTerminalEvent(account, eventType, data)
+					parsed = gjson.ParseBytes(data)
 					if eventType == "response.failed" {
 						statusCode := classifyResponseFailedOutcome(data).logStatusCode
 						var incidentID string
@@ -7569,6 +7588,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					outputCollector.Add(data)
 					parsed := gjson.ParseBytes(data)
 					eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+					eventType, data = validateFallbackTerminalEvent(account, eventType, data)
+					parsed = gjson.ParseBytes(data)
 					ttftGuard.MarkPayload(data)
 					if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
 						firstTokenMs = int(time.Since(start).Milliseconds())
@@ -7689,7 +7710,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				}
 				resp.Body.Close()
 				h.store.Release(account)
-					h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
+				h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
 				if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
 					retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				}
@@ -7729,7 +7750,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			logStatusCode := outcome.logStatusCode
 			if outcome.logStatusCode != http.StatusOK {
 				log.Printf("流异常结束 (account %d, /v1/chat/completions, status %d): %s，已转发约 %d 字符", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
-				if deltaCharCount > 0 {
+				if deltaCharCount > 0 && outcome.failureKind != "usage_missing" {
 					estOutputTokens := deltaCharCount / 3
 					if estOutputTokens < 1 {
 						estOutputTokens = 1
