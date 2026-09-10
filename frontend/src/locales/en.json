@@ -4413,7 +4413,7 @@
     "firstTokenExcludesWsAcquire": "First Token Excludes Conn Acquire",
     "firstTokenExcludesWsAcquireDesc": "When enabled, the first-token time recorded in usage logs excludes the WS connection acquire time (queueing/probing/handshake) of the request, reflecting only how fast the upstream produced the first content. Acquire time is still recorded separately in the Conn Acquire column; the two columns add up to the full duration. Off by default to keep the historical semantics. Only affects newly written logs.",
     "firstTokenTimeout": "Request timeout by request size",
-    "firstTokenTimeoutDesc": "",
+    "firstTokenTimeoutDesc": "Cancel each upstream attempt and immediately retry with another account if no actual content (text, reasoning or tool arguments) arrives within the configured timeout. Lifecycle events, structural events and empty deltas do not stop the timer. Applies to streaming and non-streaming requests; retry counts and total deadlines still apply. Compaction turns remain exempt.",
     "firstTokenSizesTitle": "Request timeout by request size",
     "firstTokenSizesDesc": "Configure five request size tiers. Every upstream hop receives the full timeout for its request size tier, in seconds (1-600); changes take effect after saving.",
     "firstTokenSizesSeconds": "seconds",

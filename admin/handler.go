@@ -11745,10 +11745,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				return
 			}
 		}
-		if err := h.db.UpdateOverloadConditionSettings(c.Request.Context(), runtimeCfg.CodexOverloadCodeEnabled, runtimeCfg.CodexOverloadMessageEnabled); err != nil {
-			log.Printf("无法持久化过载条件开关: %v", err)
-			writeError(c, http.StatusInternalServerError, "保存过载熔断条件失败")
-			return
+		if req.CodexOverloadCodeEnabled != nil || req.CodexOverloadMessageEnabled != nil {
+			if err := h.db.UpdateOverloadConditionSettings(c.Request.Context(), runtimeCfg.CodexOverloadCodeEnabled, runtimeCfg.CodexOverloadMessageEnabled); err != nil {
+				log.Printf("无法持久化过载条件开关: %v", err)
+				writeError(c, http.StatusInternalServerError, "保存过载熔断条件失败")
+				return
+			}
 		}
 		if feishuChanged {
 			proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
