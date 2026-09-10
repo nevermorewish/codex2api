@@ -90,6 +90,61 @@ func TestRetryAccountExclusionsNeverExcludeExternalFallback(t *testing.T) {
 	}
 }
 
+func TestRetryAccountWaitContinuesAcrossSlicesWhileMatchingAccountIsFull(t *testing.T) {
+	oldWait := retryAccountAvailabilityWait
+	retryAccountAvailabilityWait = 20 * time.Millisecond
+	defer func() { retryAccountAvailabilityWait = oldWait }()
+
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1})
+	store.AddAccount(&auth.Account{
+		DBID: 1, UpstreamType: auth.UpstreamOpenAIResponses,
+		BaseURL: "https://upstream.example.com", APIKey: "sk-test",
+		Models: []string{"gpt-5.4"}, PlanType: "api",
+	})
+	occupied := store.NextExcluding(0, nil)
+	if occupied == nil {
+		t.Fatal("failed to occupy the only account slot")
+	}
+
+	handler := &Handler{store: store}
+	type result struct {
+		account *auth.Account
+	}
+	resultCh := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() {
+		account, _, _ := handler.nextRetryAccountForSessionWithDispatchGuard(
+			ctx, "", 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard,
+		)
+		resultCh <- result{account: account}
+	}()
+
+	// Let at least two bounded wait slices expire. The request must remain in
+	// the scheduler queue instead of returning nil for a handler-level 503.
+	time.Sleep(60 * time.Millisecond)
+	select {
+	case got := <-resultCh:
+		if got.account != nil {
+			store.Release(got.account)
+		}
+		store.Release(occupied)
+		t.Fatal("account selection ended while the matching account was only capacity-full")
+	default:
+	}
+
+	store.Release(occupied)
+	select {
+	case got := <-resultCh:
+		if got.account == nil {
+			t.Fatal("queued selection returned nil after capacity became available")
+		}
+		store.Release(got.account)
+	case <-time.After(time.Second):
+		t.Fatal("queued selection did not resume after capacity became available")
+	}
+}
+
 func TestRetryAccountExclusionsContinuousCycleOnlyClearsTransient(t *testing.T) {
 	exclusions := newRetryAccountExclusions()
 	exclusions.MarkTransient(1)

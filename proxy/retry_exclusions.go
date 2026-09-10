@@ -424,6 +424,10 @@ func retryAllowedByEndpointCap(attempt, maxAttempts int, continuousSelected bool
 
 const continuousPoolRetryPollInterval = 5 * time.Second
 
+// retryAccountAvailabilityWait bounds one scheduler wait slice. A request may
+// take multiple slices while matching accounts remain temporarily full.
+var retryAccountAvailabilityWait = 30 * time.Second
+
 func waitForContinuousPoolRetry(ctx context.Context) bool {
 	if ctx != nil && ctx.Err() != nil {
 		return false
@@ -465,9 +469,8 @@ func (h *Handler) waitForRetryAccountAvailableWithGuard(ctx context.Context, aff
 		}
 		return h.store.WaitForSessionAvailableWithDispatchGuard(waitCtx, affinityKey, timeout, apiKeyID, exclude, filter, policy)
 	}
-	const maximumWait = 30 * time.Second
 	if !continuousRetryKeepaliveActive(ctx) || continuousRetryKeepaliveInterval <= 0 {
-		account, proxyURL, guard := waitForAccount(ctx, maximumWait)
+		account, proxyURL, guard := waitForAccount(ctx, retryAccountAvailabilityWait)
 		account, proxyURL = guardRetryAccountContext(ctx, h.store.Release, account, proxyURL)
 		if account == nil {
 			guard = auth.SessionAffinityGuard{}
@@ -475,7 +478,7 @@ func (h *Handler) waitForRetryAccountAvailableWithGuard(ctx context.Context, aff
 		return account, proxyURL, guard
 	}
 
-	deadline := time.Now().Add(maximumWait)
+	deadline := time.Now().Add(retryAccountAvailabilityWait)
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 || (ctx != nil && ctx.Err() != nil) {
@@ -504,7 +507,7 @@ func (h *Handler) waitForRetryAccountAvailableWithGuard(ctx context.Context, aff
 		// Let the slice context own the heartbeat deadline. The store keeps its
 		// normal upper bound, while an immediate no-candidate return remains
 		// distinguishable from a real timed wait without elapsed-time guesses.
-		account, proxyURL, guard := waitForAccount(waitCtx, maximumWait)
+		account, proxyURL, guard := waitForAccount(waitCtx, retryAccountAvailabilityWait)
 		waitErr := waitCtx.Err()
 		cancel()
 		if account != nil && ctx != nil && ctx.Err() != nil {
@@ -587,6 +590,22 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		}
 		if ctx.Err() != nil {
 			return nil, "", auth.SessionAffinityGuard{}
+		}
+		// A matching primary account can exist even when every slot is
+		// temporarily occupied.  The availability wait has a bounded slice so
+		// request heartbeats and cancellation remain observable, but exhausting
+		// one slice must not turn ordinary concurrency pressure into a 503.  Keep
+		// the request queued and start another wait window while the scheduler
+		// still has a policy-compatible candidate.  When no candidate remains
+		// (for example a model/channel mismatch or all accounts are permanently
+		// fenced), preserve the existing fast failure below.
+		// A real server request has a cancellation channel owned by net/http.
+		// Keep those requests queued across bounded scheduler slices. Synthetic
+		// background contexts used by internal one-shot callers/tests have no
+		// cancellation signal; preserve their historical finite failure instead
+		// of creating an unbounded goroutine.
+		if ctx.Done() != nil && h.store.HasDispatchCandidateWithDispatch(apiKeyID, exclusions.ForSelection(), filter, policy) {
+			continue
 		}
 		if !exclusions.ResetSoft() {
 			if exclusions.ResetTransient() {
