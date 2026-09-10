@@ -299,7 +299,7 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	if settings.FirstTokenTimeoutSec < 0 {
 		settings.FirstTokenTimeoutSec = defaultFirstTokenTimeoutSec
 	}
-	if settings.FirstTokenTimeoutMode != "first_token" && settings.FirstTokenTimeoutMode != "request_size" {
+	if settings.FirstTokenTimeoutMode != "first_token" && settings.FirstTokenTimeoutMode != "request_size" && settings.FirstTokenTimeoutMode != "disabled" {
 		settings.FirstTokenTimeoutMode = "request_size"
 	}
 	if settings.FirstTokenTimeoutSec > maxFirstTokenTimeoutSec {
@@ -357,7 +357,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.StreamFlushIntervalMS = settings.StreamFlushIntervalMS
 		next.FirstTokenMode = settings.FirstTokenMode
 		next.FirstTokenTimeoutSec = settings.FirstTokenTimeoutSeconds
-		next.FirstTokenTimeoutMode = "request_size"
+		next.FirstTokenTimeoutMode = settings.FirstTokenTimeoutMode
 		next.FirstTokenSizeTimeouts = settings.FirstTokenSizeTimeouts
 		next.BillingTierPolicy = settings.BillingTierPolicy
 		next.ModelsListReadMaxBytes = settings.ModelsListReadMaxBytes

@@ -54,3 +54,11 @@ func (db *DB) UpdateFirstTokenTimeoutSettings(ctx context.Context, d FirstTokenT
 	_, err := db.conn.ExecContext(ctx, `INSERT INTO system_settings(id,first_token_timeout_under_50kb,first_token_timeout_under_100kb,first_token_timeout_under_200kb,first_token_timeout_under_500kb,first_token_timeout_over_500kb) VALUES(1,$1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET first_token_timeout_under_50kb=EXCLUDED.first_token_timeout_under_50kb,first_token_timeout_under_100kb=EXCLUDED.first_token_timeout_under_100kb,first_token_timeout_under_200kb=EXCLUDED.first_token_timeout_under_200kb,first_token_timeout_under_500kb=EXCLUDED.first_token_timeout_under_500kb,first_token_timeout_over_500kb=EXCLUDED.first_token_timeout_over_500kb`, d.Under50KB, d.Under100KB, d.Under200KB, d.Under500KB, d.Over500KB)
 	return err
 }
+
+func (db *DB) UpdateFirstTokenTimeoutMode(ctx context.Context, mode string) error {
+	if mode != "request_size" && mode != "first_token" && mode != "disabled" {
+		return fmt.Errorf("invalid first token timeout mode")
+	}
+	_, err := db.conn.ExecContext(ctx, `INSERT INTO system_settings(id,first_token_timeout_mode) VALUES(1,$1) ON CONFLICT(id) DO UPDATE SET first_token_timeout_mode=EXCLUDED.first_token_timeout_mode`, mode)
+	return err
+}

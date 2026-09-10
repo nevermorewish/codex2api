@@ -116,6 +116,9 @@ func firstTokenTimeoutForRequest(base time.Duration, isCompactionTrigger bool, b
 	if isCompactionTrigger {
 		return 0
 	}
+	if CurrentRuntimeSettings().FirstTokenTimeoutMode == "disabled" {
+		return 0
+	}
 	if len(bodySize) > 0 {
 		if CurrentRuntimeSettings().FirstTokenTimeoutMode == "first_token" {
 			return base

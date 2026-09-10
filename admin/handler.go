@@ -11236,7 +11236,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.FirstTokenTimeoutSec = *req.FirstTokenTimeoutSeconds
 		log.Printf("设置已更新: first_token_timeout_seconds = %d", runtimeCfg.FirstTokenTimeoutSec)
 	}
-	if req.FirstTokenTimeoutMode != nil && (*req.FirstTokenTimeoutMode == "first_token" || *req.FirstTokenTimeoutMode == "request_size") {
+	if req.FirstTokenTimeoutMode != nil && (*req.FirstTokenTimeoutMode == "first_token" || *req.FirstTokenTimeoutMode == "request_size" || *req.FirstTokenTimeoutMode == "disabled") {
 		runtimeCfg.FirstTokenTimeoutMode = *req.FirstTokenTimeoutMode
 	}
 	feishuChanged := req.FeishuAlertEnabled != nil || req.FeishuAppID != nil || req.FeishuAppSecret != nil || req.FeishuChatIDs != nil || req.FeishuAlertErrorCodes != nil || req.FeishuFirstTokenTimeoutSeconds != nil
@@ -11739,6 +11739,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	} else {
+		if req.FirstTokenTimeoutMode != nil {
+			if err := h.db.UpdateFirstTokenTimeoutMode(c.Request.Context(), runtimeCfg.FirstTokenTimeoutMode); err != nil {
+				writeError(c, http.StatusInternalServerError, "保存首 token 超时模式失败")
+				return
+			}
+		}
 		if err := h.db.UpdateOverloadConditionSettings(c.Request.Context(), runtimeCfg.CodexOverloadCodeEnabled, runtimeCfg.CodexOverloadMessageEnabled); err != nil {
 			log.Printf("无法持久化过载条件开关: %v", err)
 			writeError(c, http.StatusInternalServerError, "保存过载熔断条件失败")

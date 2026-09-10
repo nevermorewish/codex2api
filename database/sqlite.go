@@ -740,6 +740,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "stream_flush_interval_ms", "INTEGER DEFAULT 20"},
 		{"system_settings", "first_token_mode", "TEXT DEFAULT 'strict'"},
 		{"system_settings", "first_token_timeout_seconds", "INTEGER DEFAULT 0"},
+		{"system_settings", "first_token_timeout_mode", "TEXT DEFAULT 'request_size'"},
 		{"system_settings", "first_token_timeout_under_50kb", "INTEGER DEFAULT 10"},
 		{"system_settings", "first_token_timeout_under_100kb", "INTEGER DEFAULT 20"},
 		{"system_settings", "first_token_timeout_under_200kb", "INTEGER DEFAULT 30"},
