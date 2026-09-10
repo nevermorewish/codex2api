@@ -408,7 +408,16 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 					t.Fatalf("fallback outcomes disagree with actual response: %+v", metrics)
 				}
 			}
-			if tc.sticky {
+			if tc.sticky && tc.failure == "overload" && !tc.continuation {
+				// 容量降载不再同账号退避，sticky 模式下也立即换号（continuation 除外）
+				seen := map[int64]bool{}
+				for _, id := range primaryIDs {
+					if seen[id] {
+						t.Fatalf("sticky capacity shed reused primary: %v", primaryIDs)
+					}
+					seen[id] = true
+				}
+			} else if tc.sticky {
 				for _, id := range primaryIDs {
 					if id != primaryIDs[0] {
 						t.Fatalf("sticky rotated: %v", primaryIDs)
