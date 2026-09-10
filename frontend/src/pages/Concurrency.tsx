@@ -161,7 +161,7 @@ function RelayChainDetails({ chain, t }: { chain: RelayChain; t: TFunction }) {
                   <TableCell className="max-w-56 font-medium"><RelayAccountLabel attempt={attempt} t={t} /></TableCell>
                   <TableCell className={cn('tabular-nums', attempt.status_code === 499 ? 'text-muted-foreground' : statusOK ? 'text-emerald-600 dark:text-emerald-400' : attempt.status_code >= 400 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground')}>{attempt.status_code || '-'}</TableCell>
                   <TableCell>
-                    <span className={cn('rounded border px-1.5 py-0.5 text-[11px]', attempt.decision === 'canceled' ? 'border-border bg-muted text-muted-foreground' : attempt.decision === 'success' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : attempt.decision === 'failed' ? 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300')}>
+                    <span className={cn('rounded border px-1.5 py-0.5 text-[11px]', attempt.decision === 'canceled' ? 'border-border bg-muted text-muted-foreground' : attempt.decision === 'success' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : attempt.decision === 'failed' ? 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300' : attempt.decision === 'partial_failed' ? 'border-orange-500/25 bg-orange-500/10 text-orange-700 dark:text-orange-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300')}>
                       {t(`concurrency.relayDecisionValues.${attempt.decision}`, { defaultValue: attempt.decision || '-' })}
                     </span>
                   </TableCell>

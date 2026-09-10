@@ -146,6 +146,10 @@ func (h *Handler) GetRelayChains(c *gin.Context) {
 				default:
 					decision = "retry"
 				}
+			} else if row.OutputTokens > 0 && (row.StatusCode < 200 || row.StatusCode >= 300) {
+				// 上游已产生输出内容（output_tokens > 0）但最终以错误结束，
+				// 无法透明换号重试（已发出 SSE 帧），标记为 partial_failed。
+				decision = "partial_failed"
 			}
 			message := strings.TrimSpace(row.ErrorMessage)
 			if message == "" {

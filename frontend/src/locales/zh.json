@@ -131,7 +131,8 @@
       "switch": "切换",
       "retry_same": "同账号重试",
       "retry": "重试",
-      "failed": "失败"
+      "failed": "失败",
+      "partial_failed": "已发出内容后失败"
     },
     "channels": {
       "codex": "Codex",

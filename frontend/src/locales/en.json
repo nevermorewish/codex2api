@@ -131,7 +131,8 @@
       "switch": "Switch",
       "retry_same": "Retry same account",
       "retry": "Retry",
-      "failed": "Failed"
+      "failed": "Failed",
+      "partial_failed": "Partial output, then failed"
     },
     "channels": {
       "codex": "Codex",
