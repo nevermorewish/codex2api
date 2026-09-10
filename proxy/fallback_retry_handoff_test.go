@@ -48,16 +48,16 @@ func testPreContentFailureHandoff(t *testing.T, codexPrimary bool, websocketUpst
 			fallbackFails   bool
 			disableFallback bool
 		}{
-			{"overload_zero", "overload", 0, 10, 1, 1, false, false},
-			{"overload_two", "overload", 2, 10, 3, 1, false, false},
-			{"eof_two", "eof", 2, 10, 3, 1, false, false},
-			{"http_500_two", "http500", 2, 10, 3, 1, false, false},
-			{"rate_limit_zero", "http429", 2, 10, 1, 1, false, false},
-			{"relay_threshold_earlier", "overload", 3, 1, 1, 1, false, false},
-			{"fallback_failure_is_finite", "overload", 1, 10, 2, 1, true, false},
+			{"relay_one_ignores_high_retry_limit", "overload", 5, 1, 1, 1, false, false},
+			{"relay_three_ignores_disabled_retries", "overload", 0, 3, 3, 1, false, false},
+			{"relay_three_ignores_high_retry_limit", "overload", 5, 3, 3, 1, false, false},
+			{"eof_uses_relay_count", "eof", 0, 2, 2, 1, false, false},
+			{"http_500_uses_relay_count", "http500", 0, 2, 2, 1, false, false},
+			{"rate_limit_uses_relay_count", "http429", 5, 2, 2, 1, false, false},
+			{"fallback_failure_is_finite", "overload", 5, 2, 2, 1, true, false},
 			{"deterministic_error", "bad_request", 2, 10, 1, 0, false, false},
 			{"already_output", "after_content", 2, 10, 1, 0, false, false},
-			{"no_fallback", "overload", 0, 10, 1, 0, false, true},
+			{"no_fallback_uses_exact_retries", "overload", 2, 10, 3, 0, false, true},
 		} {
 			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
 				var mu sync.Mutex
@@ -215,31 +215,30 @@ func TestFallbackHandoffPreservesIndependentAndAccountBudgets(t *testing.T) {
 	pool.Replace([]auth.FallbackAccountConfig{{ID: 1, BaseURL: "http://example.invalid", APIKey: "test", Enabled: true}})
 	pool.SetPolicy(auth.FallbackPolicy{Enabled: true, RelayCount: 20})
 	for _, tc := range []struct {
-		name                                                        string
-		general, rate, accountRate, attempts, generalUsed, rateUsed int
-		wantFallback                                                bool
+		name                                   string
+		relayCount, general, rate, accountRate int
+		attempts, generalUsed, rateUsed        int
+		wantFallback                           bool
 	}{
-		{"before_limit", 2, 1, 1, 2, 2, 0, false},
-		{"at_limit", 2, 1, 1, 3, 3, 0, true},
-		{"mixed_failures", 2, 5, 5, 3, 1, 2, true},
-		{"account_rate_zero", 5, 3, 0, 1, 0, 1, true},
-		{"account_rate_larger", 5, 0, 2, 2, 0, 2, false},
-		{"account_rate_exhausted", 5, 0, 2, 3, 0, 3, true},
-		{"unlimited", -1, -1, -1, 4, 4, 0, false},
+		{"before_relay_count", 3, 0, 0, 0, 2, 2, 0, false},
+		{"at_relay_count", 3, 20, 20, 20, 3, 3, 0, true},
+		{"mixed_failures", 3, 0, 0, 0, 3, 1, 2, true},
+		{"rate_limit_cannot_handoff_early", 3, 5, 0, 0, 2, 0, 2, false},
+		{"unlimited_normal_budget_still_uses_relay_count", 3, -1, -1, -1, 3, 3, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := (&Handler{fallbackPool: pool}).newFallbackRouteState(nil)
+			s.policy.RelayCount = tc.relayCount
 			general, rate := s.retryBudgets(tc.general, tc.rate)
-			if tc.general >= 0 && general != tc.general+1 {
-				t.Fatalf("general=%d", general)
+			if general != tc.relayCount || rate != tc.relayCount {
+				t.Fatalf("fallback retry budgets = %d/%d, want relay count %d", general, rate, tc.relayCount)
 			}
-			if tc.rate >= 0 && rate != tc.rate+1 {
-				t.Fatalf("rate=%d", rate)
+			if base := s.primaryRateLimitBudget(rate); base != tc.relayCount-1 {
+				t.Fatalf("primary rate-limit retries=%d, want %d", base, tc.relayCount-1)
 			}
-			if base := s.primaryRateLimitBudget(rate); base != tc.rate {
-				t.Fatalf("base rate=%d", base)
+			if accountRate := s.retryBudgetForAccount(tc.accountRate); accountRate != tc.relayCount {
+				t.Fatalf("account rate-limit budget=%d, want relay count %d", accountRate, tc.relayCount)
 			}
-			s.retryBudgetForAccount(tc.accountRate)
 			for i := 0; i < tc.attempts; i++ {
 				s.noteSelected(&auth.Account{DBID: int64(i + 1)})
 			}
@@ -249,10 +248,7 @@ func TestFallbackHandoffPreservesIndependentAndAccountBudgets(t *testing.T) {
 			}
 			wantReason := ""
 			if tc.wantFallback {
-				wantReason = fallbackReasonRetryBudget
-				if tc.accountRate >= 0 && tc.rateUsed > tc.accountRate {
-					wantReason = fallbackReasonRateLimitBudget
-				}
+				wantReason = fallbackReasonRelayLimit
 			}
 			if s.reason != wantReason {
 				t.Fatalf("reason=%q want=%q", s.reason, wantReason)
@@ -267,9 +263,9 @@ func TestFallbackHandoffPreservesIndependentAndAccountBudgets(t *testing.T) {
 				p.Replace([]auth.FallbackAccountConfig{{ID: 1, BaseURL: "http://example.invalid", APIKey: "test", Enabled: true}})
 			}
 			s := (&Handler{fallbackPool: p}).newFallbackRouteState(func(*auth.Account) bool { return mode != "filtered" })
-			general, rate := s.retryBudgets(0, 0)
-			if general != 0 || rate != 0 {
-				t.Fatalf("unavailable fallback extended budgets: %d/%d", general, rate)
+			general, rate := s.retryBudgets(5, 2)
+			if general != 5 || rate != 2 {
+				t.Fatalf("unavailable fallback changed normal budgets: %d/%d", general, rate)
 			}
 			s.noteSelected(&auth.Account{DBID: 1})
 			s.activateAfterRetryBudget(1, 0)

@@ -211,7 +211,7 @@
     "loadFailed": "兜底账号池加载失败",
     "addAccount": "添加兜底账号",
     "policyTitle": "兜底路由策略",
-    "policyDescription": "本地接力次数包含首次尝试；设为 3 时，最多尝试 3 次本地账号，随后进入兜底。兜底账号只调用一次，出错直接返回，不再重试。",
+    "policyDescription": "本地接力次数包含首次尝试，且无需小于全局重试次数；设为 3 时，最多尝试 3 次本地账号，随后进入兜底。关闭兜底后才严格使用全局重试次数。兜底账号只调用一次，出错直接返回。",
     "masterSwitch": "总开关",
     "queueThreshold": "排队请求阈值（0 表示关闭）",
     "oversizedDirectFallback": "请求体 > 3 MiB 直接兜底",

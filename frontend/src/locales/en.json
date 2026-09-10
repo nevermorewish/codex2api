@@ -211,7 +211,7 @@
     "loadFailed": "Failed to load fallback account pool",
     "addAccount": "Add fallback account",
     "policyTitle": "Fallback Routing Policy",
-    "policyDescription": "The local attempt limit includes the first attempt. A limit of 3 allows up to 3 local attempts before fallback. The fallback account is called once; any error is returned without retrying.",
+    "policyDescription": "Local relay attempts include the first attempt and need not be lower than the global retry limit. A value of 3 allows up to 3 local attempts before fallback. The global retry limit applies exactly when fallback is disabled. The fallback account is called once.",
     "masterSwitch": "Master switch",
     "queueThreshold": "Queued requests (0 disables)",
     "oversizedDirectFallback": "Request body > 3 MiB goes directly to fallback",

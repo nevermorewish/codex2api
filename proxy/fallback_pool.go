@@ -18,9 +18,7 @@ const contextFallbackDeadlineState = "fallbackDeadlineState"
 
 const (
 	fallbackReasonRelayLimit       = "relay_limit"
-	fallbackReasonRetryBudget      = "retry_budget"
 	fallbackReasonRetryDeadline    = "retry_deadline"
-	fallbackReasonRateLimitBudget  = "rate_limit_budget"
 	fallbackReasonAffinityFull     = "affinity_capacity_full"
 	fallbackReasonQueueThreshold   = "queue_threshold"
 	fallbackReasonNoEligible       = "no_eligible_primary"
@@ -40,12 +38,7 @@ type fallbackRouteState struct {
 	metricHandoffRecorded bool
 	fallbackAttempted     bool
 	reason                string
-	// Keep the operator's primary budgets separate from the extra transition
-	// attempt. RelayCount may switch earlier, but must never extend these limits.
-	retryHandoffEnabled        bool
-	primaryMaxRetries          int
-	primaryMaxRateLimitRetries int
-	accountMaxRateLimitRetries int
+	retryHandoffEnabled   bool
 }
 
 func (h *Handler) newFallbackRouteState(filter auth.AccountFilter, requestBodySize ...int) *fallbackRouteState {
@@ -200,50 +193,43 @@ func (s *fallbackRouteState) retryBudgets(maxRetries, maxRateLimitRetries int) (
 		return maxRetries, maxRateLimitRetries
 	}
 	s.retryHandoffEnabled = true
-	s.primaryMaxRetries = maxRetries
-	s.primaryMaxRateLimitRetries = maxRateLimitRetries
-	s.accountMaxRateLimitRetries = maxRateLimitRetries
-	return reserveFallbackTransition(maxRetries), reserveFallbackTransition(maxRateLimitRetries)
+	// With an eligible fallback account, RelayCount is the complete primary-pool
+	// contract: it includes the first attempt and is independent from the normal
+	// HTTP and rate-limit retry settings. The internal retry limit needs one
+	// additional continuation slot so the attempt after the last primary failure
+	// can be dispatched to the terminal fallback account.
+	return s.policy.RelayCount, s.policy.RelayCount
 }
 
 func (s *fallbackRouteState) retryBudgetForAccount(maxRateLimitRetries int) int {
 	if s == nil || !s.retryHandoffEnabled {
 		return maxRateLimitRetries
 	}
-	s.accountMaxRateLimitRetries = maxRateLimitRetries
-	return reserveFallbackTransition(maxRateLimitRetries)
+	// Per-account 429 overrides belong to the normal retry mode. Once fallback
+	// routing is active, total primary attempts must be governed solely by the
+	// operator's Local relay attempts setting.
+	return s.policy.RelayCount
 }
 
 func (s *fallbackRouteState) primaryRateLimitBudget(defaultLimit int) int {
 	if s != nil && s.retryHandoffEnabled {
-		return s.primaryMaxRateLimitRetries
+		return s.policy.RelayCount - 1
 	}
 	return defaultLimit
 }
 
-func reserveFallbackTransition(limit int) int {
-	if limit < 0 {
-		return limit
-	}
-	return limit + 1
-}
-
-// Called only when a retryable, uncommitted attempt has elected to continue.
-// N retries means the initial attempt plus N retries; the next attempt belongs
-// to the fallback pool, even if healthy primary accounts are still available.
+// Called before selection as a defensive handoff check. The selected-account
+// count is authoritative, so mixed general and rate-limit failures cannot
+// shorten or extend RelayCount.
 func (s *fallbackRouteState) activateAfterRetryBudget(generalRetries, rateLimitRetries int) {
 	if s == nil || !s.retryHandoffEnabled || s.active {
 		return
 	}
-	if (s.primaryMaxRetries >= 0 && (generalRetries > s.primaryMaxRetries || s.primaryAttempts > s.primaryMaxRetries)) ||
-		(s.accountMaxRateLimitRetries >= 0 && rateLimitRetries > s.accountMaxRateLimitRetries) {
+	if s.primaryAttempts >= s.policy.RelayCount {
 		s.active = true
-		s.reason = fallbackReasonRetryBudget
-		if s.accountMaxRateLimitRetries >= 0 && rateLimitRetries > s.accountMaxRateLimitRetries {
-			s.reason = fallbackReasonRateLimitBudget
-		}
-		log.Printf("主账号池重试预算耗尽，切入兜底号池 (primary_attempts=%d, general_retries=%d, max_retries=%d, rate_limit_retries=%d, max_rate_limit_retries=%d)",
-			s.primaryAttempts, generalRetries, s.primaryMaxRetries, rateLimitRetries, s.accountMaxRateLimitRetries)
+		s.reason = fallbackReasonRelayLimit
+		log.Printf("主账号池已达本地接力次数，切入兜底号池 (primary_attempts=%d, relay_count=%d, general_retries=%d, rate_limit_retries=%d)",
+			s.primaryAttempts, s.policy.RelayCount, generalRetries, rateLimitRetries)
 	}
 }
 

@@ -600,8 +600,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	if !compactionAffinity.Known && !preserveContinuationBinding() {
 		fallbackState = h.newFallbackRouteState(accountFilter, len(rawBody))
 		if fallbackState.configured() {
-			// Both limits cap primary attempts; relay_count may switch earlier.
-			// Reserve a transition even when WS same-pool retries are disabled.
+			// Normal HTTP/WS limits apply only without a usable fallback. With one,
+			// retryBudgets makes relay_count the exact primary-attempt contract and
+			// reserves the terminal fallback transition.
 			if primaryLimit := h.getMaxRetries(); primaryLimit >= 0 && (maxRetries < 0 || primaryLimit < maxRetries) {
 				maxRetries = primaryLimit
 			}

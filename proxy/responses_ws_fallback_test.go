@@ -77,7 +77,7 @@ func TestNativeWSFallbackMultiTurnIsolation(t *testing.T) {
 	defer fallback.Close()
 	pool := auth.NewFallbackPool(store)
 	pool.Replace([]auth.FallbackAccountConfig{{ID: 9, Name: "multi-turn-backup", BaseURL: fallback.URL, APIKey: "backup-only", Model: "fallback-model", Enabled: true}})
-	pool.SetPolicy(auth.FallbackPolicy{Enabled: true, RelayCount: 10})
+	pool.SetPolicy(auth.FallbackPolicy{Enabled: true, RelayCount: 2})
 	h := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 	h.SetFallbackPool(pool)
 	type turnResult struct {
@@ -180,7 +180,7 @@ func TestNativeWSFallbackMultiTurnIsolation(t *testing.T) {
 			if result.fallbackName != "" || result.sourceName != "" || result.sourceID != 0 || result.fallbackReason != "" {
 				t.Fatalf("fallback attribution leaked into primary turn: %+v", result)
 			}
-		} else if result.fallbackName != "multi-turn-backup" || result.sourceID <= 0 || result.sourceName == "" || result.fallbackReason != fallbackReasonRetryBudget {
+		} else if result.fallbackName != "multi-turn-backup" || result.sourceID <= 0 || result.sourceName == "" || result.fallbackReason != fallbackReasonRelayLimit {
 			t.Fatalf("missing fallback attribution: %+v", result)
 		}
 		wantPrimary, wantFallback := []int{2, 3, 5}[turn], []int{1, 1, 2}[turn]
@@ -212,18 +212,18 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 		incompatible, emptyFallback, continuation, preflight, continuous bool
 	}{
 		{name: "default_budget", wsRetries: 2, maxRetries: 2, relayCount: 3, failure: "overload", wantPrimary: 3, wantFallback: 1},
-		{name: "relay_count_cannot_extend", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, wantFallback: 1},
-		{name: "ws_zero", wsRetries: 0, maxRetries: 3, relayCount: 10, failure: "overload", wantPrimary: 1, wantFallback: 1},
-		{name: "global_zero", wsRetries: 5, maxRetries: 0, relayCount: 10, failure: "overload", wantPrimary: 1, wantFallback: 1},
-		{name: "global_cap", wsRetries: 5, maxRetries: 1, relayCount: 10, failure: "overload", wantPrimary: 2, wantFallback: 1},
-		{name: "silent_off", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 1, wantFallback: 1, silentOff: true},
+		{name: "relay_count_extends_normal_budget", wsRetries: 2, maxRetries: 2, relayCount: 5, failure: "overload", wantPrimary: 5, wantFallback: 1},
+		{name: "ws_zero_does_not_shorten_relay", wsRetries: 0, maxRetries: 3, relayCount: 4, failure: "overload", wantPrimary: 4, wantFallback: 1},
+		{name: "global_zero_does_not_shorten_relay", wsRetries: 5, maxRetries: 0, relayCount: 4, failure: "overload", wantPrimary: 4, wantFallback: 1},
+		{name: "global_cap_does_not_shorten_relay", wsRetries: 5, maxRetries: 1, relayCount: 4, failure: "overload", wantPrimary: 4, wantFallback: 1},
+		{name: "silent_off_does_not_shorten_relay", wsRetries: 2, maxRetries: 2, relayCount: 4, failure: "overload", wantPrimary: 4, wantFallback: 1, silentOff: true},
 		{name: "early_relay", wsRetries: 5, maxRetries: 5, relayCount: 1, failure: "overload", wantPrimary: 1, wantFallback: 1},
 		{name: "sticky_capacity", wsRetries: 2, maxRetries: 2, relayCount: 3, failure: "overload", wantPrimary: 3, wantFallback: 1, sticky: true},
-		{name: "eof", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "eof", wantPrimary: 3, wantFallback: 1},
-		{name: "transport", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "transport", wantPrimary: 3, wantFallback: 1},
-		{name: "http_500", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "http500", wantPrimary: 3, wantFallback: 1},
-		{name: "http_429", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "http429", wantPrimary: 3, wantFallback: 1},
-		{name: "fallback_503", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, wantFallback: 1, fallbackFails: true},
+		{name: "eof", wsRetries: 2, maxRetries: 2, relayCount: 4, failure: "eof", wantPrimary: 4, wantFallback: 1},
+		{name: "transport", wsRetries: 2, maxRetries: 2, relayCount: 4, failure: "transport", wantPrimary: 4, wantFallback: 1},
+		{name: "http_500", wsRetries: 2, maxRetries: 2, relayCount: 4, failure: "http500", wantPrimary: 4, wantFallback: 1},
+		{name: "http_429", wsRetries: 2, maxRetries: 2, relayCount: 4, failure: "http429", wantPrimary: 4, wantFallback: 1},
+		{name: "fallback_503", wsRetries: 2, maxRetries: 2, relayCount: 3, failure: "overload", wantPrimary: 3, wantFallback: 1, fallbackFails: true},
 		{name: "pool_disabled", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, fallbackOff: true},
 		{name: "empty_primary", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantFallback: 1, emptyPrimary: true},
 		{name: "invalid_request", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "invalid", wantPrimary: 1},
@@ -231,8 +231,8 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 		{name: "incompatible_model", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, incompatible: true},
 		{name: "empty_fallback", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, emptyFallback: true},
 		{name: "provider_continuation", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, continuation: true, sticky: true},
-		{name: "preflight_metadata", wsRetries: 2, maxRetries: 2, relayCount: 10, failure: "overload", wantPrimary: 3, wantFallback: 1, preflight: true},
-		{name: "continuous_primary_cap", wsRetries: 2, maxRetries: 0, relayCount: 10, failure: "overload", wantPrimary: 1, wantFallback: 1, continuous: true},
+		{name: "preflight_metadata", wsRetries: 2, maxRetries: 2, relayCount: 3, failure: "overload", wantPrimary: 3, wantFallback: 1, preflight: true},
+		{name: "continuous_primary_uses_relay_count", wsRetries: 2, maxRetries: 0, relayCount: 4, failure: "overload", wantPrimary: 4, wantFallback: 1, continuous: true},
 		{name: "early_fallback_failure", wsRetries: 10, maxRetries: 10, relayCount: 1, failure: "overload", wantPrimary: 1, wantFallback: 1, fallbackFails: true},
 		{name: "direct_fallback_failure", wsRetries: 10, maxRetries: 10, relayCount: 3, wantFallback: 1, emptyPrimary: true, fallbackFails: true, continuous: true},
 		{name: "continuous_fallback_http_error", wsRetries: 10, maxRetries: 10, relayCount: 3, failure: "overload", wantPrimary: 3, wantFallback: 1, fallbackFails: true, continuous: true},
@@ -363,7 +363,7 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 			if err = conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
 				t.Fatal(err)
 			}
-			_ = conn.SetReadDeadline(time.Now().Add(4 * time.Second))
+			_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 			var output strings.Builder
 			var terminal string
 			for i := 0; i < 12; i++ {

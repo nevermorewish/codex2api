@@ -187,13 +187,13 @@ Redis 模式会把 response context 保存到共享后端。后端值在重建�
 
 调度优先级先决定账号层级，同一优先级内再比较健康档位、调度分和当前负载；会话亲和只负责复用已绑定账号。多个最终用户共享同一个 API Key 时，下游可传 `X-Codex2API-Affinity-Key`，值会先哈希且仅用于本地账号绑定，不会转发给上游。
 
-对于 HTTP `POST /v1/responses`、`POST /v1/chat/completions` 和 `POST /v1/messages`，启用兜底号池且存在符合当前请求路由限制的兜底账号时，`MaxRetries=N` 表示主池最多进行首次请求加 N 次重试。仍然失败且响应尚可安全重试时，下一次直接选择兜底号池，不再增加主池尝试。`MaxRetries=0` 时首次主池请求失败即可进入兜底；429 的独立预算（含账号覆盖值）耗尽也可提前进入兜底。兜底设置中的 `relay_count` 可以提前触发接力，但不能提高主池最大重试次数。
+对于 HTTP `POST /v1/responses`、`POST /v1/chat/completions` 和 `POST /v1/messages`，启用兜底号池且存在符合当前请求路由限制的兜底账号时，主池尝试次数只由兜底设置中的 `relay_count` 决定，并且包含首次请求。例如 `relay_count=3` 表示最多尝试 3 次本地账号，仍然失败且响应尚可安全重试时，第 4 次请求只调用兜底账号一次。此模式不受全局 `MaxRetries`、429 独立预算或账号级 429 重试覆盖值提前截断。关闭兜底池或不存在匹配当前请求的兜底账号时，恢复严格的普通重试语义：`MaxRetries=N` 表示首次请求加 N 次重试，总计 `N+1` 次。
 
-原生 `/v1/responses` WebSocket 升级也使用同一套兜底号池：下游 WebSocket 保持不变，兜底账号通过自己的 Responses HTTP/SSE 接口请求，返回事件再转发为 WebSocket 帧。WS 主池预算取全局 `MaxRetries` 与 `CodexWSSilentMaxRetries` 的较小值；静默重试关闭时主池只尝试一次，但只要兜底账号可用仍会保留一次兜底切入机会。`relay_count` 可以更早切入，不能把 WS 主池预算扩大。`transport_retry_policy=rotate` 时，首内容前的 `server_is_overloaded`/容量降载会立即解绑当前亲和并换号；`sticky` 才保留同账号容量退避。
+原生 `/v1/responses` WebSocket 升级也使用同一套兜底号池：下游 WebSocket 保持不变，兜底账号通过自己的 Responses HTTP/SSE 接口请求，返回事件再转发为 WebSocket 帧。存在匹配的兜底账号时，原生 WS 同样以 `relay_count` 作为本地主池的精确尝试次数，不受全局 `MaxRetries`、`CodexWSSilentMaxRetries` 或静默重试开关提前截断。关闭兜底池或不存在匹配账号时，才恢复普通 WS 与全局重试限制。`transport_retry_policy=rotate` 时，首内容前的 `server_is_overloaded`/容量降载会立即解绑当前亲和并换号；`sticky` 才保留同账号容量退避。
 
 为避免把失败主账号的 `codex.rate_limits` 等预检元数据泄露给客户端，存在可用兜底账号时 WS 会暂存首内容前事件，只有主池成功或确认不再切换时才提交。带有 `previous_response_id`、活动 turn-state 或已知压缩来源的提供商会话不会跨提供商切入兜底，以免把上游私有上下文误发到另一账号；这类请求仍在原兼容账号范围内重试。`codex_force_websocket` 控制的是上游传输，HTTP POST 仍由 HTTP handler 处理，只有真正的 WebSocket 升级才进入 `responses_ws.go`。
 
-有限重试会额外预留一次兜底切入机会；预算不会在进入兜底后重置，兜底失败也不会退回主池循环。没有可用或匹配的兜底账号时不会为其扩大重试预算。已有的请求取消、确定性错误、已输出内容及压缩上下文来源限制继续生效。独立启用的持续重试策略仍控制兜底中的持续重试行为，因此有限重试并不覆盖其显式选择的无限重试。
+兜底路由会额外预留一次兜底切入机会；预算不会在进入兜底后重置，兜底失败也不会退回主池循环。没有可用或匹配的兜底账号时不会改变普通重试预算。已有的请求取消、确定性错误、已输出内容及压缩上下文来源限制继续生效。独立启用的持续重试策略仍控制首内容前的缓冲与最长持续时间，但达到本地接力次数后仍只会进入一次兜底请求。
 
 首内容前的业务错误和真实断流分开记录：`upstream_overloaded` / `upstream_error_frame` 不因业务错误本身回收 HTTP 客户端；`upstream_stream_break` / `first_response_timeout` 才按连接故障处理。有限重试中的临时断流会在当前轮排除失败主账号，优先选择其他账号；没有兜底且单账号池已遍历时，仍可在剩余预算内恢复重试。
 
