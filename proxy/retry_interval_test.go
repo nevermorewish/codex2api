@@ -140,7 +140,9 @@ func TestParseRetryAfterHeaderAt(t *testing.T) {
 func TestRetryableUpstreamStatuses(t *testing.T) {
 	for _, status := range []int{
 		http.StatusInternalServerError,
+		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
 		http.StatusUnauthorized,
 		http.StatusPaymentRequired,
 		http.StatusForbidden,
@@ -154,8 +156,6 @@ func TestRetryableUpstreamStatuses(t *testing.T) {
 		http.StatusBadRequest,
 		http.StatusNotFound,
 		http.StatusUnprocessableEntity,
-		http.StatusBadGateway,
-		http.StatusGatewayTimeout,
 	} {
 		if isRetryableStatus(status) {
 			t.Errorf("status %d should not be retried by the legacy classifier", status)
