@@ -901,10 +901,51 @@ func writeGrokNativeStreamBreakTo(writer io.Writer, protocol GrokProtocol, creat
 }
 
 func safeGrokNativeHTTPStatus(status int) int {
+	return clientFacingHTTPStatus(status)
+}
+
+// clientFacingHTTPStatus 把内部日志状态码收敛成可下发的 HTTP 状态码。
+//
+// usage log 里的 598(上游断流)与 499(下游断开)是服务内部标记，不是真实
+// HTTP 证据；一旦被 c.JSON 直接写回，客户端会收到不存在于 HTTP 标准中的
+// 状态码并拒绝解析。所有"用变量状态码写响应"的位置都必须先过这里。
+func clientFacingHTTPStatus(status int) int {
 	if status < 400 || status > 599 || status == logStatusUpstreamStreamBreak || status == logStatusClientClosed {
 		return http.StatusBadGateway
 	}
 	return status
+}
+
+// fallbackSucceededWithoutUsage 判定"兜底账号自称成功、却既没有 token 计数
+// 也没有交付任何内容"的伪成功。
+//
+// 生产现象(2026-09-10)：关掉全部主账号后请求切入兜底号池，上游返回
+// HTTP 200 + response.completed，但既无 usage 也无 output。此时若原样放行，
+// 下游按 200 收尾且拿不到计费信息，只能打出「上游没有返回计费信息，无法
+// 扣费」：既不计费也不报错，失败被彻底隐藏。这类响应只出现在兜底号池账号
+// 上（7 天内主账号池零例），因此只对兜底账号收紧，避免影响主池的合法空回复。
+func fallbackSucceededWithoutUsage(account *auth.Account, outcome streamOutcome, usage *UsageInfo) bool {
+	if account == nil || !account.IsExternalFallback() {
+		return false
+	}
+	if outcome.logStatusCode != http.StatusOK || outcome.terminalLocal {
+		return false
+	}
+	if usage == nil {
+		return true
+	}
+	return usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 &&
+		usage.InputTokens <= 0 && usage.OutputTokens <= 0 && usage.TotalTokens <= 0
+}
+
+// emptyFallbackSuccessOutcome 把"兜底账号零计费成功"转成显式上游失败。
+// 502 让下游按可重试的上游错误处理，而不是当成完成了但没给 usage 的成功回合。
+func emptyFallbackSuccessOutcome() streamOutcome {
+	return streamOutcome{
+		logStatusCode:  http.StatusBadGateway,
+		failureKind:    "usage_missing",
+		failureMessage: "Fallback upstream completed the response without any usage or output",
+	}
 }
 
 func (h *Handler) sendGrokNativeHTTPError(c *gin.Context, protocol GrokProtocol, outcome streamOutcome) {
@@ -2281,48 +2322,18 @@ func (h *Handler) reportStreamOutcomeFailure(account *auth.Account, outcome stre
 	h.store.ReportRequestFailure(account, outcome.failureKind, d)
 }
 
-// unbindOrRetainAffinityForCapacityShed 在首包前透明重试时决定是否保留会话亲和。
-// 容量降载先在同账号退避重试 maxCapacityShedSameAccountRetries 次（保留亲和 → 下一轮
-// 仍优先选回同账号），预算耗尽后解绑并软排除该账号强制换号；其余故障一律立即解绑换号。
-// retries 是请求作用域的按账号计数器，每个降载账号各有一份退避预算。
-//
-// 必须软排除而非仅解绑：降载不惩罚账号健康度，若只解绑亲和，调度会立刻把这个仍是
-// 满血的账号重新选回并重绑，"耗尽后换号"就名存实亡。软排除在账号池试完后由 ResetSoft
-// 清空，不会永久搁置请求。
-func (h *Handler) unbindOrRetainAffinityForCapacityShed(exclusions *retryAccountExclusions, affinityKey string, account *auth.Account, proxyURL string, outcome streamOutcome, retries map[int64]int, policy database.ContinuousRetryPolicy) {
-	h.unbindOrRetainAffinityForCapacityShedWithGuard(exclusions, affinityKey, account, proxyURL, auth.SessionAffinityGuard{}, outcome, retries, policy)
-}
-
-func (h *Handler) unbindOrRetainAffinityForCapacityShedWithGuard(exclusions *retryAccountExclusions, affinityKey string, account *auth.Account, proxyURL string, guard auth.SessionAffinityGuard, outcome streamOutcome, retries map[int64]int, policy database.ContinuousRetryPolicy) {
+// 容量降载（server_is_overloaded/slow_down）立即解绑并软排除该账号，强制调度器换号。
+// 软排除在账号池试完后由 ResetSoft 清空，不会永久搁置请求。
+func (h *Handler) unbindOrRetainAffinityForCapacityShed(exclusions *retryAccountExclusions, affinityKey string, account *auth.Account, outcome streamOutcome) {
 	id := account.ID()
-	// Catch-all promises a real account rotation for every upstream failure.
-	// Keep the legacy same-account capacity backoff only for the normal,
-	// selective policy mode.
-	// rotate 策略要求容量降载也立即切换账号。此前这里只看 continuous
-	// retry policy，忽略了 transport_retry_policy=rotate，导致默认配置下
-	// server_is_overloaded 会在同一账号上反复重试，relay chain 只能看到一条。
-	// sticky 策略保留原有的同账号退避行为。
-	rotateTransportRetry := h != nil && h.store != nil && h.store.GetTransportRetryPolicy() != transportRetryPolicySticky
-	if !rotateTransportRetry && !policy.CatchesAllUpstreamFailures() && capacityShedRetainsAffinity(outcome, retries[id]) {
-		// Buffered attempts defer affinity until replay resolves. Bind here only
-		// for real upstream capacity retries to preserve same-account backoff.
-		// 缓冲 attempt 会把亲和绑定延后到回放完成；这里只为真实上游降载重试绑定，
-		// 以保留同账号退避行为。
-		if continuousRetryBuffersAttempts(policy) {
-			h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, guard)
-		}
-		retries[id]++
-		return
-	}
 	h.store.UnbindSessionAffinity(affinityKey, id)
 	if outcome.capacityShed {
 		exclusions.MarkSoft(id)
 	}
 }
 
-// capacityShedRetainsAffinity 判断本次容量降载是否仍在该账号的同账号退避重试预算内。
-func capacityShedRetainsAffinity(outcome streamOutcome, retriesSoFar int) bool {
-	return outcome.capacityShed && retriesSoFar < maxCapacityShedSameAccountRetries
+func (h *Handler) unbindOrRetainAffinityForCapacityShedWithGuard(exclusions *retryAccountExclusions, affinityKey string, account *auth.Account, outcome streamOutcome) {
+	h.unbindOrRetainAffinityForCapacityShed(exclusions, affinityKey, account, outcome)
 }
 
 func continuousRetryBufferedAttemptCommitted(policy database.ContinuousRetryPolicy, outcome streamOutcome) bool {
@@ -2405,11 +2416,6 @@ func resolvePreContentRetryErrorCandidate(terminalFailurePayload, candidate []by
 // （提示 "Selected model is at capacity. Please try a different model." 并终止
 // 会话），而 server_error 等闭集之外的错误码会进入客户端内置的退避重试。
 const capacityShedRetryableClientCode = "server_error"
-
-// maxCapacityShedSameAccountRetries 是容量降载时在同一账号上退避重试的次数上限。
-// 降载是按客户端身份/模型容量分桶的请求级信号，换号并不改变被降载的因素，先在
-// 同账号退避重试若干次，耗尽后再换号（且全程不计入账号连击/健康度）。
-const maxCapacityShedSameAccountRetries = 2
 
 // capacityShedHandlingDisabled 报告是否通过环境变量退回旧行为（把降载当普通 500
 // 惩罚账号并立即换号）。CODEX_DISABLE_CAPACITY_SHED_HANDLING=1（或 true）时生效。
@@ -3936,7 +3942,6 @@ func (h *Handler) Responses(c *gin.Context) {
 		}
 	}()
 
-	capacityShedRetries := map[int64]int{}
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
 	grokQualityAttempts := 0
@@ -4715,7 +4720,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 					resp.Body.Close()
 					h.store.Release(account)
-					h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, proxyURL, affinityGuard, outcome, capacityShedRetries, continuousRetryPolicy)
+				h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
 					if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
 						retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 					}
@@ -4759,7 +4764,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					// 避免下游中转/计费方把它当成功并按预估 input token 计费(与回调内 reset 呼应)。
 					if !writeCommittedResponsesRetryError(c, outcome.failureMessage) {
 						c.Header("Content-Type", "application/json; charset=utf-8")
-						c.JSON(outcome.logStatusCode, gin.H{
+						c.JSON(clientFacingHTTPStatus(outcome.logStatusCode), gin.H{
 							"error": gin.H{"message": outcome.failureMessage, "type": "upstream_error"},
 						})
 					}
@@ -4776,7 +4781,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 				}
 				if !isStream && nonStreamFailure != nil && readErr == nil {
-					status := safeGrokNativeHTTPStatus(outcome.logStatusCode)
+					status := clientFacingHTTPStatus(outcome.logStatusCode)
 					if !writeCommittedResponsesRetryError(c, outcome.failureMessage) {
 						if len(nonStreamResponseBody) > 0 && gjson.ValidBytes(nonStreamResponseBody) {
 							c.Data(status, nonStreamContentType, nonStreamResponseBody)
@@ -5619,7 +5624,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 				resp.Body.Close()
 				h.store.Release(account)
-				h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, proxyURL, affinityGuard, outcome, capacityShedRetries, continuousRetryPolicy)
+					h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
 				if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
 					retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				}
@@ -5629,6 +5634,11 @@ func (h *Handler) Responses(c *gin.Context) {
 					return
 				}
 				continue
+			}
+			// 兜底账号自称成功却没有任何计费信息：不能当 200 成功交付，
+			// 否则下游「不计费也不报错」。降级为可感知的上游错误重试/上报。
+			if fallbackSucceededWithoutUsage(account, outcome, usage) {
+				outcome = emptyFallbackSuccessOutcome()
 			}
 			if outcome.logStatusCode == http.StatusOK {
 				if !claimContinuousRetrySuccess(c, continuousRetryProtocolResponses) {
@@ -5703,7 +5713,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				// 避免下游中转/计费方把它当成功并按预估 input token 计费(与回调内 reset 呼应)。
 				if !writeCommittedResponsesRetryError(c, outcome.failureMessage) {
 					c.Header("Content-Type", "application/json; charset=utf-8")
-					c.JSON(logStatusCode, gin.H{
+					c.JSON(clientFacingHTTPStatus(logStatusCode), gin.H{
 						"error": gin.H{"message": outcome.failureMessage, "type": "upstream_error"},
 					})
 				}
@@ -5722,7 +5732,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 					// The deadline owns the terminal response.
 				} else if len(terminalFailurePayload) > 0 {
-					c.JSON(logStatusCode, gin.H{
+					c.JSON(clientFacingHTTPStatus(logStatusCode), gin.H{
 						"error": gin.H{"message": outcome.failureMessage, "type": "upstream_error"},
 					})
 				} else if responseJSON != nil {
@@ -6828,7 +6838,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 	}()
 
-	capacityShedRetries := map[int64]int{}
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
 	grokQualityAttempts := 0
@@ -7668,7 +7677,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				}
 				resp.Body.Close()
 				h.store.Release(account)
-				h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, proxyURL, affinityGuard, outcome, capacityShedRetries, continuousRetryPolicy)
+					h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
 				if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
 					retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				}
@@ -7678,6 +7687,11 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					return
 				}
 				continue
+			}
+			// 兜底账号自称成功却没有任何计费信息：不能当 200 成功交付，
+			// 否则下游「不计费也不报错」。降级为可感知的上游错误重试/上报。
+			if fallbackSucceededWithoutUsage(account, outcome, usage) {
+				outcome = emptyFallbackSuccessOutcome()
 			}
 			if outcome.logStatusCode == http.StatusOK {
 				if !claimContinuousRetrySuccess(c, continuousRetryProtocolChat) {
@@ -7723,7 +7737,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				// 避免下游中转/计费方把它当成功并按预估 input token 计费(与回调内 reset 呼应)。
 				if !writeCommittedChatRetryError(c, outcome.failureMessage) {
 					c.Header("Content-Type", "application/json; charset=utf-8")
-					c.JSON(logStatusCode, gin.H{
+					c.JSON(clientFacingHTTPStatus(logStatusCode), gin.H{
 						"error": gin.H{"message": outcome.failureMessage, "type": "upstream_error"},
 					})
 				}
@@ -7742,7 +7756,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolChat) {
 					// The deadline owns the terminal response.
 				} else if len(terminalFailurePayload) > 0 {
-					c.JSON(logStatusCode, gin.H{
+					c.JSON(clientFacingHTTPStatus(logStatusCode), gin.H{
 						"error": gin.H{"message": outcome.failureMessage, "type": "upstream_error"},
 					})
 				} else if compactResult != nil {

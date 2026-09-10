@@ -242,16 +242,19 @@ func (r *retryAccountExclusions) MarkStreamFailureForEvent(accountID int64, outc
 		r.MarkTransient(accountID)
 		return
 	}
+	// 容量降载（server_is_overloaded/slow_down）换号不改变被降载的因素；
+	// 无论接力次数是否有限，均标记为暂态排除（池试完后清空），避免账号被硬排除后
+	// 40 个号逐个耗尽而根本到不了配置的接力上限。
+	if outcome.capacityShed {
+		r.MarkTransient(accountID)
+		return
+	}
 	retryLimit := generalLimit
 	if outcome.logStatusCode == http.StatusTooManyRequests || strings.Contains(failureKind, "rate_limit") {
 		retryLimit = rateLimit
 	}
 	if retryLimit != -1 {
 		r.MarkHard(accountID)
-		return
-	}
-	if outcome.capacityShed {
-		r.MarkTransient(accountID)
 		return
 	}
 	switch failureKind {

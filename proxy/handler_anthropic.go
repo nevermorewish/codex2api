@@ -577,7 +577,6 @@ func (h *Handler) Messages(c *gin.Context) {
 		}
 	}()
 
-	capacityShedRetries := map[int64]int{}
 	var affinityGuard auth.SessionAffinityGuard
 	grokQualityAttempts := 0
 	var lastClaudePolicyErr *Error
@@ -1602,7 +1601,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				}
 				resp.Body.Close()
 				h.store.Release(account)
-				h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, proxyURL, affinityGuard, outcome, capacityShedRetries, continuousRetryPolicy)
+					h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, outcome)
 				if !isFirstTokenTimeoutOutcome(outcome) && !outcome.capacityShed {
 					retryExclusions.markPreContentStreamFailure(account.ID(), outcome, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				}

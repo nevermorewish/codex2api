@@ -652,24 +652,22 @@ func TestContinuousRetryResponsesWebSocketBufferedTransportRetrySticky(t *testin
 	}
 }
 
-func TestContinuousRetryCapacityShedRetainsPendingAffinity(t *testing.T) {
+func TestContinuousRetryCapacityShedImmediateRotate(t *testing.T) {
+	// 容量降载不再同账号退避，立即软排除并解绑亲和，强制换号。
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1})
 	t.Cleanup(store.Stop)
 	account := &auth.Account{DBID: 1, AccessToken: "test-access", PlanType: "pro"}
 	store.AddAccount(account)
+	store.BindSessionAffinity("capacity-local", account, "")
 	handler := &Handler{store: store}
-	retries := map[int64]int{}
 	exclusions := newRetryAccountExclusions()
-	policy := database.ContinuousRetryPolicy{
-		Enabled:    true,
-		Categories: []string{database.ContinuousRetryCategoryResponseFailed},
+	handler.unbindOrRetainAffinityForCapacityShed(exclusions, "capacity-local", account, streamOutcome{capacityShed: true})
+	if _, ok := store.SessionAffinityAccountID("capacity-local"); ok {
+		t.Fatal("capacity shed should have unbound session affinity, but it is still bound")
 	}
-	handler.unbindOrRetainAffinityForCapacityShed(exclusions, "capacity-local", account, "", streamOutcome{capacityShed: true}, retries, policy)
-	if retries[account.ID()] != 1 {
-		t.Fatalf("capacity retry count = %d, want 1", retries[account.ID()])
-	}
-	if boundID, ok := store.SessionAffinityAccountID("capacity-local"); !ok || boundID != account.ID() {
-		t.Fatalf("capacity retry lost same-account affinity: account=%d ok=%v", boundID, ok)
+	sel := exclusions.ForSelection()
+	if !sel[account.ID()] {
+		t.Fatalf("capacity shed account %d should be soft-excluded after rotate, but it is not in the exclusion set", account.ID())
 	}
 }
 

@@ -97,40 +97,8 @@ func TestClassifyResponseFailedOutcomeCapacityShed(t *testing.T) {
 	}
 }
 
-// 容量降载先在同账号退避重试 maxCapacityShedSameAccountRetries 次（保留亲和），耗尽后换号；
-// 非降载故障一律不保留亲和。预算按账号独立计（map 语义）。
-func TestCapacityShedRetainsAffinity(t *testing.T) {
-	shed := streamOutcome{capacityShed: true, penalize: true}
-	for i := 0; i < maxCapacityShedSameAccountRetries; i++ {
-		if !capacityShedRetainsAffinity(shed, i) {
-			t.Fatalf("retriesSoFar=%d: want retain affinity", i)
-		}
-	}
-	if capacityShedRetainsAffinity(shed, maxCapacityShedSameAccountRetries) {
-		t.Fatalf("retriesSoFar=%d: want switch (budget exhausted)", maxCapacityShedSameAccountRetries)
-	}
-	nonShed := streamOutcome{capacityShed: false, penalize: true}
-	if capacityShedRetainsAffinity(nonShed, 0) {
-		t.Fatalf("non-shed outcome should never retain affinity")
-	}
-
-	// 按账号独立预算：账号 A 用满后换到账号 B，B 从 0 起仍有自己的退避预算。
-	retries := map[int64]int{}
-	const accountA, accountB = int64(11), int64(22)
-	for capacityShedRetainsAffinity(shed, retries[accountA]) {
-		retries[accountA]++
-	}
-	if retries[accountA] != maxCapacityShedSameAccountRetries {
-		t.Fatalf("accountA budget = %d, want %d", retries[accountA], maxCapacityShedSameAccountRetries)
-	}
-	if !capacityShedRetainsAffinity(shed, retries[accountB]) {
-		t.Fatalf("accountB should have its own fresh budget, not inherit A's exhaustion")
-	}
-}
-
-// 预算耗尽后必须软排除该账号：降载不惩罚健康度，仅解绑亲和不足以换号，软排除才能
-// 让调度选到兄弟账号，池试完后 ResetSoft 清空不会永久搁置。
-func TestCapacityShedExhaustionSoftExcludes(t *testing.T) {
+// 容量降载立即软排除该账号，不再同账号退避，ForSelection 应包含该账号 ID。
+func TestCapacityShedImmediateRotate(t *testing.T) {
 	ex := newRetryAccountExclusions()
 	ex.MarkSoft(11)
 	if sel := ex.ForSelection(); !sel[11] {

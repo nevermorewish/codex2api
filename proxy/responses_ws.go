@@ -594,7 +594,6 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
-	capacityShedRetries := map[int64]int{}
 	fallbackState := &fallbackRouteState{}
 	// A provider-owned continuation/compaction cannot be moved to another
 	// provider just by deleting its ID. Only self-contained turns use fallback.
@@ -1070,7 +1069,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 						retryExclusions.MarkStreamFailureForEvent(account.ID(), retryErr.outcome, eventType, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
 					}
 					if !preserveAffinity {
-						h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, proxyURL, affinityGuard, retryErr.outcome, capacityShedRetries, continuousRetryPolicy)
+						h.unbindOrRetainAffinityForCapacityShedWithGuard(retryExclusions, affinityKey, account, retryErr.outcome)
 					}
 					retryOrdinal, retryLimit := retryStateForStreamEvent(retryErr.outcome, eventType, generalRetries, rateLimitRetries, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
 					log.Printf("Responses WebSocket 首内容前上游失败，重试 (attempt %s, account %d, reason=%s): %s", retryAttemptProgress(retryOrdinal-1, retryLimit), account.ID(), preContentRetryReason(retryErr.outcome), retryErr.outcome.failureMessage)
