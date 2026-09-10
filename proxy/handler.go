@@ -3308,6 +3308,8 @@ func isRetryableStatus(code int) bool {
 	return code == http.StatusServiceUnavailable ||
 		code == http.StatusUnauthorized ||
 		code == http.StatusInternalServerError ||
+		code == http.StatusBadGateway ||
+		code == http.StatusGatewayTimeout ||
 		code == http.StatusPaymentRequired ||
 		code == http.StatusForbidden ||
 		code == http.StatusUpgradeRequired
@@ -4828,7 +4830,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					h.recordCompactionProvenanceFromPayload(context.Background(), account, nonStreamResponseBody)
 				}
 				if outcome.logStatusCode != http.StatusOK {
-					log.Printf("OpenAI Responses 流异常结束 (account %d, status %d): %s，已转发约 %d 字符", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
+					log.Printf("OpenAI Responses 流异常结束 (attempt %s, account %d, status %d): %s，已转发约 %d 字符", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
 					if deltaCharCount > 0 && outcome.failureKind != "usage_missing" {
 						estOutputTokens := deltaCharCount / 3
 						if estOutputTokens < 1 {
@@ -5702,7 +5704,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				c.Set(AccessLogStatusContextKey, logStatusCode)
 			}
 			if outcome.logStatusCode != http.StatusOK {
-				log.Printf("流异常结束 (account %d, /v1/responses, status %d): %s，已转发约 %d 字符", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
+				log.Printf("流异常结束 (attempt %s, account %d, /v1/responses, status %d): %s，已转发约 %d 字符", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
 				if deltaCharCount > 0 && outcome.failureKind != "usage_missing" {
 					estOutputTokens := deltaCharCount / 3 // 粗略估算: 约 3 字符 = 1 token
 					if estOutputTokens < 1 {
@@ -7749,7 +7751,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			}
 			logStatusCode := outcome.logStatusCode
 			if outcome.logStatusCode != http.StatusOK {
-				log.Printf("流异常结束 (account %d, /v1/chat/completions, status %d): %s，已转发约 %d 字符", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
+				log.Printf("流异常结束 (attempt %s, account %d, /v1/chat/completions, status %d): %s，已转发约 %d 字符", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
 				if deltaCharCount > 0 && outcome.failureKind != "usage_missing" {
 					estOutputTokens := deltaCharCount / 3
 					if estOutputTokens < 1 {

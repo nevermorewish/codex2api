@@ -24,7 +24,9 @@ func TestShouldRetryHTTPStatusUnlimitedBudgets(t *testing.T) {
 	t.Run("general transient statuses", func(t *testing.T) {
 		for _, statusCode := range []int{
 			http.StatusInternalServerError,
+			http.StatusBadGateway,
 			http.StatusServiceUnavailable,
+			http.StatusGatewayTimeout,
 		} {
 			t.Run(http.StatusText(statusCode), func(t *testing.T) {
 				generalRetries := 0
@@ -41,15 +43,20 @@ func TestShouldRetryHTTPStatusUnlimitedBudgets(t *testing.T) {
 		}
 	})
 
-	t.Run("502 and 504 stay outside the legacy set", func(t *testing.T) {
+	t.Run("502 and 504 consume the configured general budget", func(t *testing.T) {
 		for _, statusCode := range []int{http.StatusBadGateway, http.StatusGatewayTimeout} {
 			generalRetries := 0
 			rateLimitRetries := 0
-			if shouldRetryHTTPStatus(statusCode, nil, &generalRetries, &rateLimitRetries, -1, -1) {
-				t.Fatalf("status %d used an unlimited legacy budget", statusCode)
+			for retry := 0; retry < 5; retry++ {
+				if !shouldRetryHTTPStatus(statusCode, nil, &generalRetries, &rateLimitRetries, 5, 0) {
+					t.Fatalf("status %d stopped before configured retry %d", statusCode, retry+1)
+				}
 			}
-			if generalRetries != 0 || rateLimitRetries != 0 {
-				t.Fatalf("status %d changed counters: general=%d rate_limit=%d", statusCode, generalRetries, rateLimitRetries)
+			if shouldRetryHTTPStatus(statusCode, nil, &generalRetries, &rateLimitRetries, 5, 0) {
+				t.Fatalf("status %d exceeded the configured retry budget", statusCode)
+			}
+			if generalRetries != 5 || rateLimitRetries != 0 {
+				t.Fatalf("status %d counters: general=%d rate_limit=%d, want 5/0", statusCode, generalRetries, rateLimitRetries)
 			}
 		}
 	})
@@ -125,6 +132,7 @@ func TestBadGatewayAndGatewayTimeoutRetryPolicyMatrix(t *testing.T) {
 			policy: func(int) database.ContinuousRetryPolicy {
 				return database.ContinuousRetryPolicy{Enabled: false, Categories: []string{database.ContinuousRetryCategoryHTTP5xx}}
 			},
+			want: true,
 		},
 		{
 			name:  "finite legacy budget",
@@ -132,6 +140,7 @@ func TestBadGatewayAndGatewayTimeoutRetryPolicyMatrix(t *testing.T) {
 			policy: func(int) database.ContinuousRetryPolicy {
 				return database.ContinuousRetryPolicy{}
 			},
+			want: true,
 		},
 		{
 			name:  "http 5xx category",

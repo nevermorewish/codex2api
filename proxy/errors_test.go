@@ -76,14 +76,14 @@ func TestErrorUpstream(t *testing.T) {
 	if err.Cause != cause {
 		t.Error("cause should match")
 	}
-	if err.Retryable {
-		t.Error("502 upstream error should not be legacy retryable")
+	if !err.Retryable {
+		t.Error("502 upstream error should be retryable")
 	}
 
-	if timeout := ErrUpstream(http.StatusGatewayTimeout, "upstream timeout", cause); timeout.Retryable {
-		t.Error("504 upstream error should not be legacy retryable")
+	if timeout := ErrUpstream(http.StatusGatewayTimeout, "upstream timeout", cause); !timeout.Retryable {
+		t.Error("504 upstream error should be retryable")
 	}
-	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
 		if upstream := ErrUpstream(status, "legacy retryable", cause); !upstream.Retryable {
 			t.Errorf("status %d upstream error should remain legacy retryable", status)
 		}

@@ -197,6 +197,8 @@ func ErrUpstream(statusCode int, message string, cause error) *Error {
 		Type:    ErrorTypeUpstreamError,
 		Retryable: statusCode == http.StatusTooManyRequests ||
 			statusCode == http.StatusInternalServerError ||
+			statusCode == http.StatusBadGateway ||
+			statusCode == http.StatusGatewayTimeout ||
 			statusCode == http.StatusServiceUnavailable,
 		HTTPStatus: statusCode,
 		Cause:      cause,

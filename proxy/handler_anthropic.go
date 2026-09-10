@@ -1664,8 +1664,8 @@ func (h *Handler) Messages(c *gin.Context) {
 
 			logStatusCode := outcome.logStatusCode
 			if outcome.logStatusCode != http.StatusOK {
-				log.Printf("流异常结束 (account %d, /v1/messages, status %d): %s，已转发约 %d 字符",
-					account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
+				log.Printf("流异常结束 (attempt %s, account %d, /v1/messages, status %d): %s，已转发约 %d 字符",
+					retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
 				if deltaCharCount > 0 && outcome.failureKind != "usage_missing" {
 					estOutputTokens := deltaCharCount / 3
 					if estOutputTokens < 1 {
