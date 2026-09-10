@@ -378,20 +378,19 @@ const (
 )
 
 // SchedulerBreakdown 调度评分拆解
+//
+// 只保留账号自身属性维度的调整项（凭证有效性、真实配额）。上游故障造成的
+// 超时/5xx/连击/延迟/成功率变化不再扣分：那些是上游与链路的问题，把账算在
+// 账号头上会让整池在上游抖动时一起降档、并发一起收缩，形成自我强化循环。
 type SchedulerBreakdown struct {
 	UnauthorizedPenalty float64
 	RateLimitPenalty    float64
-	TimeoutPenalty      float64
-	ServerPenalty       float64
-	FailurePenalty      float64
 	SuccessBonus        float64
 	ProvenBonus         float64 // 经过验证的账号（TotalRequests > 10）加分
 	UsagePenalty7d      float64
 	UsageUrgencyBonus5h float64
 	UsageUrgencyBonus7d float64
 	ExpiryUrgencyBonus  float64
-	LatencyPenalty      float64
-	SuccessRatePenalty  float64 // 滑动窗口成功率惩罚
 }
 
 // SchedulerDebugSnapshot 调度调试快照
@@ -430,7 +429,6 @@ type AccountListRuntimeSnapshot struct {
 	ResetSparkAt            time.Time
 	HealthTier              string
 	DispatchScore           float64
-	LatencyPenalty          float64
 	LastUnauthorizedAt      time.Time
 	LastRateLimitedAt       time.Time
 	LastTimeoutAt           time.Time
@@ -985,7 +983,8 @@ func (a *Account) schedulerBreakdownLocked(now time.Time) SchedulerBreakdown {
 	breakdown := SchedulerBreakdown{}
 	premium5hLimited := a.premium5hRateLimitedLocked(now)
 
-	// 线性衰减惩罚：随时间平滑更无突变
+	// 线性衰减惩罚：随时间平滑更无突变。只保留凭证与配额维度——401 说明
+	// 凭证已被上游作废，429 说明账号自身的真实配额被打满，两者都重试不掉。
 	if !a.LastUnauthorizedAt.IsZero() {
 		elapsed := now.Sub(a.LastUnauthorizedAt)
 		breakdown.UnauthorizedPenalty = linearDecay(50, elapsed, 24*time.Hour)
@@ -994,16 +993,7 @@ func (a *Account) schedulerBreakdownLocked(now time.Time) SchedulerBreakdown {
 		elapsed := now.Sub(a.LastRateLimitedAt)
 		breakdown.RateLimitPenalty = linearDecay(22, elapsed, time.Hour)
 	}
-	if !a.LastTimeoutAt.IsZero() {
-		elapsed := now.Sub(a.LastTimeoutAt)
-		breakdown.TimeoutPenalty = linearDecay(18, elapsed, 15*time.Minute)
-	}
-	if !a.LastServerErrorAt.IsZero() {
-		elapsed := now.Sub(a.LastServerErrorAt)
-		breakdown.ServerPenalty = linearDecay(12, elapsed, 15*time.Minute)
-	}
 
-	breakdown.FailurePenalty = float64(clampInt(a.FailureStreak*6, 0, 24))
 	if !premium5hLimited {
 		breakdown.SuccessBonus = float64(clampInt(a.SuccessStreak*2, 0, 12))
 	}
@@ -1011,17 +1001,6 @@ func (a *Account) schedulerBreakdownLocked(now time.Time) SchedulerBreakdown {
 	// 经过验证的账号（累计请求 > 10 次）优先调度
 	if !premium5hLimited && atomic.LoadInt64(&a.TotalRequests) > 10 {
 		breakdown.ProvenBonus = 20
-	}
-
-	// 滑动窗口成功率惩罚
-	if a.RecentResultsCnt >= 5 { // 至少 5 次请求才统计
-		rate := a.recentSuccessRateLocked()
-		switch {
-		case rate < 0.5:
-			breakdown.SuccessRatePenalty = 15
-		case rate < 0.75:
-			breakdown.SuccessRatePenalty = 8
-		}
 	}
 
 	if !a.skipsUsageWindowLimitsLocked() && a.UsagePercent7dValid && strings.EqualFold(a.PlanType, "free") {
@@ -1035,15 +1014,6 @@ func (a *Account) schedulerBreakdownLocked(now time.Time) SchedulerBreakdown {
 		case a.UsagePercent7d >= 70:
 			breakdown.UsagePenalty7d = 8
 		}
-	}
-
-	switch {
-	case a.LatencyEWMA >= 20000:
-		breakdown.LatencyPenalty = 15
-	case a.LatencyEWMA >= 10000:
-		breakdown.LatencyPenalty = 8
-	case a.LatencyEWMA >= 5000:
-		breakdown.LatencyPenalty = 4
 	}
 
 	return breakdown
@@ -1219,12 +1189,7 @@ func (a *Account) recomputeSchedulerLocked(baseLimit int64) {
 	score := 100.0 -
 		breakdown.UnauthorizedPenalty -
 		breakdown.RateLimitPenalty -
-		breakdown.TimeoutPenalty -
-		breakdown.ServerPenalty -
-		breakdown.FailurePenalty -
-		breakdown.UsagePenalty7d -
-		breakdown.LatencyPenalty -
-		breakdown.SuccessRatePenalty +
+		breakdown.UsagePenalty7d +
 		breakdown.SuccessBonus +
 		breakdown.ProvenBonus
 
@@ -1236,10 +1201,6 @@ func (a *Account) recomputeSchedulerLocked(baseLimit int64) {
 		tier = HealthTierWarm
 	}
 
-	if a.LastFailureAt.After(a.LastSuccessAt) && !a.LastFailureAt.IsZero() && tier == HealthTierHealthy &&
-		!a.isolatedTransportFailureLocked() {
-		tier = HealthTierWarm
-	}
 	if !a.LastUnauthorizedAt.IsZero() && now.Sub(a.LastUnauthorizedAt) < 24*time.Hour && tier == HealthTierHealthy {
 		tier = HealthTierWarm
 	}
@@ -2099,7 +2060,6 @@ func (a *Account) GetAccountListRuntimeSnapshot() AccountListRuntimeSnapshot {
 		ResetSparkAt:            a.ResetSparkAt,
 		HealthTier:              string(a.HealthTier),
 		DispatchScore:           a.DispatchScore,
-		LatencyPenalty:          a.schedulerBreakdownLocked(now).LatencyPenalty,
 		LastUnauthorizedAt:      a.LastUnauthorizedAt,
 		LastRateLimitedAt:       a.LastRateLimitedAt,
 		LastTimeoutAt:           a.LastTimeoutAt,
@@ -10115,9 +10075,7 @@ const transportFailureTierDropStreak = 3
 // isolatedTransportFailureLocked 判断"最近一次失败是孤立的传输层断流"。
 //
 // 传输层断流多来自上游边缘重置或链路抖动（对端 RST_STREAM、连接中途被重置），
-// 与账号自身健康无关：一天几次这样的背景噪声本不该让正常账号被削掉一半并发
-// （issue #491）。连续失败达到阈值才认定账号/出口真有问题——那时按分数也已经
-// 掉出 Healthy（每次连击扣 6 分），两条判据自然一致。
+// 与账号自身健康无关（issue #491）。
 func (a *Account) isolatedTransportFailureLocked() bool {
 	return a.LastFailureKind == transportFailureKind && a.FailureStreak < transportFailureTierDropStreak
 }
@@ -10125,6 +10083,10 @@ func (a *Account) isolatedTransportFailureLocked() bool {
 const transportFailureKind = "transport"
 
 // ReportRequestFailure 记录一次失败请求，用于动态调度评分
+//
+// 只登记凭证与配额维度的硬状态，不再按失败类型降档：超时、5xx、断流都是上游
+// 与链路的问题，把档位算在账号头上会让整池在上游抖动时一起降到 risky、并发
+// 一起被砍，反而放大故障。
 func (s *Store) ReportRequestFailure(acc *Account, kind string, latency time.Duration) {
 	// Fallback accounts are runtime-only relay credentials. Their upstream
 	// failures must not lower local health or alter scheduler state; retry
@@ -10151,28 +10113,10 @@ func (s *Store) ReportRequestFailure(acc *Account, kind string, latency time.Dur
 		// incorrectly select the 24-hour backoff.
 		acc.HealthTier = HealthTierBanned
 	case "timeout":
+		// 仅留痕供运营查看，不参与档位判定。
 		acc.LastTimeoutAt = now
-		if acc.HealthTier == HealthTierHealthy {
-			acc.HealthTier = HealthTierWarm
-		} else {
-			acc.HealthTier = HealthTierRisky
-		}
 	case "server":
 		acc.LastServerErrorAt = now
-		if acc.HealthTier == HealthTierHealthy {
-			acc.HealthTier = HealthTierWarm
-		} else {
-			acc.HealthTier = HealthTierRisky
-		}
-	case transportFailureKind:
-		// 这里刻意不动 HealthTier：本函数结尾的 recomputeSchedulerLocked 会按
-		// 分数重算并覆盖档位，此处赋值是无效的（其它分支的赋值同样如此，只有
-		// unauthorized 的 Banned 会被重算逻辑显式保留）。传输层失败的档位由
-		// 连击扣分 + isolatedTransportFailureLocked 的豁免共同决定。
-	case "client":
-		if acc.HealthTier == HealthTierHealthy {
-			acc.HealthTier = HealthTierWarm
-		}
 	}
 
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))

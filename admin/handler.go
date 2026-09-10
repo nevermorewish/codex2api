@@ -1784,16 +1784,11 @@ func accountAccessTokenType(row *database.AccountRow) string {
 type schedulerBreakdownResponse struct {
 	UnauthorizedPenalty float64 `json:"unauthorized_penalty"`
 	RateLimitPenalty    float64 `json:"rate_limit_penalty"`
-	TimeoutPenalty      float64 `json:"timeout_penalty"`
-	ServerPenalty       float64 `json:"server_penalty"`
-	FailurePenalty      float64 `json:"failure_penalty"`
 	SuccessBonus        float64 `json:"success_bonus"`
 	UsagePenalty7d      float64 `json:"usage_penalty_7d"`
 	UsageUrgencyBonus5h float64 `json:"usage_urgency_bonus_5h"`
 	UsageUrgencyBonus7d float64 `json:"usage_urgency_bonus_7d"`
 	ExpiryUrgencyBonus  float64 `json:"expiry_urgency_bonus"`
-	LatencyPenalty      float64 `json:"latency_penalty"`
-	SuccessRatePenalty  float64 `json:"success_rate_penalty"`
 }
 
 // ListAccounts 获取账号列表

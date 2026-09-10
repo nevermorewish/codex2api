@@ -42,11 +42,9 @@ export default function SchedulerBoard() {
       ? 'dispatch_score' as const
       : sortBy === 'usage_desc'
         ? 'usage' as const
-        : sortBy === 'latency_penalty'
-          ? 'latency_penalty' as const
-          : sortBy === 'unauthorized'
-            ? 'unauthorized' as const
-            : 'risk' as const
+        : sortBy === 'unauthorized'
+          ? 'unauthorized' as const
+          : 'risk' as const
     const order = sortBy === 'score_asc' ? 'asc' as const : 'desc' as const
     const [overview, accountsResponse] = await Promise.all([
       api.getOpsOverview(controller.signal),
@@ -243,7 +241,6 @@ export default function SchedulerBoard() {
                         { label: t('scheduler.sortRisk'), value: 'risk' },
                         { label: t('scheduler.sortScoreAsc'), value: 'score_asc' },
                         { label: t('scheduler.sortUsageDesc'), value: 'usage_desc' },
-                        { label: t('scheduler.sortLatencyPenalty'), value: 'latency_penalty' },
                         { label: t('scheduler.sortUnauthorized'), value: 'unauthorized' },
                       ]}
                     />
@@ -409,15 +406,6 @@ function buildScoreReasonTags(account: AccountRow, t: any) {
   if (breakdown.rate_limit_penalty > 0) {
     tags.push({ label: `429 -${Math.round(breakdown.rate_limit_penalty)}`, className: 'border-transparent bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300' })
   }
-  if (breakdown.timeout_penalty > 0) {
-    tags.push({ label: `${t('scheduler.reasonTimeout')} -${Math.round(breakdown.timeout_penalty)}`, className: 'border-transparent bg-orange-500/10 text-orange-600 dark:bg-orange-500/20 dark:text-orange-300' })
-  }
-  if (breakdown.server_penalty > 0) {
-    tags.push({ label: `5xx -${Math.round(breakdown.server_penalty)}`, className: 'border-transparent bg-rose-500/10 text-rose-600 dark:bg-rose-500/20 dark:text-rose-300' })
-  }
-  if (breakdown.failure_penalty > 0) {
-    tags.push({ label: `${t('scheduler.reasonFailure')} -${Math.round(breakdown.failure_penalty)}`, className: 'border-transparent bg-slate-500/10 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300' })
-  }
   if (breakdown.usage_penalty_7d > 0) {
     tags.push({ label: `${formatLongUsageWindowLabel(account)} -${Math.round(breakdown.usage_penalty_7d)}`, className: 'border-transparent bg-fuchsia-500/10 text-fuchsia-600 dark:bg-fuchsia-500/20 dark:text-fuchsia-300' })
   }
@@ -426,9 +414,6 @@ function buildScoreReasonTags(account: AccountRow, t: any) {
   }
   if ((breakdown.usage_urgency_bonus_7d ?? 0) > 0) {
     tags.push({ label: `${t('scheduler.reason7dUrgency')} +${Math.round(breakdown.usage_urgency_bonus_7d ?? 0)}`, className: 'border-transparent bg-lime-500/10 text-lime-700 dark:bg-lime-500/20 dark:text-lime-300' })
-  }
-  if (breakdown.latency_penalty > 0) {
-    tags.push({ label: `${t('scheduler.reasonLatency')} -${Math.round(breakdown.latency_penalty)}`, className: 'border-transparent bg-cyan-500/10 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300' })
   }
   if (breakdown.success_bonus > 0) {
     tags.push({ label: `${t('scheduler.reasonSuccess')} +${Math.round(breakdown.success_bonus)}`, className: 'border-transparent bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300' })

@@ -314,15 +314,10 @@ export interface AccountRow {
   scheduler_breakdown?: {
     unauthorized_penalty: number
     rate_limit_penalty: number
-    timeout_penalty: number
-    server_penalty: number
-    failure_penalty: number
     success_bonus: number
     usage_penalty_7d: number
     usage_urgency_bonus_5h?: number
     usage_urgency_bonus_7d?: number
-    latency_penalty: number
-    success_rate_penalty?: number
   }
   last_unauthorized_at?: ISODateString
   last_rate_limited_at?: ISODateString
@@ -498,7 +493,7 @@ export interface AccountsPageParams {
   healthTier?: 'healthy' | 'warm' | 'risky' | 'banned' | 'attention'
   proxyUrl?: string
   proxyFilter?: 'all' | 'unbound' | 'this' | 'other'
-  sort?: 'requests' | 'today' | 'usage' | 'created_at' | 'updated_at' | 'scheduler_priority' | 'group' | 'risk' | 'dispatch_score' | 'latency_penalty' | 'unauthorized'
+  sort?: 'requests' | 'today' | 'usage' | 'created_at' | 'updated_at' | 'scheduler_priority' | 'group' | 'risk' | 'dispatch_score' | 'unauthorized'
   order?: 'asc' | 'desc'
 }
 

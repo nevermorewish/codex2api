@@ -435,15 +435,10 @@ func TestSchedulerBreakdownResponse(t *testing.T) {
 	resp := schedulerBreakdownResponse{
 		UnauthorizedPenalty: 10.0,
 		RateLimitPenalty:    5.0,
-		TimeoutPenalty:      3.0,
-		ServerPenalty:       2.0,
-		FailurePenalty:      1.0,
 		SuccessBonus:        4.0,
 		UsagePenalty7d:      8.0,
 		UsageUrgencyBonus5h: 6.0,
 		UsageUrgencyBonus7d: 7.0,
-		LatencyPenalty:      2.5,
-		SuccessRatePenalty:  1.5,
 	}
 
 	if resp.UnauthorizedPenalty != 10.0 {

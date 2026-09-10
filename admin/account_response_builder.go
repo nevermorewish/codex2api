@@ -335,16 +335,11 @@ func (h *Handler) buildAccountResponse(
 			resp.ScoreBreakdown = schedulerBreakdownResponse{
 				UnauthorizedPenalty: debug.Breakdown.UnauthorizedPenalty,
 				RateLimitPenalty:    debug.Breakdown.RateLimitPenalty,
-				TimeoutPenalty:      debug.Breakdown.TimeoutPenalty,
-				ServerPenalty:       debug.Breakdown.ServerPenalty,
-				FailurePenalty:      debug.Breakdown.FailurePenalty,
 				SuccessBonus:        debug.Breakdown.SuccessBonus,
 				UsagePenalty7d:      debug.Breakdown.UsagePenalty7d,
 				UsageUrgencyBonus5h: debug.Breakdown.UsageUrgencyBonus5h,
 				UsageUrgencyBonus7d: debug.Breakdown.UsageUrgencyBonus7d,
 				ExpiryUrgencyBonus:  debug.Breakdown.ExpiryUrgencyBonus,
-				LatencyPenalty:      debug.Breakdown.LatencyPenalty,
-				SuccessRatePenalty:  debug.Breakdown.SuccessRatePenalty,
 			}
 		}
 		if usagePct, ok := runtimeAccount.GetUsagePercent7d(); ok {

@@ -87,7 +87,6 @@ type accountListSnapshotItem struct {
 	SchedulerPriority   int64
 	HealthTier          string
 	DispatchScore       float64
-	LatencyPenalty      float64
 	LastUnauthorizedAt  time.Time
 	LastRateLimitedAt   time.Time
 	LastTimeoutAt       time.Time
@@ -759,7 +758,6 @@ func (h *Handler) buildAccountListSnapshotItem(row *database.AccountRow, request
 				}
 				item.HealthTier = runtimeSnapshot.HealthTier
 				item.DispatchScore = runtimeSnapshot.DispatchScore
-				item.LatencyPenalty = runtimeSnapshot.LatencyPenalty
 				item.LastUnauthorizedAt = runtimeSnapshot.LastUnauthorizedAt
 				item.LastRateLimitedAt = runtimeSnapshot.LastRateLimitedAt
 				item.LastTimeoutAt = runtimeSnapshot.LastTimeoutAt
@@ -1297,8 +1295,6 @@ func sortAccountListItems(items []*accountListSnapshotItem, key, order string) {
 			}
 		case "dispatch_score":
 			cmp = compareFloat64(a.DispatchScore, b.DispatchScore)
-		case "latency_penalty":
-			cmp = compareFloat64(a.LatencyPenalty, b.LatencyPenalty)
 		case "unauthorized":
 			cmp = compareTime(a.LastUnauthorizedAt, b.LastUnauthorizedAt)
 		default:

@@ -100,17 +100,22 @@ func TestAccountBaseConcurrencyOverrideControlsDynamicLimit(t *testing.T) {
 		t.Fatalf("healthy DynamicConcurrencyLimit = %d, want 4", acc.DynamicConcurrencyLimit)
 	}
 
+	// 上游故障不再降档：超时/5xx 只留痕，账号保持满并发。
 	acc.mu.Lock()
 	acc.LastFailureAt = time.Now()
+	acc.LastTimeoutAt = time.Now()
+	acc.LastServerErrorAt = time.Now()
+	acc.FailureStreak = 5
 	acc.mu.Unlock()
 	recomputeTestAccount(acc, 10)
-	if acc.HealthTier != HealthTierWarm {
-		t.Fatalf("warm HealthTier = %s, want %s", acc.HealthTier, HealthTierWarm)
+	if acc.HealthTier != HealthTierHealthy {
+		t.Fatalf("HealthTier = %s, want %s (上游故障不降档)", acc.HealthTier, HealthTierHealthy)
 	}
-	if acc.DynamicConcurrencyLimit != 2 {
-		t.Fatalf("warm DynamicConcurrencyLimit = %d, want 2", acc.DynamicConcurrencyLimit)
+	if acc.DynamicConcurrencyLimit != 4 {
+		t.Fatalf("DynamicConcurrencyLimit = %d, want 4 (上游故障不削并发)", acc.DynamicConcurrencyLimit)
 	}
 
+	// 只有账号自身的凭证/429 维度才会降到 risky。
 	acc.mu.Lock()
 	acc.LastUnauthorizedAt = time.Now()
 	acc.mu.Unlock()
@@ -123,20 +128,37 @@ func TestAccountBaseConcurrencyOverrideControlsDynamicLimit(t *testing.T) {
 	}
 }
 
-func TestAccountSkipWarmTierPromotesWarmScoreToHealthy(t *testing.T) {
+// 上游超时不再把账号降到 warm：档位只跟凭证与配额维度走。
+func TestAccountTimeoutDoesNotDemoteHealthTier(t *testing.T) {
 	acc := &Account{
 		AccessToken:   "token",
 		Status:        StatusReady,
 		PlanType:      "pro",
-		SkipWarmTier:  true,
 		LastTimeoutAt: time.Now(),
 	}
 
 	recomputeTestAccount(acc, 6)
 
-	if acc.SchedulerScore >= 85 || acc.SchedulerScore < 60 {
-		t.Fatalf("SchedulerScore = %v, want warm score range", acc.SchedulerScore)
+	if acc.HealthTier != HealthTierHealthy {
+		t.Fatalf("HealthTier = %s, want %s (超时不降档)", acc.HealthTier, HealthTierHealthy)
 	}
+	if acc.DynamicConcurrencyLimit != 6 {
+		t.Fatalf("DynamicConcurrencyLimit = %d, want full healthy limit 6", acc.DynamicConcurrencyLimit)
+	}
+}
+
+// SkipWarmTier 仍然把真实的 warm（429 衰减等账号自身维度）提升到 healthy。
+func TestAccountSkipWarmTierPromotesWarmScoreToHealthy(t *testing.T) {
+	acc := &Account{
+		AccessToken:       "token",
+		Status:            StatusReady,
+		PlanType:          "pro",
+		SkipWarmTier:      true,
+		LastRateLimitedAt: time.Now(),
+	}
+
+	recomputeTestAccount(acc, 6)
+
 	if acc.HealthTier != HealthTierHealthy {
 		t.Fatalf("HealthTier = %s, want %s", acc.HealthTier, HealthTierHealthy)
 	}
@@ -145,7 +167,8 @@ func TestAccountSkipWarmTierPromotesWarmScoreToHealthy(t *testing.T) {
 	}
 }
 
-func TestAccountSkipWarmTierPromotesRecentFailureWarmToHealthy(t *testing.T) {
+// 最近的失败不再单独把 healthy 压成 warm，跳过判定自然也不再生效。
+func TestAccountRecentFailureStaysHealthy(t *testing.T) {
 	acc := &Account{
 		AccessToken:   "token",
 		Status:        StatusReady,
