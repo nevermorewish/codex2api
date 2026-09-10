@@ -688,7 +688,7 @@ func (s *Store) reloadAccountGroupRoutingByID(ctx context.Context, groupID int64
 // Keeping it as a method now makes settings events forward-compatible with a
 // rolling deployment where older replicas do not know the new column yet.
 func (s *Store) reloadSchedulerEngineSetting(ctx context.Context) error {
-	if strings.TrimSpace(os.Getenv("CODEX_SCHEDULER_ENGINE")) != "" {
+	if strings.TrimSpace(os.Getenv("CODEX_SCHEDULER_ENGINE")) != "" || fastSchedulerEnabledFromEnv() {
 		return nil
 	}
 	settings, err := s.db.GetSystemSettings(ctx)

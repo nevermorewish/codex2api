@@ -3922,10 +3922,16 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 		s.SetPromptFilterConfig(promptFilterCfg)
 	}
 	// 新调度引擎环境变量优先；未配置时兼容旧 fast_scheduler_enabled。
-	legacyFastEnabled := fastSchedulerEnabledFromEnv() || settings.FastSchedulerEnabled
+	// FAST_SCHEDULER_ENABLED=true 是部署级强制开关，不能被数据库里
+	// 历史遗留的 scheduler_engine=legacy 覆盖。
+	envFastEnabled := fastSchedulerEnabledFromEnv()
+	legacyFastEnabled := envFastEnabled || settings.FastSchedulerEnabled
 	engineSetting := strings.TrimSpace(os.Getenv("CODEX_SCHEDULER_ENGINE"))
 	if engineSetting == "" {
 		engineSetting = settings.SchedulerEngine
+		if envFastEnabled && strings.EqualFold(engineSetting, "legacy") {
+			engineSetting = "indexed"
+		}
 	}
 	engine := normalizeSchedulerEngine(engineSetting, legacyFastEnabled)
 	s.schedulerEngine.Store(engine)
