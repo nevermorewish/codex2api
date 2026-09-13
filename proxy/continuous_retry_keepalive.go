@@ -275,6 +275,9 @@ type continuousRetryHTTPResult struct {
 // retry attempt is waiting for upstream response headers. The worker never
 // touches the downstream writer; that remains owned by the handler goroutine.
 func executeHTTPWithContinuousRetryKeepalive(ctx context.Context, execute func() (*http.Response, error)) (*http.Response, error) {
+	if err := claimUnifiedRetryAttempt(ctx); err != nil {
+		return nil, err
+	}
 	keepalive := continuousRetryKeepaliveForContext(ctx)
 	if execute == nil {
 		return nil, errors.New("nil upstream executor")

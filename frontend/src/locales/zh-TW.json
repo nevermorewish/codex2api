@@ -294,6 +294,21 @@
     "proxyPoolLinkedHint": "已關聯代理池節點（按位址綁定）：在「代理」頁修改該節點位址會同步到所有綁定帳號，刪除則自動解除綁定。"
   },
   "settings": {
+    "retryPolicyTitle": "请求重试策略",
+    "retryPolicyDesc": "统一控制重试、流式交付和总等待时间。旧配置已转换；完整结果模式会继续缓冲，直到您主动切换。",
+    "retryPolicyMode": "重试模式",
+    "retryPolicyModeDesc": "决定什么时候允许切号，以及什么时候向客户端发送内容。",
+    "retryPolicyOff": "关闭重试",
+    "retryPolicyBeforeToken": "首 Token 前重试",
+    "retryPolicyFullResponse": "完整结果重试",
+    "retryPolicyBufferedHint": "完整结果模式：整轮成功后才交付。首 Token 后失败仍可重试，会增加客户端等待时间。",
+    "retryPolicyStreamingHint": "首 Token 前允许静默切号；首 Token 到达后立即输出。输出后断流会发送明确错误并结束，不再拼接其他账号的结果。",
+    "retryPolicyOffHint": "只允许首次调用上游，不切号重试；请求总时限仍然生效。",
+    "retryPolicyAttempts": "最大尝试次数（含首次）",
+    "retryPolicyAttemptsDesc": "所有错误类型和兜底账号共用次数。3 次表示首次调用加最多 2 次重试。",
+    "retryPolicyTimeout": "请求总时限",
+    "retryPolicyTimeoutDesc": "从请求开始计算，覆盖排队、调用和重试。切号、兜底均不会重置时限。",
+    "retryPolicySelectorHint": "错误选择器可扩大可重试错误范围，但不能突破最大尝试次数、总时限或已开始输出的边界。",
     "pricing": {
       "contextThreshold": "長上下文閾值",
       "revertThreshold": "還原為 {{value}} tokens",

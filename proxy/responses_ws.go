@@ -512,7 +512,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	timeoutTerminalWritten := false
 	writeTimeoutTerminal := func() error {
 		apiErr := api.NewAPIError(api.ErrCodeUpstreamTimeout, continuousRetryTimeoutMessage, api.ErrorTypeUpstream)
-		if lastFailure, ok := continuousRetryLastFailure(c.Request.Context()); ok {
+		if continuousRetryPolicy.RequestPolicy != nil {
+			apiErr = api.NewAPIError(api.ErrorCode("request_deadline_exceeded"), "Request total time limit exceeded", api.ErrorTypeUpstream)
+		} else if lastFailure, ok := continuousRetryLastFailure(c.Request.Context()); ok {
 			message := usageLogErrorMessage(lastFailure.status, lastFailure.body)
 			if message == "" {
 				message = fmt.Sprintf("Upstream returned HTTP %d", lastFailure.status)
@@ -544,6 +546,10 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	maxRetries := wsRetrySettings.CodexWSSilentRetries
 	if !silentRetryEnabled {
 		maxRetries = 0
+	}
+	if continuousRetryPolicy.RequestPolicy != nil {
+		retryEnabled = continuousRetryPolicy.RequestPolicy.Mode != database.RetryModeOff
+		maxRetries = continuousRetryPolicy.RequestPolicy.AttemptLimit() - 1
 	}
 	maxRateLimitRetries := maxRetries
 	generalRetries := 0
@@ -1343,7 +1349,7 @@ func (h *Handler) streamResponsesWSUpstream(
 			// previous_response_not_found 的先导 error 帧同样缓冲：它按 invalid_request
 			// 分类不属于可重试帧，立即写出会置位 wroteAnyBody，随后的 response.failed
 			// 就进不了下面的续链降级分支。
-			shouldDefer := shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
+			shouldDefer := deferUntilFirstToken(continuousRetryPolicy, contentTokenSeen, gotTerminal) || shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
 				(!contentTokenSeen && !wroteAnyBody && !gotTerminal && isRetryableUpstreamErrorFrame(eventType, data, continuousRetryPolicy)) ||
 				(allowContinuationDegrade && !contentTokenSeen && !gotTerminal && eventType == "error" && isPreviousResponseNotFoundBody(data))
 			if shouldDefer {

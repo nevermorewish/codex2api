@@ -27,6 +27,7 @@ func TestFirstTokenTimeoutSwitchesAccountAfterStructuralFrames(t *testing.T) {
 				previousExec, previousSettings := WebsocketExecuteFunc, CurrentRuntimeSettings()
 				t.Cleanup(func() { WebsocketExecuteFunc = previousExec; ApplyRuntimeSettings(previousSettings) })
 				settings := DefaultRuntimeSettings()
+				settings.FirstTokenTimeoutMode = "first_token"
 				settings.FirstTokenTimeoutSec = 1
 				settings.FirstTokenMode = FirstTokenModeLoose // Statistics must not disable the watchdog.
 				settings.CodexForceWebsocket = true

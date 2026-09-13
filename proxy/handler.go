@@ -1153,7 +1153,7 @@ func forwardGrokNativeResponseTo(c *gin.Context, resp *http.Response, protocol G
 		// output_text.delta (issue #207's anti-pattern); reasoning models then
 		// looked synchronous because thinking/structure never reached the client
 		// (issue #521). Chat/Messages still hold role-only / start frames.
-		if holdGrokNativePreOutput(protocol, frame, visible, isTerminal, isVisible) {
+		if deferUntilFirstToken(continuousRetryPolicyForRequest(c), visible || isVisible, isTerminal) || holdGrokNativePreOutput(protocol, frame, visible, isTerminal, isVisible) {
 			if pending.Len()+len(frame.Raw) > grokMaxNativeSSEPendingBytes {
 				frameErr = fmt.Errorf("Grok pre-output SSE exceeds %d bytes", grokMaxNativeSSEPendingBytes)
 				return false
@@ -2662,6 +2662,9 @@ func shouldTransparentRetryStreamWithBudgets(outcome streamOutcome, generalRetri
 }
 
 func shouldTransparentRetryStreamEventWithBudgets(outcome streamOutcome, eventType string, generalRetries, rateLimitRetries *int, maxGeneralRetries, maxRateLimitRetries int, wroteAnyBody bool, ctxErr, writeErr error, policies ...database.ContinuousRetryPolicy) bool {
+	if !unifiedRetryBudgetAvailable(continuousRetryPolicyForCall(policies), generalRetries, rateLimitRetries) {
+		return false
+	}
 	// Native relay passthrough returns an already-classified client-closed
 	// outcome instead of a separate writeErr. Never turn failed downstream
 	// delivery into another upstream request, even in catch-all mode.
@@ -3204,10 +3207,16 @@ func apiKeyFromWebSocketSubprotocol(header string) string {
 
 // getMaxRetries 从 store 读取可配置的最大重试次数
 func (h *Handler) getMaxRetries() int {
+	if p := continuousRetryPolicyForCall(nil).RequestPolicy; p != nil {
+		return p.AttemptLimit() - 1
+	}
 	return h.store.GetMaxRetries()
 }
 
 func (h *Handler) getMaxRateLimitRetries() int {
+	if p := continuousRetryPolicyForCall(nil).RequestPolicy; p != nil {
+		return p.AttemptLimit() - 1
+	}
 	if h == nil || h.store == nil {
 		return 1
 	}
@@ -3317,6 +3326,9 @@ func isRetryableStatus(code int) bool {
 
 func shouldRetryHTTPStatus(statusCode int, body []byte, generalRetries *int, rateLimitRetries *int, maxGeneralRetries, maxRateLimitRetries int, policies ...database.ContinuousRetryPolicy) bool {
 	policy := continuousRetryPolicyForCall(policies)
+	if !unifiedRetryBudgetAvailable(policy, generalRetries, rateLimitRetries) {
+		return false
+	}
 	if isExplicitUpstreamCyberPolicy(body) {
 		return false
 	}
@@ -3347,6 +3359,9 @@ func shouldRetryHTTPStatus(statusCode int, body []byte, generalRetries *int, rat
 
 func shouldRetryRequestError(err error, generalRetries *int, maxGeneralRetries int, policies ...database.ContinuousRetryPolicy) bool {
 	policy := continuousRetryPolicyForCall(policies)
+	if errors.Is(err, errRetryAttemptsExhausted) || !unifiedRetryBudgetAvailable(policy, generalRetries, nil) {
+		return false
+	}
 	if isExplicitUpstreamCyberPolicyError(err) {
 		return false
 	}
@@ -3571,6 +3586,9 @@ func (h *Handler) stickyTransportRetryEnabled() bool {
 // plain transport blips. A selected upstream error, and every catch-all
 // failure, must rotate so the continuous-retry switch does what its label says.
 func (h *Handler) shouldStickyTransportRetry(err error, kind string, timedOut, shouldRetry bool, policy database.ContinuousRetryPolicy) bool {
+	if policy.RequestPolicy != nil {
+		return false
+	}
 	if !shouldRetry || timedOut || kind == "" || kind == upstreamErrorKindWsBusyAcquire || !h.stickyTransportRetryEnabled() {
 		return false
 	}
@@ -4629,7 +4647,7 @@ func (h *Handler) Responses(c *gin.Context) {
 							// 可重试的 error 帧（上游降载先导帧）与生命周期帧一样缓冲：
 							// 立即写出会置位 wroteAnyBody，随后的 response.failed 就进不了
 							// 首包前静默换号分支。必须写出时改写降载码为客户端可重试码。
-							shouldDefer := shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
+							shouldDefer := deferUntilFirstToken(continuousRetryPolicy, contentTokenSeen, gotTerminal) || shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
 								(!contentTokenSeen && !visibleBody && !gotTerminal && isRetryableUpstreamErrorFrame(eventType, data, continuousRetryPolicy))
 							wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenEvents, sanitizeCapacityShedEventForClient(eventType, data), shouldDefer)
 							if err != nil {
@@ -5350,7 +5368,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						// 可重试的 error 帧（上游降载先导帧）不受 preflightPassthrough 影响，
 						// 始终缓冲：立即写出会置位 wroteAnyBody，随后的 response.failed 就
 						// 进不了首包前静默换号/超窗压缩分支。必须写出时改写降载码。
-						shouldDefer := shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
+						shouldDefer := deferUntilFirstToken(continuousRetryPolicy, contentTokenSeen, gotTerminal) || shouldDeferPreContentSSEEvent(eventType, contentTokenSeen, gotTerminal, preflightPassthrough) ||
 							(!contentTokenSeen && !visibleBody && !gotTerminal && isRetryableUpstreamErrorFrame(eventType, data, continuousRetryPolicy))
 						wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenEvents, sanitizeCapacityShedEventForClient(eventType, data), shouldDefer)
 						if err != nil {
@@ -5464,7 +5482,9 @@ func (h *Handler) Responses(c *gin.Context) {
 							// encrypted reasoning must never participate in account rotation.
 							rctx = WithPayloadRuleIdentity(rctx, attemptIdentity)
 							lastUpstreamCancel = rcancel
-							roundResp, roundErr := ExecuteRequest(rctx, account, roundBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
+							roundResp, roundErr := executeHTTPWithContinuousRetryKeepalive(rctx, func() (*http.Response, error) {
+								return ExecuteRequest(rctx, account, roundBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
+							})
 							// 续想轮同样消耗账号额度：成功开轮后同步上游用量头，
 							// 否则多轮隐藏请求的额度对自动暂停/配速不可见。
 							if roundErr == nil && roundResp != nil && roundResp.StatusCode == http.StatusOK {
@@ -6116,7 +6136,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					attemptEffectiveModel = mappedModel
 					attemptLogEffectiveModel = usageEffectiveModelForMapping(logModel, attemptEffectiveModel, true)
 				}
-				resp, reqErr := ExecuteOpenAIResponsesCompactRequest(c.Request.Context(), account, upstreamBody, proxyURL, downstreamHeaders)
+				resp, reqErr := executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
+					return ExecuteOpenAIResponsesCompactRequest(c.Request.Context(), account, upstreamBody, proxyURL, downstreamHeaders)
+				})
 				durationMs := int(time.Since(start).Milliseconds())
 
 				if reqErr != nil {
@@ -6363,9 +6385,13 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			var reqErr error
 			if compactViaResponses {
 				upstreamEndpointLabel = "/v1/responses"
-				resp, reqErr = ExecuteRequest(c.Request.Context(), account, appendCompactionTriggerToResponsesBody(codexBody), upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, false)
+				resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
+					return ExecuteRequest(c.Request.Context(), account, appendCompactionTriggerToResponsesBody(codexBody), upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, false)
+				})
 			} else {
-				resp, reqErr = ExecuteCompactRequest(c.Request.Context(), account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders)
+				resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
+					return ExecuteCompactRequest(c.Request.Context(), account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders)
+				})
 			}
 			durationMs := int(time.Since(start).Milliseconds())
 
@@ -7513,7 +7539,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					}
 
 					if !clientGone && chunk != nil {
-						shouldDefer := !contentTokenSeen && !gotTerminal && isPreContentLifecycleEvent(eventType)
+						shouldDefer := deferUntilFirstToken(continuousRetryPolicy, contentTokenSeen, gotTerminal) || (!contentTokenSeen && !gotTerminal && isPreContentLifecycleEvent(eventType))
 						wrote, err := writeDeferredSSEData(streamWriter, &pendingFirstTokenChunks, chunk, shouldDefer)
 						if err != nil {
 							writeErr = err

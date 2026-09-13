@@ -87,6 +87,11 @@ func prepareFallbackAttempt(c *gin.Context, account *auth.Account, generalLimit,
 	if account == nil || !account.IsExternalFallback() {
 		return generalLimit, rateLimit, policy
 	}
+	// Unified budgets include the fallback. Keep both the deadline and delivery
+	// mode; a fallback must not silently remove the buffer or extend the timeout.
+	if policy.RequestPolicy != nil {
+		return 0, 0, policy
+	}
 	policy = database.ContinuousRetryPolicy{}
 	rememberContinuousRetryPolicyForRequest(c, policy)
 	if c != nil {
@@ -163,6 +168,9 @@ func canFallbackAfterPrimaryDeadline(c *gin.Context) bool {
 	value, _ := c.Get(contextFallbackDeadlineState)
 	state, _ := value.(*fallbackRouteState)
 	deadline := continuousRetryDeadlineForContext(c.Request.Context())
+	if deadline != nil && deadline.maxAttempts > 0 {
+		return false
+	}
 	return state != nil && !state.fallbackAttempted && state.configured() &&
 		deadline != nil && deadline.parentContext != nil && deadline.parentContext.Err() == nil
 }

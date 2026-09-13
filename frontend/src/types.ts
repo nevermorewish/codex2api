@@ -2035,6 +2035,7 @@ export interface SystemSettings {
   antigravity_oauth_using_builtin?: boolean
   /** 内置官方 client 的公开视图（不含 secret）。 */
   antigravity_oauth_builtin_client?: AntigravityOAuthClientSetting
+  retry_policy: { mode: 'off' | 'before_first_token' | 'full_response'; max_attempts: number; total_timeout_seconds: number }
   max_retries: number
   max_rate_limit_retries: number
   retry_interval_ms: number

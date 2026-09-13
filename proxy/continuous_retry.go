@@ -39,12 +39,15 @@ func continuousRetryPolicyForRequest(c *gin.Context) database.ContinuousRetryPol
 	return continuousRetryPolicyForCall(nil)
 }
 
-// continuousRetryBuffersAttempts is true for both selector modes. Once an
-// operator enables continuous retry, an error can arrive after arbitrary
-// stream output, so the whole attempt must stay private until its terminal
-// outcome is known. Catch-all only changes which upstream failures retry.
+// Only full_response keeps an entire attempt private until success. The
+// before_first_token mode commits immediately at content and never replays
+// after that boundary. Selectors cannot change the delivery mode.
 func continuousRetryBuffersAttempts(policy database.ContinuousRetryPolicy) bool {
-	return database.NormalizeContinuousRetryPolicy(policy).Enabled
+	policy = database.NormalizeContinuousRetryPolicy(policy)
+	if policy.RequestPolicy != nil {
+		return policy.RequestPolicy.Mode == database.RetryModeFullResponse
+	}
+	return policy.Enabled
 }
 
 func continuousRetryPreflightPassthrough(settings RuntimeSettings) bool {
@@ -83,6 +86,10 @@ func continuousRetryHTTPSelected(policy database.ContinuousRetryPolicy, status i
 
 func continuousRetryLimitsForHTTP(status int, body []byte, generalLimit, rateLimit int, policies ...database.ContinuousRetryPolicy) (int, int) {
 	policy := continuousRetryPolicyForCall(policies)
+	if policy.RequestPolicy != nil {
+		n := policy.RequestPolicy.AttemptLimit() - 1
+		return n, n
+	}
 	if !continuousRetryHTTPSelected(policy, status, body) {
 		return generalLimit, rateLimit
 	}
@@ -94,6 +101,9 @@ func continuousRetryLimitsForHTTP(status int, body []byte, generalLimit, rateLim
 
 func continuousRetryLimitForRequestError(err error, generalLimit int, policies ...database.ContinuousRetryPolicy) int {
 	policy := continuousRetryPolicyForCall(policies)
+	if policy.RequestPolicy != nil {
+		return policy.RequestPolicy.AttemptLimit() - 1
+	}
 	if err == nil || errors.Is(err, context.Canceled) {
 		return generalLimit
 	}
@@ -352,6 +362,11 @@ func isExplicitUpstreamSafetyPolicy(payload []byte) bool {
 }
 
 func continuousRetryLimitsForStream(outcome streamOutcome, payload []byte, eventType string, generalLimit, rateLimit int, policies ...database.ContinuousRetryPolicy) (int, int) {
+	policy := continuousRetryPolicyForCall(policies)
+	if policy.RequestPolicy != nil {
+		n := policy.RequestPolicy.AttemptLimit() - 1
+		return n, n
+	}
 	if !continuousRetryStreamSelected(outcome, payload, eventType, policies...) {
 		return generalLimit, rateLimit
 	}

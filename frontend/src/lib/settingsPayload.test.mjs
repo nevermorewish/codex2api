@@ -3,6 +3,15 @@ import test from "node:test";
 
 import { buildWritableSettingsPayload } from "./settingsPayload.ts";
 
+test("unified retry save removes competing legacy budgets without mutating state", () => {
+  const retry_policy = { mode: "before_first_token", max_attempts: 3, total_timeout_seconds: 300 };
+  const settings = { retry_policy, max_retries: 10, max_rate_limit_retries: 10,
+    continuous_retry_enabled: false, continuous_retry_max_duration_seconds: 900,
+    continuous_retry_catch_all: true };
+  assert.deepEqual(buildWritableSettingsPayload(settings), { retry_policy, continuous_retry_catch_all: true });
+  assert.equal(settings.max_retries, 10);
+});
+
 test("general settings save does not overwrite bot monitor configuration", () => {
   const settings = {
     site_name: "Updated site",

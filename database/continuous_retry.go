@@ -12,17 +12,19 @@ import (
 // auth, proxy, admin, and runtime packages can share one normalized policy
 // without introducing an import cycle.
 type ContinuousRetryPolicy struct {
-	Enabled            bool     `json:"enabled"`
-	CatchAll           bool     `json:"catch_all"`
-	Categories         []string `json:"categories"`
-	StatusCodes        []int    `json:"status_codes"`
-	ErrorCodes         []string `json:"error_codes"`
-	MaxDurationSeconds int      `json:"max_duration_seconds"`
+	RequestPolicy      *RequestRetryPolicy `json:"retry_policy,omitempty"`
+	Enabled            bool                `json:"enabled"`
+	CatchAll           bool                `json:"catch_all"`
+	Categories         []string            `json:"categories"`
+	StatusCodes        []int               `json:"status_codes"`
+	ErrorCodes         []string            `json:"error_codes"`
+	MaxDurationSeconds int                 `json:"max_duration_seconds"`
 }
 
 // ContinuousRetryPolicyUpdate identifies the policy fields edited by one
 // admin request. Nil fields retain the latest value already in the database.
 type ContinuousRetryPolicyUpdate struct {
+	RequestPolicy      *RequestRetryPolicy
 	Enabled            *bool
 	CatchAll           *bool
 	Categories         *[]string
@@ -79,6 +81,15 @@ func DefaultContinuousRetryPolicy() ContinuousRetryPolicy {
 // exact status selectors to valid HTTP status codes. Empty values are retained
 // as empty slices so JSON responses stay stable and editable in the UI.
 func NormalizeContinuousRetryPolicy(policy ContinuousRetryPolicy) ContinuousRetryPolicy {
+	if policy.RequestPolicy != nil {
+		p := *policy.RequestPolicy
+		if p.Validate() != nil {
+			p = RequestRetryPolicy{Mode: RetryModeOff, MaxAttempts: 1, TotalTimeoutSeconds: 300}
+		}
+		policy.RequestPolicy = &p
+		policy.Enabled = p.Mode != RetryModeOff
+		policy.MaxDurationSeconds = p.TotalTimeoutSeconds
+	}
 	if policy.MaxDurationSeconds == 0 {
 		policy.MaxDurationSeconds = DefaultContinuousRetryMaxDurationSeconds
 	} else if policy.MaxDurationSeconds < MinContinuousRetryMaxDurationSeconds {

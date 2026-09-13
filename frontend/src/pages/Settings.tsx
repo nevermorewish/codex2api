@@ -21,11 +21,8 @@ import {
 } from '../lib/claudeAccountOptions'
 import { buildWritableSettingsPayload } from '../lib/settingsPayload'
 import {
-  buildContinuousRetryCatchAllPatch,
-  buildContinuousRetryEnabledPatch,
   createContinuousRetrySaveQueue,
   parseContinuousRetryErrorCodes,
-  parseContinuousRetryMaxDurationSeconds,
   parseContinuousRetryStatusCodes,
 } from '../lib/continuousRetrySettings'
 import {
@@ -2117,10 +2114,6 @@ export default function Settings() {
       description: t('settings.schedulerEngineIndexedDesc'),
     },
   ]
-  const transportRetryPolicyOptions = [
-    { label: t('settings.transportRetryPolicyRotate'), value: 'rotate' },
-    { label: t('settings.transportRetryPolicySticky'), value: 'sticky' },
-  ]
   const continuousRetryCategoryOptions = [
     { label: t('settings.continuousRetryCategoryTransport'), value: 'transport' },
     { label: t('settings.continuousRetryCategory429'), value: 'http_429' },
@@ -2289,6 +2282,7 @@ export default function Settings() {
     grok_quality_guard_on_exhausted: 'fail_closed',
     grok_quality_guard_account_cooldown_hours: 12,
     grok_oauth_client_id: '',
+    retry_policy: { mode: 'before_first_token', max_attempts: 3, total_timeout_seconds: 300 },
     max_retries: 2,
     max_rate_limit_retries: 1,
     retry_interval_ms: 0,
@@ -2385,7 +2379,7 @@ export default function Settings() {
   })
   const continuousRetryStatusCodesText = (settingsForm.continuous_retry_status_codes ?? []).join(',')
   const continuousRetryErrorCodesText = (settingsForm.continuous_retry_error_codes ?? []).join(',')
-  const continuousRetryFineControlsDisabled = !settingsForm.continuous_retry_enabled || settingsForm.continuous_retry_catch_all
+  const continuousRetryFineControlsDisabled = settingsForm.retry_policy.mode === 'off' || settingsForm.continuous_retry_catch_all
   const [continuousRetryStatusCodesDraft, setContinuousRetryStatusCodesDraft] = useState(continuousRetryStatusCodesText)
   const [continuousRetryErrorCodesDraft, setContinuousRetryErrorCodesDraft] = useState(continuousRetryErrorCodesText)
   const lazyModeActive = settingsForm.lazy_mode
@@ -4906,103 +4900,49 @@ export default function Settings() {
                         onValueChange={(value) => setSettingsForm(f => ({ ...f, global_rpm: value }))}
                       />
                     </SettingField>
-                    <SettingField label={t('settings.maxRetries')} description={t('settings.maxRetriesRange')} suffix={t('settings.unit.times')}>
-                      <DraftNumberInput
-                        min={0}
-                        max={10}
-                        value={settingsForm.max_retries}
-                        emptyValue={0}
-                        onValueChange={(value) => setSettingsForm(f => ({ ...f, max_retries: value }))}
-                      />
-                    </SettingField>
-                    <SettingField label={t('settings.maxRateLimitRetries')} description={t('settings.maxRateLimitRetriesRange')} suffix={t('settings.unit.times')}>
-                      <DraftNumberInput
-                        min={0}
-                        max={10}
-                        value={settingsForm.max_rate_limit_retries}
-                        emptyValue={0}
-                        onValueChange={(value) => setSettingsForm(f => ({ ...f, max_rate_limit_retries: value }))}
-                      />
-                    </SettingField>
-                    <SettingField label={t('settings.retryIntervalMs')} description={t('settings.retryIntervalMsDesc')} suffix="ms">
-                      <DraftNumberInput
-                        min={0}
-                        max={30000}
-                        step={100}
-                        value={settingsForm.retry_interval_ms}
-                        emptyValue={0}
-                        onValueChange={(value) => setSettingsForm(f => ({ ...f, retry_interval_ms: value }))}
-                      />
-                    </SettingField>
-                    <SettingField label={t('settings.transportRetryPolicy')} description={t('settings.transportRetryPolicyDesc')}>
-                      <SegmentedPillGroup
-                        value={settingsForm.transport_retry_policy || 'rotate'}
-                        onChange={(value) => autoSaveStringField('transport_retry_policy', value)}
-                        options={transportRetryPolicyOptions}
-                      />
-                    </SettingField>
                   </div>
                 </SettingsCard>
 
                   <SettingsCard
-                    title={t('settings.continuousRetryTitle')}
+                    title={t('settings.retryPolicyTitle')}
                     channels={ALL_UPSTREAM_CHANNELS}
-                    description={t('settings.continuousRetryDesc')}
+                    description={t('settings.retryPolicyDesc')}
                     icon={<RefreshCw className="size-4" />}
                   >
                     <div className="space-y-4">
-                      <SettingField
-                        label={t('settings.continuousRetryEnabled')}
-                        description={t('settings.continuousRetryEnabledDesc')}
-                        layout="switch"
-                      >
-                        <Switch
-                          aria-label={t('settings.continuousRetryEnabled')}
-                          checked={settingsForm.continuous_retry_enabled}
-                          onCheckedChange={(checked) => void autoSaveContinuousRetryPatch(buildContinuousRetryEnabledPatch(checked))}
+                      <SettingField label={t('settings.retryPolicyMode')} description={t('settings.retryPolicyModeDesc')}>
+                        <SegmentedPillGroup
+                          value={settingsForm.retry_policy.mode}
+                          onChange={(mode) => void autoSaveContinuousRetryPatch({ retry_policy: { ...settingsFormRef.current.retry_policy, mode: mode as SystemSettings['retry_policy']['mode'] } })}
+                          options={[
+                            { value: 'off', label: t('settings.retryPolicyOff') },
+                            { value: 'before_first_token', label: t('settings.retryPolicyBeforeToken') },
+                            { value: 'full_response', label: t('settings.retryPolicyFullResponse') },
+                          ]}
                         />
                       </SettingField>
-                      <SettingField
-                        label={t('settings.continuousRetryCatchAll')}
-                        description={t('settings.continuousRetryCatchAllDesc')}
-                        warning={t('settings.continuousRetryCatchAllWarning')}
-                        layout="switch"
-                        className={cn(
-                          'rounded-lg',
-                          settingsForm.continuous_retry_catch_all && 'border-amber-500/50 bg-amber-500/10 hover:border-amber-500/60',
-                        )}
-                      >
-                        <Switch
+                      <p className="rounded-lg bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+                        {t(settingsForm.retry_policy.mode === 'full_response' ? 'settings.retryPolicyBufferedHint' : settingsForm.retry_policy.mode === 'off' ? 'settings.retryPolicyOffHint' : 'settings.retryPolicyStreamingHint')}
+                      </p>
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <SettingField label={t('settings.retryPolicyAttempts')} description={t('settings.retryPolicyAttemptsDesc')}>
+                          <DraftNumberInput min={1} max={20} value={settingsForm.retry_policy.max_attempts}
+                            disabled={settingsForm.retry_policy.mode === 'off'}
+                            onValueChange={(value) => setSettingsForm(f => ({ ...f, retry_policy: { ...f.retry_policy, max_attempts: value } }))}
+                            onValueCommit={(value) => void autoSaveContinuousRetryPatch({ retry_policy: { ...settingsFormRef.current.retry_policy, max_attempts: value } })}
+                          />
+                        </SettingField>
+                        <SettingField label={t('settings.retryPolicyTimeout')} description={t('settings.retryPolicyTimeoutDesc')} suffix={t('settings.unit.seconds')}>
+                          <DraftNumberInput min={1} max={900} value={settingsForm.retry_policy.total_timeout_seconds}
+                            onValueChange={(value) => setSettingsForm(f => ({ ...f, retry_policy: { ...f.retry_policy, total_timeout_seconds: value } }))}
+                            onValueCommit={(value) => void autoSaveContinuousRetryPatch({ retry_policy: { ...settingsFormRef.current.retry_policy, total_timeout_seconds: value } })}
+                          />
+                        </SettingField>
+                      </div>
+                      <SettingField label={t('settings.continuousRetryCatchAll')} description={t('settings.continuousRetryCatchAllDesc')} layout="switch">
+                        <Switch checked={settingsForm.continuous_retry_catch_all} disabled={settingsForm.retry_policy.mode === 'off'}
                           aria-label={t('settings.continuousRetryCatchAll')}
-                          checked={settingsForm.continuous_retry_catch_all}
-                          onCheckedChange={(checked) => void autoSaveContinuousRetryPatch(buildContinuousRetryCatchAllPatch(checked))}
-                        />
-                      </SettingField>
-                      <SettingField
-                        label={t('settings.continuousRetryMaxDuration')}
-                        description={t('settings.continuousRetryMaxDurationDesc')}
-                      >
-                        <Input
-                          aria-label={t('settings.continuousRetryMaxDuration')}
-                          type="number"
-                          min={1}
-                          max={900}
-                          step={1}
-                          value={settingsForm.continuous_retry_max_duration_seconds}
-                          disabled={!settingsForm.continuous_retry_enabled}
-                          onChange={(event) => {
-                            const value = Number(event.target.value)
-                            setSettingsForm((current) => ({
-                              ...current,
-                              continuous_retry_max_duration_seconds: Number.isFinite(value) ? value : 600,
-                            }))
-                          }}
-                          onBlur={(event) => {
-                            const value = parseContinuousRetryMaxDurationSeconds(event.target.value)
-                            setSettingsForm((current) => ({ ...current, continuous_retry_max_duration_seconds: value }))
-                            void autoSaveContinuousRetryPatch({ continuous_retry_max_duration_seconds: value })
-                          }}
-                        />
+                          onCheckedChange={(checked) => void autoSaveContinuousRetryPatch({ continuous_retry_catch_all: checked })} />
                       </SettingField>
                       <div className={cn('grid gap-3 sm:grid-cols-2 lg:grid-cols-4', continuousRetryFineControlsDisabled && 'opacity-60')}>
                         {continuousRetryCategoryOptions.map((option) => (
@@ -5065,7 +5005,7 @@ export default function Settings() {
                         </SettingField>
                       </div>
                       <p className="text-xs leading-relaxed text-amber-600 dark:text-amber-400">
-                        {t('settings.continuousRetryWarning')}
+                        {t('settings.retryPolicySelectorHint')}
                       </p>
                     </div>
                   </SettingsCard>

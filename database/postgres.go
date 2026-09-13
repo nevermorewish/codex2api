@@ -2788,6 +2788,10 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	if strings.TrimSpace(s.ContinuousRetryPolicy) == "" {
 		s.ContinuousRetryPolicy = EncodeContinuousRetryPolicy(DefaultContinuousRetryPolicy())
 	}
+	legacyRetryPolicy := ParseContinuousRetryPolicy(s.ContinuousRetryPolicy)
+	resolvedRetryPolicy := ResolveRequestRetryPolicy(legacyRetryPolicy, s.MaxRetries, s.MaxRateLimitRetries)
+	legacyRetryPolicy.RequestPolicy = &resolvedRetryPolicy
+	s.ContinuousRetryPolicy = EncodeContinuousRetryPolicy(legacyRetryPolicy)
 	s.FirstTokenMode = normalizeFirstTokenMode(s.FirstTokenMode)
 	s.BillingTierPolicy = normalizeBillingTierPolicy(s.BillingTierPolicy)
 	s.AutoResetCreditsBeforeExpiryMin = NormalizeAutoResetCreditsBeforeExpiryMinutes(s.AutoResetCreditsBeforeExpiryMin)
@@ -2833,6 +2837,13 @@ func (db *DB) UpdateContinuousRetryPolicy(ctx context.Context, update Continuous
 			current = ParseContinuousRetryPolicy(currentRaw)
 		}
 		next := current
+		if update.RequestPolicy != nil {
+			if err := update.RequestPolicy.Validate(); err != nil {
+				return err
+			}
+			p := *update.RequestPolicy
+			next.RequestPolicy = &p
+		}
 		if update.Enabled != nil {
 			next.Enabled = *update.Enabled
 		}
@@ -2850,6 +2861,16 @@ func (db *DB) UpdateContinuousRetryPolicy(ctx context.Context, update Continuous
 		}
 		if update.MaxDurationSeconds != nil {
 			next.MaxDurationSeconds = *update.MaxDurationSeconds
+		}
+		// Selector-only saves must not restore the legacy runtime path after a
+		// read-time migration. Resolve under the same lock as the policy merge.
+		if next.RequestPolicy == nil {
+			var generalRetries, rateLimitRetries int
+			if err := tx.QueryRowContext(ctx, `SELECT max_retries, max_rate_limit_retries FROM system_settings WHERE id = 1`).Scan(&generalRetries, &rateLimitRetries); err != nil {
+				return err
+			}
+			resolved := ResolveRequestRetryPolicy(next, generalRetries, rateLimitRetries)
+			next.RequestPolicy = &resolved
 		}
 		next = NormalizeContinuousRetryPolicy(next)
 		nextRaw := EncodeContinuousRetryPolicy(next)

@@ -9087,6 +9087,7 @@ type settingsResponse struct {
 	MaxRateLimitRetries                int                              `json:"max_rate_limit_retries"`
 	RetryIntervalMS                    int                              `json:"retry_interval_ms"`
 	TransportRetryPolicy               string                           `json:"transport_retry_policy"`
+	RetryPolicy                        database.RequestRetryPolicy      `json:"retry_policy"`
 	ContinuousRetryEnabled             bool                             `json:"continuous_retry_enabled"`
 	ContinuousRetryCatchAll            bool                             `json:"continuous_retry_catch_all"`
 	ContinuousRetryCategories          []string                         `json:"continuous_retry_categories"`
@@ -9268,6 +9269,7 @@ type updateSettingsReq struct {
 	MaxRateLimitRetries                 *int                             `json:"max_rate_limit_retries"`
 	RetryIntervalMS                     *int                             `json:"retry_interval_ms"`
 	TransportRetryPolicy                *string                          `json:"transport_retry_policy"`
+	RetryPolicy                         *database.RequestRetryPolicy     `json:"retry_policy"`
 	ContinuousRetryEnabled              *bool                            `json:"continuous_retry_enabled"`
 	ContinuousRetryCatchAll             *bool                            `json:"continuous_retry_catch_all"`
 	ContinuousRetryCategories           *[]string                        `json:"continuous_retry_categories"`
@@ -10108,6 +10110,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		MaxRateLimitRetries:                 h.store.GetMaxRateLimitRetries(),
 		RetryIntervalMS:                     h.store.GetRetryIntervalMS(),
 		TransportRetryPolicy:                h.store.GetTransportRetryPolicy(),
+		RetryPolicy:                         database.ResolveRequestRetryPolicy(continuousRetryPolicy, h.store.GetMaxRetries(), h.store.GetMaxRateLimitRetries()),
 		ContinuousRetryEnabled:              continuousRetryPolicy.Enabled,
 		ContinuousRetryCatchAll:             continuousRetryPolicy.CatchAll,
 		ContinuousRetryCategories:           continuousRetryPolicy.Categories,
@@ -10299,6 +10302,16 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.PromptFilterCustomPatternsExpected != nil && req.PromptFilterCustomPatterns == nil {
 		writeError(c, http.StatusBadRequest, "Prompt 自定义规则版本快照不能单独提交")
 		return
+	}
+	if req.MaxRetries != nil || req.MaxRateLimitRetries != nil || req.ContinuousRetryEnabled != nil || req.ContinuousRetryMaxDurationSeconds != nil {
+		writeError(c, http.StatusBadRequest, "旧重试配置已废弃，请仅提交 retry_policy（mode、max_attempts、total_timeout_seconds）")
+		return
+	}
+	if req.RetryPolicy != nil {
+		if err := req.RetryPolicy.Validate(); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if req.PromptFilterCustomPatterns != nil && updateSettingsHasFieldsOtherThanCustomPatterns(req) {
 		writeError(c, http.StatusBadRequest, "Prompt 自定义规则必须单独保存，请刷新后从规则页面重试")
@@ -10565,6 +10578,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	runtimeCfg.ModelsListReadMaxBytes = modelsListReadMaxBytes
 	continuousRetryPolicy := h.store.GetContinuousRetryPolicy()
 	continuousRetryUpdate := database.ContinuousRetryPolicyUpdate{
+		RequestPolicy:      req.RetryPolicy,
 		Enabled:            req.ContinuousRetryEnabled,
 		CatchAll:           req.ContinuousRetryCatchAll,
 		Categories:         req.ContinuousRetryCategories,
@@ -10572,7 +10586,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		ErrorCodes:         req.ContinuousRetryErrorCodes,
 		MaxDurationSeconds: req.ContinuousRetryMaxDurationSeconds,
 	}
-	continuousRetryChanged := req.ContinuousRetryEnabled != nil || req.ContinuousRetryCatchAll != nil || req.ContinuousRetryCategories != nil || req.ContinuousRetryStatusCodes != nil || req.ContinuousRetryErrorCodes != nil || req.ContinuousRetryMaxDurationSeconds != nil
+	continuousRetryChanged := req.RetryPolicy != nil || req.ContinuousRetryEnabled != nil || req.ContinuousRetryCatchAll != nil || req.ContinuousRetryCategories != nil || req.ContinuousRetryStatusCodes != nil || req.ContinuousRetryErrorCodes != nil || req.ContinuousRetryMaxDurationSeconds != nil
 	utlsShutdownTimeoutMinutes := persistedUTLSShutdownTimeoutMinutes
 	autoResetCreditsChanged := (req.AutoResetCreditsEnabled != nil && *req.AutoResetCreditsEnabled != persistedAutoResetCreditsEnabled) ||
 		(req.AutoResetCreditsBeforeExpiryMin != nil && *req.AutoResetCreditsBeforeExpiryMin != persistedAutoResetCreditsBeforeExpiryMin)
@@ -11986,6 +12000,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		RetryIntervalMS:                     h.store.GetRetryIntervalMS(),
 		TransportRetryPolicy:                h.store.GetTransportRetryPolicy(),
 		ContinuousRetryEnabled:              continuousRetryPolicy.Enabled,
+		RetryPolicy:                         database.ResolveRequestRetryPolicy(continuousRetryPolicy, h.store.GetMaxRetries(), h.store.GetMaxRateLimitRetries()),
 		ContinuousRetryCatchAll:             continuousRetryPolicy.CatchAll,
 		ContinuousRetryCategories:           continuousRetryPolicy.Categories,
 		ContinuousRetryStatusCodes:          continuousRetryPolicy.StatusCodes,

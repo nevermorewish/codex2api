@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codex2api/api"
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
@@ -23,6 +24,8 @@ const continuousRetryTimeoutWrittenKey = "continuous_retry_timeout_written"
 type continuousRetryDeadlineContextKey struct{}
 
 type continuousRetryDeadline struct {
+	maxAttempts     int // nonzero for the unified policy, including off (one attempt)
+	attempts        int
 	duration        time.Duration
 	parentContext   context.Context
 	cancel          context.CancelCauseFunc
@@ -352,13 +355,22 @@ func installContinuousRetryDeadlineContext(c *gin.Context, policy database.Conti
 		return func() {}
 	}
 	policy = database.NormalizeContinuousRetryPolicy(policy)
-	if !policy.Enabled {
+	if !policy.Enabled && policy.RequestPolicy == nil {
 		return func() {}
 	}
 	original := c.Request
 	requestCtx, cancel := context.WithCancelCause(original.Context())
 	deadline := &continuousRetryDeadline{duration: time.Duration(policy.MaxDurationSeconds) * time.Second, parentContext: original.Context(), cancel: cancel}
 	c.Request = original.WithContext(context.WithValue(requestCtx, continuousRetryDeadlineContextKey{}, deadline))
+	if policy.RequestPolicy != nil {
+		deadline.maxAttempts = policy.RequestPolicy.AttemptLimit()
+		// A WebSocket connection contains independent turns; its HTTP ingress
+		// timestamp is not the start of each subsequent turn.
+		if rc := api.GetRequestContext(c); !c.IsWebsocket() && rc != nil && !rc.StartTime.IsZero() {
+			deadline.duration = max(time.Nanosecond, deadline.duration-time.Since(rc.StartTime))
+		}
+		deadline.Activate()
+	}
 	return func() {
 		deadline.Stop()
 		cancel(nil)
@@ -369,6 +381,35 @@ func installContinuousRetryDeadlineContext(c *gin.Context, policy database.Conti
 func writeContinuousRetryTimeoutResponse(c *gin.Context, protocol continuousRetryHTTPProtocol) bool {
 	if c == nil || c.Request == nil || !continuousRetryDeadlineExceeded(c.Request.Context()) {
 		return false
+	}
+	if d := continuousRetryDeadlineForContext(c.Request.Context()); d != nil && d.maxAttempts > 0 {
+		if c.GetBool(continuousRetryTimeoutWrittenKey) {
+			return true
+		}
+		c.Set(continuousRetryTimeoutWrittenKey, true)
+		c.Set(AccessLogStatusContextKey, http.StatusGatewayTimeout)
+		errBody := gin.H{"code": "request_deadline_exceeded", "type": "upstream_error", "message": "Request total time limit exceeded"}
+		if c.Writer.Written() {
+			var payload gin.H
+			prefix := "data: "
+			switch protocol {
+			case continuousRetryProtocolResponses:
+				payload = gin.H{"type": "response.failed", "response": gin.H{"status": "failed", "error": errBody}}
+			case continuousRetryProtocolAnthropic:
+				prefix = "event: error\ndata: "
+				payload = gin.H{"type": "error", "error": errBody}
+			default:
+				payload = gin.H{"error": errBody}
+			}
+			body, _ := json.Marshal(payload)
+			_, _ = c.Writer.WriteString(prefix + string(body) + "\n\n")
+			if f, ok := c.Writer.(http.Flusher); ok {
+				f.Flush()
+			}
+		} else {
+			c.JSON(http.StatusGatewayTimeout, gin.H{"error": errBody})
+		}
+		return true
 	}
 	// A primary timeout hands control back to the attempt loop before any
 	// terminal bytes are published. A completed handoff can also restore this
