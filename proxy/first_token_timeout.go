@@ -112,18 +112,25 @@ func firstTokenTimeoutError(timeout time.Duration) error {
 // 而这一轮的 encrypted_content 绑定原账号，超时换号重试大概率继续失败并耗尽
 // attempt，导致会话彻底废掉（issue #381）。故对压缩轮返回 0（关闭看门狗），
 // 让其思考时间不受限；异常挂死仍由客户端自身超时兜底。
-func firstTokenTimeoutForRequest(base time.Duration, isCompactionTrigger bool, bodySize ...int) time.Duration {
+// firstTokenTimeoutForRequest accepts an optional model string followed by request body size.
+func firstTokenTimeoutForRequest(base time.Duration, isCompactionTrigger bool, args ...interface{}) time.Duration {
 	if isCompactionTrigger {
 		return 0
 	}
 	if CurrentRuntimeSettings().FirstTokenTimeoutMode == "disabled" {
 		return 0
 	}
-	if len(bodySize) > 0 {
+	model := ""
+	bodySize := 0
+	for _, arg := range args { switch v := arg.(type) { case string: model = v; case int: bodySize = v } }
+	if model != "" {
+		if v, ok := CurrentRuntimeSettings().FirstTokenSizeTimeouts.ModelTimeouts[model]; ok { return time.Duration(v)*time.Second }
+	}
+	if len(args) > 0 {
 		if CurrentRuntimeSettings().FirstTokenTimeoutMode == "first_token" {
 			return base
 		}
-		size := bodySize[0]
+		size := bodySize
 		settings := CurrentRuntimeSettings().FirstTokenSizeTimeouts
 		switch {
 		case size < 50*1024:

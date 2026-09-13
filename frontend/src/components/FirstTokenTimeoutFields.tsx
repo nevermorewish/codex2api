@@ -12,6 +12,7 @@ const fields = [
   ['under_500kb', '200 ≤ KB < 500'],
   ['over_500kb', '≥ 500 KB'],
 ] as const
+const models = ['gpt-6-astra','gpt-5.6-luna','gpt-5.6-terra','gpt-5.6-sol','gpt-5.5'] as const
 
 export default function FirstTokenTimeoutFields() {
   const { t } = useTranslation()
@@ -28,7 +29,7 @@ export default function FirstTokenTimeoutFields() {
     }).catch((e: unknown) => { if (active) setError(e instanceof Error ? e.message : t('common.loadFailed')) })
     return () => { active = false }
   }, [loaded, t])
-  const dirty = draft && fields.some(([key]) => draft[key] !== saved?.[key])
+  const dirty = draft && (fields.some(([key]) => draft[key] !== saved?.[key]) || JSON.stringify(draft.model_timeouts ?? {}) !== JSON.stringify(saved?.model_timeouts ?? {}))
   const save = async () => {
     if (!draft || saving) return
     setSaving(true)
@@ -53,6 +54,12 @@ export default function FirstTokenTimeoutFields() {
         <span>{label} · {t('settings.firstTokenSizesSeconds')}</span>
         <DraftNumberInput aria-label={label} min={1} max={600} disabled={!draft || saving} value={draft?.[key] ?? 0}
           onValueChange={(value) => setDraft((current) => current ? { ...current, [key]: value } : current)} />
+      </label>)}
+    </div>
+    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {models.map((model) => <label key={model} className="space-y-1.5 text-xs"><span>{model} · {t('settings.firstTokenSizesSeconds')}</span>
+        <DraftNumberInput min={1} max={600} disabled={!draft || saving} value={draft?.model_timeouts?.[model] ?? 0}
+          onValueChange={(value) => setDraft((current) => current ? { ...current, model_timeouts: { ...(current.model_timeouts ?? {}), [model]: value } } : current)} />
       </label>)}
     </div>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

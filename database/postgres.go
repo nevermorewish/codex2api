@@ -1430,6 +1430,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_under_200kb INT DEFAULT 30;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_under_500kb INT DEFAULT 50;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_over_500kb INT DEFAULT 90;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_models TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS billing_tier_policy VARCHAR(20) DEFAULT 'actual';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS image_storage_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS show_full_usage_numbers BOOLEAN DEFAULT FALSE;

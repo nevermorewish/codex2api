@@ -746,6 +746,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "first_token_timeout_under_200kb", "INTEGER DEFAULT 30"},
 		{"system_settings", "first_token_timeout_under_500kb", "INTEGER DEFAULT 50"},
 		{"system_settings", "first_token_timeout_over_500kb", "INTEGER DEFAULT 90"},
+		{"system_settings", "first_token_timeout_models", "TEXT DEFAULT '{}'"},
 		{"system_settings", "feishu_config", "TEXT DEFAULT '{}'"},
 		{"system_settings", "billing_tier_policy", "TEXT DEFAULT 'actual'"},
 		{"system_settings", "image_storage_config", "TEXT DEFAULT '{}'"},
