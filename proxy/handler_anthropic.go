@@ -580,7 +580,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	var affinityGuard auth.SessionAffinityGuard
 	grokQualityAttempts := 0
 	var lastClaudePolicyErr *Error
-	fallbackState := h.newFallbackRouteState(accountFilter, len(rawBody))
+	fallbackState := h.newFallbackRouteStateForRequest(accountFilter, len(rawBody), isStream)
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()

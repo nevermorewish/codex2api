@@ -31,6 +31,7 @@ export default function FallbackPool() {
     relay_count: 3,
     queue_direct_fallback_threshold: 5,
     oversized_request_direct_fallback_enabled: false,
+    non_streaming_direct_fallback_enabled: false,
   })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -201,7 +202,7 @@ export default function FallbackPool() {
                   <p className="mt-0.5 max-w-2xl text-xs leading-relaxed text-muted-foreground">{t('fallback.policyDescription')}</p>
                 </div>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-[180px_minmax(180px,1fr)_minmax(230px,1fr)_180px_auto] xl:items-end">
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 xl:items-end">
                 <label className="flex h-9 items-center justify-between gap-3 text-sm font-medium xl:justify-start">
                   <span>{t('fallback.masterSwitch')}</span>
                   <Switch checked={policy.enabled} onCheckedChange={(enabled) => setPolicy((current) => ({ ...current, enabled }))} aria-label={t('fallback.masterSwitch')} />
@@ -214,6 +215,13 @@ export default function FallbackPool() {
                   <span>{t('fallback.oversizedDirectFallback')}</span>
                   <Switch checked={policy.oversized_request_direct_fallback_enabled} onCheckedChange={(enabled) => setPolicy((current) => ({ ...current, oversized_request_direct_fallback_enabled: enabled }))} aria-label={t('fallback.oversizedDirectFallback')} />
                 </label>
+                <div>
+                  <label className="flex min-h-9 items-center justify-between gap-3 text-sm font-medium">
+                    <span>{t('fallback.nonStreamingDirectFallback')}</span>
+                    <Switch checked={policy.non_streaming_direct_fallback_enabled} onCheckedChange={(enabled) => setPolicy((current) => ({ ...current, non_streaming_direct_fallback_enabled: enabled }))} aria-label={t('fallback.nonStreamingDirectFallback')} />
+                  </label>
+                  <p className="mt-1 text-xs text-muted-foreground">{t('fallback.nonStreamingDirectFallbackHint')}</p>
+                </div>
                 <label className="grid gap-1 text-xs font-medium text-muted-foreground">
                   {t('fallback.relayCount')}
                   <Input type="number" min={1} max={1000} value={policy.relay_count} onChange={(event) => setPolicy((current) => ({ ...current, relay_count: Math.max(1, Math.min(1000, Number(event.target.value) || 1)) }))} />

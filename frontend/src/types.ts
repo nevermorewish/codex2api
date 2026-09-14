@@ -4028,6 +4028,7 @@ export interface FallbackPolicy {
   relay_count: number
   queue_direct_fallback_threshold: number
   oversized_request_direct_fallback_enabled: boolean
+  non_streaming_direct_fallback_enabled: boolean
 }
 
 export interface FallbackAccountPayload {

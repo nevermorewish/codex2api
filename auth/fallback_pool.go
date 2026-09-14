@@ -28,6 +28,7 @@ type FallbackPolicy struct {
 	RelayCount                            int  `json:"relay_count"`
 	QueueDirectFallbackThreshold          int  `json:"queue_direct_fallback_threshold"`
 	OversizedRequestDirectFallbackEnabled bool `json:"oversized_request_direct_fallback_enabled"`
+	NonStreamingDirectFallbackEnabled     bool `json:"non_streaming_direct_fallback_enabled"`
 }
 
 type fallbackPolicyState struct {

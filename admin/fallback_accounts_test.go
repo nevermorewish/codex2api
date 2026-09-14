@@ -65,14 +65,14 @@ func TestFallbackAccountAPIKeepsSecretsAndReloadsPolicy(t *testing.T) {
 		t.Fatalf("updated stored account = name:%q key:%q", row.Name, row.APIKey)
 	}
 
-	policyBody := []byte(`{"enabled":true,"relay_count":8,"queue_direct_fallback_threshold":12,"oversized_request_direct_fallback_enabled":true}`)
+	policyBody := []byte(`{"enabled":true,"relay_count":8,"queue_direct_fallback_threshold":12,"oversized_request_direct_fallback_enabled":true,"non_streaming_direct_fallback_enabled":true}`)
 	policyRecorder, policyContext := fallbackAdminTestContext(http.MethodPut, "/api/admin/fallback/settings", policyBody)
 	handler.UpdateFallbackSettings(policyContext)
 	if policyRecorder.Code != http.StatusOK {
 		t.Fatalf("policy status = %d, body=%s", policyRecorder.Code, policyRecorder.Body.String())
 	}
 	policy := pool.Policy()
-	if !policy.Enabled || policy.RelayCount != 8 || policy.QueueDirectFallbackThreshold != 12 || !policy.OversizedRequestDirectFallbackEnabled {
+	if !policy.Enabled || policy.RelayCount != 8 || policy.QueueDirectFallbackThreshold != 12 || !policy.OversizedRequestDirectFallbackEnabled || !policy.NonStreamingDirectFallbackEnabled {
 		t.Fatalf("runtime fallback policy = %+v", policy)
 	}
 }

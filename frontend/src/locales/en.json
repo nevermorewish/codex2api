@@ -114,6 +114,7 @@
       "primary_wait_ended": "Local account wait ended without acquiring an account",
       "primary_unavailable": "No local account acquired (reason not further classified)",
       "oversized_request": "Request exceeds 3 MiB; oversized-request fallback enabled",
+      "non_streaming": "Non-streaming request routed directly to fallback",
       "not_recorded": "Not recorded (historical data or older version)",
       "unknown": "Fallback reason not recognized by this version"
     },
@@ -237,6 +238,8 @@
     "masterSwitch": "Master switch",
     "queueThreshold": "Queued requests (0 disables)",
     "oversizedDirectFallback": "Request body > 3 MiB goes directly to fallback",
+    "nonStreamingDirectFallback": "Send non-streaming requests directly to fallback",
+    "nonStreamingDirectFallbackHint": "When the fallback pool is enabled, non-streaming requests skip the primary pool. Returns an error if no fallback account is available. Existing compaction session bindings still take priority.",
     "relayCount": "Local relay attempts",
     "policySaved": "Fallback policy saved",
     "accountsTitle": "External Fallback Accounts",

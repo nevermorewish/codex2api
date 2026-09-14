@@ -97,6 +97,8 @@
     "masterSwitch": "總開關",
     "queueThreshold": "排隊請求閾值（0 表示關閉）",
     "oversizedDirectFallback": "請求體 > 3 MiB 直接備援",
+    "nonStreamingDirectFallback": "非串流請求直接走備援池",
+    "nonStreamingDirectFallbackHint": "備援池啟用時，非串流請求略過主帳號池；備援無可用帳號時回傳錯誤。既有壓縮工作階段的帳號綁定仍優先保留。",
     "relayCount": "本地接力次數",
     "policySaved": "備援策略已儲存",
     "accountsTitle": "外部備援帳號",

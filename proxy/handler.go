@@ -3982,7 +3982,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	grokQualityAttempts := 0
 	fallbackState := &fallbackRouteState{}
 	if !compactionAffinity.Known {
-		fallbackState = h.newFallbackRouteState(accountFilter, len(rawBody))
+		fallbackState = h.newFallbackRouteStateForRequest(accountFilter, len(rawBody), isStream)
 		maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	}
 	endLiveAttempt := func() {}
@@ -6022,7 +6022,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	fallbackState := &fallbackRouteState{}
 	if !compactionAffinity.Known {
-		fallbackState = h.newFallbackRouteState(accountFilter, len(rawBody))
+		fallbackState = h.newFallbackRouteStateForRequest(accountFilter, len(rawBody), false)
 		maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
@@ -6078,10 +6078,14 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					sendResponseContextUnavailable(c, continuationStatus, continuationReason)
 					return
 				}
-				if fallbackState.configured() {
-					account, stickyProxyURL, affinityGuard = h.nextFallbackAwareAccountWithGuard(c.Request.Context(), fallbackState, affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
-				} else {
-					account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+				// Once direct fallback is selected, an unavailable fallback must not
+				// silently send this request back to the primary pool.
+				if !fallbackState.usingFallback() {
+					if fallbackState.configured() {
+						account, stickyProxyURL, affinityGuard = h.nextFallbackAwareAccountWithGuard(c.Request.Context(), fallbackState, affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+					} else {
+						account, stickyProxyURL, affinityGuard = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+					}
 				}
 				if account == nil {
 					if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
@@ -6898,7 +6902,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
 	var affinityGuard auth.SessionAffinityGuard
 	grokQualityAttempts := 0
-	fallbackState := h.newFallbackRouteState(accountFilter, len(rawBody))
+	fallbackState := h.newFallbackRouteStateForRequest(accountFilter, len(rawBody), isStream)
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()

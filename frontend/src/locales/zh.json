@@ -114,6 +114,7 @@
       "primary_wait_ended": "等待结束，仍未获取到本地账号",
       "primary_unavailable": "未获取到可用本地账号（未细分原因）",
       "oversized_request": "请求体超过 3 MiB，触发大请求直达兜底",
+      "non_streaming": "非流式请求直达兜底",
       "not_recorded": "未记录（历史数据或旧版本）",
       "unknown": "当前版本无法识别此兜底原因"
     },
@@ -237,6 +238,8 @@
     "masterSwitch": "总开关",
     "queueThreshold": "排队请求阈值（0 表示关闭）",
     "oversizedDirectFallback": "请求体 > 3 MiB 直接兜底",
+    "nonStreamingDirectFallback": "非流式请求直接走兜底池",
+    "nonStreamingDirectFallbackHint": "兜底池开启时，非流式请求跳过主账号池；兜底无可用账号时返回错误。已有压缩会话的账号绑定仍优先保留。",
     "relayCount": "本地接力次数",
     "policySaved": "兜底策略已保存",
     "accountsTitle": "外部兜底账号",

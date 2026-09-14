@@ -6,6 +6,38 @@ import (
 	"testing"
 )
 
+func TestFallbackPolicyMigratesNonStreamingSwitch(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "fallback-migration.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	// Recreate the previous schema while preserving an operator's settings.
+	if _, err := db.conn.ExecContext(ctx, `ALTER TABLE fallback_settings DROP COLUMN non_streaming_direct_fallback_enabled;
+		UPDATE fallback_settings SET enabled=1, relay_count=7;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ensureFallbackAccountsSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := db.GetFallbackPolicy(ctx)
+	if err != nil || !policy.Enabled || policy.RelayCount != 7 || policy.NonStreamingDirectFallbackEnabled {
+		t.Fatalf("migrated policy=%+v, err=%v", policy, err)
+	}
+	policy.NonStreamingDirectFallbackEnabled = true
+	if err := db.UpdateFallbackPolicy(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ensureFallbackAccountsSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := db.GetFallbackPolicy(ctx)
+	if err != nil || loaded != policy {
+		t.Fatalf("repeated migration changed policy: %+v, err=%v", loaded, err)
+	}
+}
+
 func TestFallbackAccountsSQLiteCRUDAndPolicy(t *testing.T) {
 	db, err := New("sqlite", filepath.Join(t.TempDir(), "fallback.db"))
 	if err != nil {
@@ -18,7 +50,7 @@ func TestFallbackAccountsSQLiteCRUDAndPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFallbackPolicy: %v", err)
 	}
-	if policy.Enabled || policy.RelayCount != 3 || policy.QueueDirectFallbackThreshold != 5 || policy.OversizedRequestDirectFallbackEnabled {
+	if policy.Enabled || policy.RelayCount != 3 || policy.QueueDirectFallbackThreshold != 5 || policy.OversizedRequestDirectFallbackEnabled || policy.NonStreamingDirectFallbackEnabled {
 		t.Fatalf("default policy = %+v, want disabled relay_count=3 queue_threshold=5 oversized=false", policy)
 	}
 
@@ -52,12 +84,12 @@ func TestFallbackAccountsSQLiteCRUDAndPolicy(t *testing.T) {
 	}
 	if err := db.UpdateFallbackPolicy(ctx, FallbackPolicy{
 		Enabled: true, RelayCount: 5, QueueDirectFallbackThreshold: 9,
-		OversizedRequestDirectFallbackEnabled: true,
+		OversizedRequestDirectFallbackEnabled: true, NonStreamingDirectFallbackEnabled: true,
 	}); err != nil {
 		t.Fatalf("UpdateFallbackPolicy: %v", err)
 	}
 	policy, err = db.GetFallbackPolicy(ctx)
-	if err != nil || !policy.Enabled || policy.RelayCount != 5 || policy.QueueDirectFallbackThreshold != 9 || !policy.OversizedRequestDirectFallbackEnabled {
+	if err != nil || !policy.Enabled || policy.RelayCount != 5 || policy.QueueDirectFallbackThreshold != 9 || !policy.OversizedRequestDirectFallbackEnabled || !policy.NonStreamingDirectFallbackEnabled {
 		t.Fatalf("updated policy = %+v, err=%v", policy, err)
 	}
 	if err := db.UpdateFallbackPolicy(ctx, FallbackPolicy{Enabled: true, RelayCount: 0}); err == nil {

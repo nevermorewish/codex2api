@@ -36,6 +36,7 @@ type FallbackPolicy struct {
 	RelayCount                            int  `json:"relay_count"`
 	QueueDirectFallbackThreshold          int  `json:"queue_direct_fallback_threshold"`
 	OversizedRequestDirectFallbackEnabled bool `json:"oversized_request_direct_fallback_enabled"`
+	NonStreamingDirectFallbackEnabled     bool `json:"non_streaming_direct_fallback_enabled"`
 }
 
 func (db *DB) ensureFallbackAccountsSchema(ctx context.Context) error {
@@ -60,7 +61,8 @@ func (db *DB) ensureFallbackAccountsSchema(ctx context.Context) error {
 			enabled BOOLEAN NOT NULL DEFAULT FALSE,
 			relay_count INT NOT NULL DEFAULT 3,
 			queue_direct_fallback_threshold INT NOT NULL DEFAULT 5,
-			oversized_request_direct_fallback_enabled BOOLEAN NOT NULL DEFAULT FALSE
+			oversized_request_direct_fallback_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+			non_streaming_direct_fallback_enabled BOOLEAN NOT NULL DEFAULT FALSE
 		);
 		INSERT INTO fallback_settings(id, enabled, relay_count)
 		VALUES (1, FALSE, 3) ON CONFLICT (id) DO NOTHING;
@@ -84,7 +86,8 @@ func (db *DB) ensureFallbackAccountsSchema(ctx context.Context) error {
 				enabled INTEGER NOT NULL DEFAULT 0,
 				relay_count INTEGER NOT NULL DEFAULT 3,
 				queue_direct_fallback_threshold INTEGER NOT NULL DEFAULT 5,
-				oversized_request_direct_fallback_enabled INTEGER NOT NULL DEFAULT 0
+				oversized_request_direct_fallback_enabled INTEGER NOT NULL DEFAULT 0,
+				non_streaming_direct_fallback_enabled INTEGER NOT NULL DEFAULT 0
 			);
 			INSERT OR IGNORE INTO fallback_settings(id, enabled, relay_count) VALUES (1, 0, 3);
 		`
@@ -96,11 +99,15 @@ func (db *DB) ensureFallbackAccountsSchema(ctx context.Context) error {
 		if err := db.ensureSQLiteColumn(ctx, "fallback_settings", "queue_direct_fallback_threshold", "INTEGER NOT NULL DEFAULT 5"); err != nil {
 			return err
 		}
-		return db.ensureSQLiteColumn(ctx, "fallback_settings", "oversized_request_direct_fallback_enabled", "INTEGER NOT NULL DEFAULT 0")
+		if err := db.ensureSQLiteColumn(ctx, "fallback_settings", "oversized_request_direct_fallback_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+		return db.ensureSQLiteColumn(ctx, "fallback_settings", "non_streaming_direct_fallback_enabled", "INTEGER NOT NULL DEFAULT 0")
 	}
 	_, err := db.conn.ExecContext(ctx, `
 		ALTER TABLE fallback_settings ADD COLUMN IF NOT EXISTS queue_direct_fallback_threshold INT NOT NULL DEFAULT 5;
 		ALTER TABLE fallback_settings ADD COLUMN IF NOT EXISTS oversized_request_direct_fallback_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+		ALTER TABLE fallback_settings ADD COLUMN IF NOT EXISTS non_streaming_direct_fallback_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 	`)
 	return err
 }
@@ -265,13 +272,14 @@ func (db *DB) DeleteFallbackAccount(ctx context.Context, id int64) error {
 func (db *DB) GetFallbackPolicy(ctx context.Context) (FallbackPolicy, error) {
 	var policy FallbackPolicy
 	err := db.conn.QueryRowContext(ctx, `
-		SELECT enabled, relay_count, queue_direct_fallback_threshold, oversized_request_direct_fallback_enabled
+		SELECT enabled, relay_count, queue_direct_fallback_threshold, oversized_request_direct_fallback_enabled, non_streaming_direct_fallback_enabled
 		FROM fallback_settings WHERE id=1
 	`).Scan(
 		&policy.Enabled,
 		&policy.RelayCount,
 		&policy.QueueDirectFallbackThreshold,
 		&policy.OversizedRequestDirectFallbackEnabled,
+		&policy.NonStreamingDirectFallbackEnabled,
 	)
 	return policy, err
 }
@@ -285,8 +293,8 @@ func (db *DB) UpdateFallbackPolicy(ctx context.Context, policy FallbackPolicy) e
 	}
 	_, err := db.conn.ExecContext(ctx, `
 		UPDATE fallback_settings
-		SET enabled=$1, relay_count=$2, queue_direct_fallback_threshold=$3, oversized_request_direct_fallback_enabled=$4
+		SET enabled=$1, relay_count=$2, queue_direct_fallback_threshold=$3, oversized_request_direct_fallback_enabled=$4, non_streaming_direct_fallback_enabled=$5
 		WHERE id=1
-	`, policy.Enabled, policy.RelayCount, policy.QueueDirectFallbackThreshold, policy.OversizedRequestDirectFallbackEnabled)
+	`, policy.Enabled, policy.RelayCount, policy.QueueDirectFallbackThreshold, policy.OversizedRequestDirectFallbackEnabled, policy.NonStreamingDirectFallbackEnabled)
 	return err
 }

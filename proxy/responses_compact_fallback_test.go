@@ -98,7 +98,7 @@ func TestResponsesCompactDoesNotUseFallbackWhenCompactionAffinityIsKnown(t *test
 		ID: 9, Name: "backup", BaseURL: "https://fallback.example/v1", APIKey: "sk-fallback",
 		Model: "gpt-4.1-direct", Concurrency: 2, Enabled: true,
 	}})
-	pool.SetPolicy(auth.FallbackPolicy{Enabled: true, RelayCount: 1})
+	pool.SetPolicy(auth.FallbackPolicy{Enabled: true, RelayCount: 1, NonStreamingDirectFallbackEnabled: true})
 	handler := NewHandler(store, nil, nil, nil)
 	handler.SetFallbackPool(pool)
 	handler.SetRuntimeCache(cache.NewMemory(1))

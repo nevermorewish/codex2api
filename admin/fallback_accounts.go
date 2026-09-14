@@ -98,6 +98,7 @@ func (h *Handler) ReloadFallbackPool(ctx context.Context) error {
 		RelayCount:                            policy.RelayCount,
 		QueueDirectFallbackThreshold:          policy.QueueDirectFallbackThreshold,
 		OversizedRequestDirectFallbackEnabled: policy.OversizedRequestDirectFallbackEnabled,
+		NonStreamingDirectFallbackEnabled:     policy.NonStreamingDirectFallbackEnabled,
 	})
 	return nil
 }

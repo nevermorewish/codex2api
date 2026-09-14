@@ -25,6 +25,7 @@ const (
 	fallbackReasonWaitEnded        = "primary_wait_ended"
 	fallbackReasonUnavailable      = "primary_unavailable"
 	fallbackReasonOversizedRequest = "oversized_request"
+	fallbackReasonNonStreaming     = "non_streaming"
 )
 
 type fallbackRouteState struct {
@@ -53,6 +54,18 @@ func (h *Handler) newFallbackRouteState(filter auth.AccountFilter, requestBodySi
 		state.active = true
 		state.reason = fallbackReasonOversizedRequest
 		state.required = true
+	}
+	return state
+}
+
+// Use the client's delivery mode before translating to an upstream protocol.
+// HTTP non-streaming requests can still require a streaming upstream response.
+func (h *Handler) newFallbackRouteStateForRequest(filter auth.AccountFilter, bodySize int, stream bool) *fallbackRouteState {
+	state := h.newFallbackRouteState(filter, bodySize)
+	if !state.active && state.policy.Enabled && state.policy.NonStreamingDirectFallbackEnabled && !stream {
+		state.active = true
+		state.required = true
+		state.reason = fallbackReasonNonStreaming
 	}
 	return state
 }
