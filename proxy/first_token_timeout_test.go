@@ -185,34 +185,129 @@ func TestApplyRuntimeSettingsFromSystemCodexWebSocketRetrySettings(t *testing.T)
 }
 
 func TestFirstTokenTimeoutForRequestExemptsCompaction(t *testing.T) {
+	defer ApplyRuntimeSettings(DefaultRuntimeSettings())
 	base := 30 * time.Second
 
-	// 普通请求保持配置阈值不变。
-	if got := firstTokenTimeoutForRequest(base, false); got != base {
-		t.Fatalf("non-compaction timeout = %s, want %s", got, base)
+	// 普通请求在 request_size 模式下按体积档位取值（默认档位表）。
+	if got := firstTokenTimeoutForRequest(base, false, firstTokenTimeoutInput{BodySize: 10 * 1024}); got != 10*time.Second {
+		t.Fatalf("non-compaction timeout = %s, want 10s", got)
 	}
-	// 压缩轮豁免看门狗（返回 0）。
-	if got := firstTokenTimeoutForRequest(base, true); got != 0 {
+	// 压缩轮豁免看门狗（返回 0），与体积档位无关。
+	if got := firstTokenTimeoutForRequest(base, true, firstTokenTimeoutInput{BodySize: 10 * 1024}); got != 0 {
 		t.Fatalf("compaction timeout = %s, want 0", got)
 	}
 	// 看门狗本身遇到 0 阈值不启动，保证豁免生效。
-	if guard := newFirstTokenTimeoutGuard(firstTokenTimeoutForRequest(base, true), func() {}); guard != nil {
+	if guard := newFirstTokenTimeoutGuard(firstTokenTimeoutForRequest(base, true, firstTokenTimeoutInput{}), func() {}); guard != nil {
 		t.Fatal("compaction round should not create a first token timeout guard")
 	}
 }
 
+// 固定首 Token 模式忽略体积，直接使用 base——此时模型逐档表若命中仍然优先。
+func TestFirstTokenTimeoutForRequestFixedMode(t *testing.T) {
+	settings := DefaultRuntimeSettings()
+	settings.FirstTokenTimeoutMode = "first_token"
+	ApplyRuntimeSettings(settings)
+	defer ApplyRuntimeSettings(DefaultRuntimeSettings())
+
+	base := 77 * time.Second
+	if got := firstTokenTimeoutForRequest(base, false, firstTokenTimeoutInput{BodySize: 900 * 1024}); got != base {
+		t.Fatalf("first_token mode timeout = %s, want %s", got, base)
+	}
+}
+
+// 关闭超时的模式对任何体积、任何模型都不设首字看门狗。
+func TestFirstTokenTimeoutForRequestDisabledMode(t *testing.T) {
+	settings := DefaultRuntimeSettings()
+	settings.FirstTokenTimeoutMode = "disabled"
+	settings.FirstTokenSizeTimeouts.ModelTimeouts = map[string]database.FirstTokenModelTimeouts{
+		"gpt-6-astra": {database.FirstTokenSizeOver500KB: 300},
+	}
+	ApplyRuntimeSettings(settings)
+	defer ApplyRuntimeSettings(DefaultRuntimeSettings())
+
+	if got := firstTokenTimeoutForRequest(time.Minute, false, firstTokenTimeoutInput{Model: "gpt-6-astra", BodySize: 900 * 1024}); got != 0 {
+		t.Fatalf("disabled mode timeout = %s, want 0", got)
+	}
+}
+
 func TestFirstTokenTimeoutForRequestByBodySize(t *testing.T) {
+	settings := DefaultRuntimeSettings()
+	settings.FirstTokenSizeTimeouts = database.FirstTokenTimeoutSettings{
+		Under50KB: 11, Under100KB: 22, Under200KB: 33, Under500KB: 44, Over500KB: 55,
+	}
+	ApplyRuntimeSettings(settings)
+	defer ApplyRuntimeSettings(DefaultRuntimeSettings())
+
 	cases := []struct {
 		size int
 		want time.Duration
 	}{
-		{1, 10 * time.Second}, {50 * 1024, 20 * time.Second},
-		{100 * 1024, 30 * time.Second}, {200 * 1024, 50 * time.Second},
-		{500 * 1024, 90 * time.Second}, {1 << 20, 90 * time.Second},
+		{1, 11 * time.Second}, {50*1024 - 1, 11 * time.Second},
+		{50 * 1024, 22 * time.Second}, {100*1024 - 1, 22 * time.Second},
+		{100 * 1024, 33 * time.Second}, {200*1024 - 1, 33 * time.Second},
+		{200 * 1024, 44 * time.Second}, {500*1024 - 1, 44 * time.Second},
+		{500 * 1024, 55 * time.Second}, {1 << 20, 55 * time.Second},
 	}
 	for _, tc := range cases {
-		if got := firstTokenTimeoutForRequest(time.Minute, false, tc.size); got != tc.want {
+		if got := firstTokenTimeoutForRequest(time.Minute, false, firstTokenTimeoutInput{BodySize: tc.size}); got != tc.want {
 			t.Errorf("size %d: got %s, want %s", tc.size, got, tc.want)
+		}
+	}
+}
+
+// 模型逐档表优先于全局档位表，且必须逐档生效：同一个模型在不同体积下
+// 拿到不同超时，未被覆盖的档位回落到全局值。
+func TestFirstTokenTimeoutForRequestByModelBracket(t *testing.T) {
+	settings := DefaultRuntimeSettings()
+	settings.FirstTokenSizeTimeouts = database.FirstTokenTimeoutSettings{
+		Under50KB: 11, Under100KB: 22, Under200KB: 33, Under500KB: 44, Over500KB: 55,
+		ModelTimeouts: map[string]database.FirstTokenModelTimeouts{
+			"gpt-6-astra": {
+				database.FirstTokenSizeUnder50KB:  90,
+				database.FirstTokenSizeOver500KB:  300,
+				database.FirstTokenSizeUnder200KB: 140,
+			},
+		},
+	}
+	ApplyRuntimeSettings(settings)
+	defer ApplyRuntimeSettings(DefaultRuntimeSettings())
+
+	cases := []struct {
+		size int
+		want time.Duration
+	}{
+		{10 * 1024, 90 * time.Second},   // 模型值
+		{60 * 1024, 22 * time.Second},   // 未覆盖，回落全局
+		{150 * 1024, 140 * time.Second}, // 模型值
+		{300 * 1024, 44 * time.Second},  // 未覆盖，回落全局
+		{900 * 1024, 300 * time.Second}, // 模型值
+	}
+	for _, tc := range cases {
+		if got := firstTokenTimeoutForRequest(time.Minute, false, firstTokenTimeoutInput{Model: "gpt-6-astra", BodySize: tc.size}); got != tc.want {
+			t.Errorf("gpt-6-astra size %d: got %s, want %s", tc.size, got, tc.want)
+		}
+	}
+	// 其它模型不受影响。
+	if got := firstTokenTimeoutForRequest(time.Minute, false, firstTokenTimeoutInput{Model: "gpt-5.6-sol", BodySize: 900 * 1024}); got != 55*time.Second {
+		t.Errorf("gpt-5.6-sol = %s, want 55s", got)
+	}
+}
+
+// 模型查找键与配置键必须走同一套规范化，否则大小写/空白的差异会让配置静默失效。
+func TestFirstTokenTimeoutForRequestModelKeyNormalization(t *testing.T) {
+	settings := DefaultRuntimeSettings()
+	settings.FirstTokenSizeTimeouts = database.FirstTokenTimeoutSettings{
+		Under50KB: 11, Under100KB: 22, Under200KB: 33, Under500KB: 44, Over500KB: 55,
+		ModelTimeouts: map[string]database.FirstTokenModelTimeouts{
+			"gpt-6-astra": {database.FirstTokenSizeUnder50KB: 90},
+		},
+	}
+	ApplyRuntimeSettings(settings)
+	defer ApplyRuntimeSettings(DefaultRuntimeSettings())
+
+	for _, model := range []string{"gpt-6-astra", "GPT-6-Astra", "  gpt-6-astra  "} {
+		if got := firstTokenTimeoutForRequest(time.Minute, false, firstTokenTimeoutInput{Model: model, BodySize: 1024}); got != 90*time.Second {
+			t.Errorf("model %q = %s, want 90s", model, got)
 		}
 	}
 }

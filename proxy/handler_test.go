@@ -1265,7 +1265,10 @@ func TestResponsesWebSocketRetriesFirstTokenTimeoutBeforeRelay(t *testing.T) {
 		WebsocketExecuteFunc = previousExec
 		ApplyRuntimeSettings(previousSettings)
 	})
+	// 测的是"首字超时后换号重试"，需要 1 秒级阈值：走固定值模式，
+	// 否则按体积档位取值（最短档是 10 秒），用例要么等满 10 秒要么读超时。
 	nextSettings := previousSettings
+	nextSettings.FirstTokenTimeoutMode = "first_token"
 	nextSettings.FirstTokenTimeoutSec = 1
 	ApplyRuntimeSettings(nextSettings)
 

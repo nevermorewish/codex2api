@@ -4141,7 +4141,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						Endpoint: "/v1/responses", Model: logModel, Stream: true,
 					}, feishuFirstTokenTimeoutForAttempt(start))
 					ttftGuard = newFirstTokenTimeoutGuardWithHooks(
-						firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, logModel, len(codexBody)),
+						firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, firstTokenTimeoutInput{Model: logModel, BodySize: len(rawBody)}),
 						upstreamCancel,
 						func() { feishuWatch.MarkProgress() },
 						func() { feishuWatch.Stop() },
@@ -4945,7 +4945,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				Endpoint: "/v1/responses", Model: logModel, Stream: isStream, ViaWebsocket: useWebsocket,
 			}, feishuFirstTokenTimeoutForAttempt(start))
 			ttftGuard := newFirstTokenTimeoutGuardWithHooks(
-				firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, logModel, len(codexBody)),
+				firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact, firstTokenTimeoutInput{Model: logModel, BodySize: len(rawBody)}),
 				upstreamCancel,
 				func() { feishuWatch.MarkProgress() },
 				func() { feishuWatch.Stop() },
@@ -7059,7 +7059,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				Endpoint: "/v1/chat/completions", Model: logModel, Stream: isStream, ViaWebsocket: useWebsocket,
 			}, feishuFirstTokenTimeoutForAttempt(start))
 			ttftGuard := newFirstTokenTimeoutGuardWithHooks(
-				firstTokenTimeoutForRequest(currentFirstTokenTimeout(), false, logModel, len(rawBody)), upstreamCancel,
+				firstTokenTimeoutForRequest(currentFirstTokenTimeout(), false, firstTokenTimeoutInput{Model: logModel, BodySize: len(rawBody)}), upstreamCancel,
 				func() { feishuWatch.MarkProgress() },
 				func() { feishuWatch.Stop() },
 			)

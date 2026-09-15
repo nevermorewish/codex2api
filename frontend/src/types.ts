@@ -4051,3 +4051,19 @@ export interface FallbackTestResult {
   error?: string
 }
 export type AccountFirstTokenStat = { account_id: number; account_name: string; account_email: string; samples: number; p50_ms: number; p90_ms: number; timeout_count: number; upstream_500_count: number; upstream_502_count: number; upstream_503_count: number; score: number }
+
+/** 首字超时的请求体体积档位；每个模型的超时按这五档各配一个。 */
+export type FirstTokenSizeBracket = 'under_50kb' | 'under_100kb' | 'under_200kb' | 'under_500kb' | 'over_500kb'
+
+/** 一个模型的五档超时（秒）。服务端返回的每一行都是完整的五行。 */
+export type FirstTokenModelTimeouts = Record<FirstTokenSizeBracket, number>
+
+/** 全局档位表（未单独配置的模型跟随它）加按模型逐档覆盖表。 */
+export interface FirstTokenTimeoutSettings {
+  under_50kb: number
+  under_100kb: number
+  under_200kb: number
+  under_500kb: number
+  over_500kb: number
+  model_timeouts: Record<string, FirstTokenModelTimeouts>
+}
