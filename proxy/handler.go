@@ -4807,7 +4807,13 @@ func (h *Handler) Responses(c *gin.Context) {
 					// 流式:首 token 前上游失败、未向下游写过任何内容,HTTP 200 header 尚未提交,
 					// 覆盖预设的 SSE Content-Type 后按真实错误码返回 JSON,
 					// 避免下游中转/计费方把它当成功并按预估 input token 计费(与回调内 reset 呼应)。
-					if !writeCommittedResponsesRetryError(c, outcome.failureMessage) {
+					if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 {
+						contentType := "application/json"
+						if !json.Valid(terminalFailurePayload) {
+							contentType = "text/plain; charset=utf-8"
+						}
+						c.Data(clientFacingHTTPStatus(outcome.logStatusCode), contentType, terminalFailurePayload)
+					} else if !writeCommittedResponsesRetryError(c, outcome.failureMessage) {
 						c.Header("Content-Type", "application/json; charset=utf-8")
 						c.JSON(clientFacingHTTPStatus(outcome.logStatusCode), gin.H{
 							"error": gin.H{"message": outcome.failureMessage, "type": "upstream_error"},
@@ -7810,7 +7816,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				// 流式:首 token 前上游失败、未向下游写过任何内容,HTTP 200 header 尚未提交,
 				// 覆盖预设的 SSE Content-Type 后按真实错误码返回 JSON,
 				// 避免下游中转/计费方把它当成功并按预估 input token 计费(与回调内 reset 呼应)。
-				if !writeCommittedChatRetryError(c, outcome.failureMessage) {
+				if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 {
+					contentType := "application/json"
+					if !json.Valid(terminalFailurePayload) {
+						contentType = "text/plain; charset=utf-8"
+					}
+					c.Data(clientFacingHTTPStatus(outcome.logStatusCode), contentType, terminalFailurePayload)
+				} else if !writeCommittedChatRetryError(c, outcome.failureMessage) {
 					c.Header("Content-Type", "application/json; charset=utf-8")
 					c.JSON(clientFacingHTTPStatus(logStatusCode), gin.H{
 						"error": gin.H{"message": outcome.failureMessage, "type": "upstream_error"},
