@@ -4240,6 +4240,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 						log.Printf("OpenAI Responses 上游首字超时，断开并重试 (attempt %s, account %d): %v", retryAttemptProgress(attempt, maxRetries), account.ID(), reqErr)
 						if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), true, generalRetries, retryLimit) {
+							writeExhaustedFirstTokenTimeout(c, reqErr, isStream, continuousRetryProtocolResponses)
 							return
 						}
 						continue
@@ -4772,6 +4773,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					// 有限首字超时已白等一轮；无限预算仍强制退避，避免无等待循环。
 					retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 					if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), isFirstTokenTimeoutOutcome(outcome), retryOrdinal, retryLimit, resp) {
+						writeExhaustedStreamOutcomeTerminal(c, outcome, isStream, continuousRetryProtocolResponses)
 						return
 					}
 					continue
@@ -4807,7 +4809,8 @@ func (h *Handler) Responses(c *gin.Context) {
 					// 流式:首 token 前上游失败、未向下游写过任何内容,HTTP 200 header 尚未提交,
 					// 覆盖预设的 SSE Content-Type 后按真实错误码返回 JSON,
 					// 避免下游中转/计费方把它当成功并按预估 input token 计费(与回调内 reset 呼应)。
-					if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 {
+					// 保活已提交 SSE 时不能再追加 JSON,必须回落到协议帧写出口。
+					if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 && !retryKeepaliveCommitted(c) {
 						contentType := "application/json"
 						if !json.Valid(terminalFailurePayload) {
 							contentType = "text/plain; charset=utf-8"
@@ -5017,6 +5020,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 					log.Printf("上游首字超时，断开并重试 (attempt %s, account %d, /v1/responses): %v", retryAttemptProgress(attempt, maxRetries), account.ID(), reqErr)
 					if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), true, generalRetries, retryLimit) {
+						writeExhaustedFirstTokenTimeout(c, reqErr, isStream, continuousRetryProtocolResponses)
 						return
 					}
 					continue
@@ -5688,6 +5692,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				// 有限首字超时已白等一轮；无限预算仍强制退避，避免无等待循环。
 				retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), isFirstTokenTimeoutOutcome(outcome), retryOrdinal, retryLimit, resp) {
+					writeExhaustedStreamOutcomeTerminal(c, outcome, isStream, continuousRetryProtocolResponses)
 					return
 				}
 				continue
@@ -7145,6 +7150,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 					log.Printf("上游首字超时，断开并重试 (attempt %s, account %d, /v1/chat/completions): %v", retryAttemptProgress(attempt, maxRetries), account.ID(), reqErr)
 					if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), true, generalRetries, retryLimit) {
+						writeExhaustedFirstTokenTimeout(c, reqErr, isStream, continuousRetryProtocolChat)
 						return
 					}
 					continue
@@ -7765,6 +7771,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				// 有限首字超时已白等一轮；无限预算仍强制退避，避免无等待循环。
 				retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), isFirstTokenTimeoutOutcome(outcome), retryOrdinal, retryLimit, resp) {
+					writeExhaustedStreamOutcomeTerminal(c, outcome, isStream, continuousRetryProtocolChat)
 					return
 				}
 				continue
@@ -7816,7 +7823,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				// 流式:首 token 前上游失败、未向下游写过任何内容,HTTP 200 header 尚未提交,
 				// 覆盖预设的 SSE Content-Type 后按真实错误码返回 JSON,
 				// 避免下游中转/计费方把它当成功并按预估 input token 计费(与回调内 reset 呼应)。
-				if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 {
+				// 保活已提交 SSE 时不能再追加 JSON,必须回落到协议帧写出口。
+				if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 && !retryKeepaliveCommitted(c) {
 					contentType := "application/json"
 					if !json.Valid(terminalFailurePayload) {
 						contentType = "text/plain; charset=utf-8"

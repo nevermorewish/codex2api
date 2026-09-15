@@ -178,6 +178,27 @@ func sendAnthropicError(c *gin.Context, statusCode int, errType, message string)
 	})
 }
 
+// writeExhaustedAnthropicOutcomeTerminal 在首字超时预算耗尽、请求不再续跑时写出
+// Anthropic 协议终态。与 writeExhaustedFirstTokenTimeout 同因：静默 return 会让
+// 下游只拿到空 body，真实超时原因被外层网关的通用文案盖掉。
+func writeExhaustedAnthropicOutcomeTerminal(c *gin.Context, outcome streamOutcome, isStream bool) bool {
+	if c == nil {
+		return false
+	}
+	message := outcome.failureMessage
+	if message == "" {
+		message = "Upstream stream failed before delivering any content"
+	}
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		return writeCommittedAnthropicRetryError(c, "api_error", message)
+	}
+	if isStream && retryKeepaliveCommitted(c) {
+		return writeCommittedAnthropicRetryError(c, "api_error", message)
+	}
+	sendAnthropicError(c, clientFacingHTTPStatus(outcome.logStatusCode), "api_error", message)
+	return true
+}
+
 // writeAnthropicStreamErrorEvent 通过流写入器发送 Anthropic 协议的流内 error 事件。
 // 用于正文已下发、无法整段静默重试的上游失败：下游网关/客户端（Claude Code 等）
 // 能识别 error 事件并自行重试；伪造 stop_reason=end_turn 的干净收尾会让下游把
@@ -1611,6 +1632,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				}
 				retryOrdinal, retryLimit := retryStateForStreamOutcome(outcome, generalRetries, rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, continuousRetryPolicy)
 				if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), isFirstTokenTimeoutOutcome(outcome), retryOrdinal, retryLimit, resp) {
+					writeExhaustedAnthropicOutcomeTerminal(c, outcome, isStream)
 					return
 				}
 				continue

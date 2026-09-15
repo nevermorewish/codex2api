@@ -2,10 +2,13 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 type firstTokenTimeoutGuard struct {
@@ -104,6 +107,102 @@ func firstTokenTimeoutOutcome(timeout time.Duration) streamOutcome {
 
 func firstTokenTimeoutError(timeout time.Duration) error {
 	return ErrUpstreamTimeout(fmt.Errorf("first token timeout after %s", timeout.Round(time.Millisecond)))
+}
+
+// writeExhaustedFirstTokenTimeout 在首字超时预算耗尽、请求不再续跑时写出终态。
+//
+// 重试等待返回 false 有两种来源：重试预算确实耗尽，或请求上下文已被取消。
+// 前者此前是静默 return——不写响应体、不认领终态，下游只拿到一个空 body 的 503，
+// 真实原因（兜底账号首字超时）被外层网关的「无可用账号，请稍后重试」盖掉。后者
+// 已经不需要新响应（连接已断，或保活/取消路径写过终态），交回既有写出口按上下文
+// 状态自行跳过。已提交的 SSE 流必须继续写协议帧，不能追加一段 JSON。
+func writeExhaustedFirstTokenTimeout(c *gin.Context, err error, isStream bool, protocol continuousRetryHTTPProtocol) bool {
+	if c == nil || err == nil {
+		return false
+	}
+	message := firstTokenTimeoutClientMessage(err)
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		if protocol == continuousRetryProtocolResponses {
+			return writeCommittedResponsesRetryError(c, message)
+		}
+		return writeCommittedChatRetryError(c, message)
+	}
+	code := ErrorCodeUpstreamTimeout
+	var structured *Error
+	if errors.As(err, &structured) && structured != nil && structured.Code != "" {
+		code = structured.Code
+	}
+	if isStream && retryKeepaliveCommitted(c) {
+		if protocol == continuousRetryProtocolResponses {
+			return writeCommittedResponsesRetryError(c, message)
+		}
+		return writeCommittedChatRetryError(c, message)
+	}
+	if !claimContinuousRetryTerminal(c, protocol) {
+		return true
+	}
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.JSON(clientFacingHTTPStatus(logStatusUpstreamStreamBreak), gin.H{
+		"error": gin.H{"message": message, "type": ErrorTypeUpstreamError, "code": code},
+	})
+	return true
+}
+
+// writeExhaustedStreamOutcomeTerminal 与 writeExhaustedFirstTokenTimeout 同义，
+// 但输入是已经归一化过的流结果：failureMessage 才是下游该看到的原因，
+// 无终态可写时才退回到兜底文案。
+func writeExhaustedStreamOutcomeTerminal(c *gin.Context, outcome streamOutcome, isStream bool, protocol continuousRetryHTTPProtocol) bool {
+	if c == nil {
+		return false
+	}
+	message := outcome.failureMessage
+	if message == "" {
+		message = "Upstream stream failed before delivering any content"
+	}
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		if protocol == continuousRetryProtocolResponses {
+			return writeCommittedResponsesRetryError(c, message)
+		}
+		return writeCommittedChatRetryError(c, message)
+	}
+	code := ErrorCodeUpstreamTimeout
+	if outcome.failureKind != "timeout" && outcome.logStatusCode >= 400 && outcome.logStatusCode <= 599 {
+		code = ErrorCodeUpstreamStreamBreak
+	}
+	if isStream && retryKeepaliveCommitted(c) {
+		if protocol == continuousRetryProtocolResponses {
+			return writeCommittedResponsesRetryError(c, message)
+		}
+		return writeCommittedChatRetryError(c, message)
+	}
+	if !claimContinuousRetryTerminal(c, protocol) {
+		return true
+	}
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.JSON(clientFacingHTTPStatus(outcome.logStatusCode), gin.H{
+		"error": gin.H{"message": message, "type": ErrorTypeUpstreamError, "code": code},
+	})
+	return true
+}
+
+// firstTokenTimeoutClientMessage 保留下游可读的失败原因：结构化错误用其 Message，
+// 并附上 Cause 里的具体超时事实（如 "first token timeout after 20s"），否则只回
+// 「Upstream request timeout」会让排查重新落回猜测。
+func firstTokenTimeoutClientMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var structured *Error
+	if !errors.As(err, &structured) || structured == nil {
+		return err.Error()
+	}
+	if structured.Cause == nil {
+		return structured.Message
+	}
+	if structured.Message == "" {
+		return structured.Cause.Error()
+	}
+	return structured.Message + ": " + structured.Cause.Error()
 }
 
 // firstTokenTimeoutForRequest 返回本轮请求应使用的首字超时。上下文压缩轮

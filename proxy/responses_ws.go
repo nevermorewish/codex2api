@@ -871,7 +871,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 				log.Printf("Responses WebSocket upstream first token timeout, retrying with another account (attempt %s, account %d): %v", retryAttemptProgress(attempt, maxRetries), account.ID(), reqErr)
 				if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), true, generalRetries, retryLimit) {
-					return errResponsesWSClientGone
+					return writeExhaustedResponsesWSTerminal(conn, c, firstTokenTimeoutClientMessage(reqErr), hideUpstreamErrors)
 				}
 				continue
 			}
@@ -1082,7 +1082,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 					log.Printf("Responses WebSocket 首内容前上游失败，重试 (attempt %s, account %d, reason=%s): %s", retryAttemptProgress(retryOrdinal-1, retryLimit), account.ID(), preContentRetryReason(retryErr.outcome), retryErr.outcome.failureMessage)
 					// 有限首字超时已白等一轮；无限预算仍强制退避，避免无等待循环。
 					if !h.waitBeforeRetryWithFirstTokenTimeout(c.Request.Context(), isFirstTokenTimeoutOutcome(retryErr.outcome), retryOrdinal, retryLimit, resp) {
-						return errResponsesWSClientGone
+						return writeExhaustedResponsesWSTerminal(conn, c, retryErr.outcome.failureMessage, hideUpstreamErrors)
 					}
 					continue
 				}
@@ -1837,6 +1837,25 @@ func responsesWSClientUpstreamAPIError(apiErr *api.APIError, hideUpstreamErrors 
 		return apiErr
 	}
 	return api.NewAPIError(api.ErrCodeUpstreamError, responsesWSFriendlyUpstreamErr, api.ErrorTypeUpstream)
+}
+
+// writeExhaustedResponsesWSTerminal 在 WS 首内容前重试预算耗尽时向下游发一个
+// 协议内 error 帧并关闭连接。此前这里直接返回 errResponsesWSClientGone，客户端
+// 只看到连接被断开、拿不到任何失败原因，排查只能回到服务端日志。
+func writeExhaustedResponsesWSTerminal(conn *websocket.Conn, c *gin.Context, message string, hideUpstreamErrors bool) error {
+	if c == nil || c.Request == nil || c.Request.Context().Err() != nil {
+		return errResponsesWSClientGone
+	}
+	if message == "" {
+		message = responsesWSFriendlyUpstreamErr
+	}
+	apiErr := api.NewAPIError(api.ErrCodeUpstreamError, message, api.ErrorTypeUpstream)
+	clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+	if !claimContinuousRetrySuccessContext(c.Request.Context()) {
+		return errResponsesWSClientGone
+	}
+	_ = writeResponsesWSError(conn, clientErr)
+	return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, apiErr)
 }
 
 func writeResponsesWSMessage(conn *websocket.Conn, payload []byte) error {
