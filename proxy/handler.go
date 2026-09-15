@@ -4758,7 +4758,6 @@ func (h *Handler) Responses(c *gin.Context) {
 						ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 					}, promptPolicyIncidentID)
 					log.Printf("OpenAI Responses 首内容前上游失败，重试 (attempt %s, account %d, reason=%s, recycle_client=%t): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), preContentRetryReason(outcome), shouldRecycleStreamClient(outcome), outcome.failureMessage)
-					recordStreamOutcomeAsLastFailure(&lastStatusCode, &lastBody, outcome)
 					recycleStreamClientIfBroken(account, proxyURL, outcome)
 					if isFirstTokenTimeoutOutcome(outcome) {
 						retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
@@ -5678,7 +5677,6 @@ func (h *Handler) Responses(c *gin.Context) {
 					ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 				}, promptPolicyIncidentID)
 				log.Printf("首内容前上游失败，重试 (attempt %s, account %d, /v1/responses, reason=%s, recycle_client=%t): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), preContentRetryReason(outcome), shouldRecycleStreamClient(outcome), outcome.failureMessage)
-				recordStreamOutcomeAsLastFailure(&lastStatusCode, &lastBody, outcome)
 				recycleStreamClientIfBroken(account, proxyURL, outcome)
 				if isFirstTokenTimeoutOutcome(outcome) {
 					retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
@@ -5735,6 +5733,13 @@ func (h *Handler) Responses(c *gin.Context) {
 			logStatusCode := outcome.logStatusCode
 			if logStatusCode != http.StatusOK {
 				c.Set(AccessLogStatusContextKey, logStatusCode)
+			}
+			// 流式失败走 200 + error/response.failed 帧，不经过 HTTP 错误分支，
+			// lastStatusCode 曾一直是零值。账号池候选耗尽后的收尾分支因此跳过
+			// 「透传真实上游错误」，把具体原因换成含糊的「无可用账号」503。
+			// 无论本轮是否还有重试预算，都把这次失败记成请求级最终失败。
+			if logStatusCode != http.StatusOK {
+				recordStreamOutcomeAsLastFailure(&lastStatusCode, &lastBody, outcome)
 			}
 			if outcome.logStatusCode != http.StatusOK {
 				log.Printf("流异常结束 (attempt %s, account %d, /v1/responses, status %d): %s，已转发约 %d 字符", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
@@ -7768,7 +7773,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 				}, promptPolicyIncidentID)
 				log.Printf("首内容前上游失败，重试 (attempt %s, account %d, /v1/chat/completions, reason=%s, recycle_client=%t): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), preContentRetryReason(outcome), shouldRecycleStreamClient(outcome), outcome.failureMessage)
-				recordStreamOutcomeAsLastFailure(&lastStatusCode, &lastBody, outcome)
 				recycleStreamClientIfBroken(account, proxyURL, outcome)
 				if isFirstTokenTimeoutOutcome(outcome) {
 					retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
@@ -7817,6 +7821,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			}
 			logStatusCode := outcome.logStatusCode
 			if outcome.logStatusCode != http.StatusOK {
+				// 与 /v1/responses 同因：流式失败不经过 HTTP 错误分支，
+				// lastStatusCode 曾一直是零值，候选耗尽时真实原因被换成池级 503。
+				recordStreamOutcomeAsLastFailure(&lastStatusCode, &lastBody, outcome)
 				log.Printf("流异常结束 (attempt %s, account %d, /v1/chat/completions, status %d): %s，已转发约 %d 字符", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
 				if deltaCharCount > 0 && outcome.failureKind != "usage_missing" {
 					estOutputTokens := deltaCharCount / 3
