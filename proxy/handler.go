@@ -4758,6 +4758,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 					}, promptPolicyIncidentID)
 					log.Printf("OpenAI Responses 首内容前上游失败，重试 (attempt %s, account %d, reason=%s, recycle_client=%t): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), preContentRetryReason(outcome), shouldRecycleStreamClient(outcome), outcome.failureMessage)
+					recordStreamOutcomeAsLastFailure(&lastStatusCode, &lastBody, outcome)
 					recycleStreamClientIfBroken(account, proxyURL, outcome)
 					if isFirstTokenTimeoutOutcome(outcome) {
 						retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
@@ -5677,6 +5678,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 				}, promptPolicyIncidentID)
 				log.Printf("首内容前上游失败，重试 (attempt %s, account %d, /v1/responses, reason=%s, recycle_client=%t): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), preContentRetryReason(outcome), shouldRecycleStreamClient(outcome), outcome.failureMessage)
+				recordStreamOutcomeAsLastFailure(&lastStatusCode, &lastBody, outcome)
 				recycleStreamClientIfBroken(account, proxyURL, outcome)
 				if isFirstTokenTimeoutOutcome(outcome) {
 					retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
@@ -6961,6 +6963,16 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
 					return
 				}
+				// 流式失败走的是 200 + error/response.failed 帧，不会经过 HTTP 错误
+				// 分支，lastStatusCode 曾一直是零值。这里透传最后一次真实失败，
+				// 避免把「上游 500 Bad Gateway」这类具体原因换成含糊的「无可用账号」。
+				if lastStatusCode > 0 && len(lastBody) > 0 {
+					if isStream && writeCommittedChatRetryError(c, usageLogErrorMessage(lastStatusCode, lastBody)) {
+						return
+					}
+					h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
+					return
+				}
 				// 候选被 scope 预算剔空时给出真实原因，而不是含糊的「无可用账号」。
 				if msg := scopeBudgetExhaustedMessage(c); msg != "" {
 					if isStream && writeCommittedChatRetryError(c, msg) {
@@ -7756,6 +7768,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 				}, promptPolicyIncidentID)
 				log.Printf("首内容前上游失败，重试 (attempt %s, account %d, /v1/chat/completions, reason=%s, recycle_client=%t): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), preContentRetryReason(outcome), shouldRecycleStreamClient(outcome), outcome.failureMessage)
+				recordStreamOutcomeAsLastFailure(&lastStatusCode, &lastBody, outcome)
 				recycleStreamClientIfBroken(account, proxyURL, outcome)
 				if isFirstTokenTimeoutOutcome(outcome) {
 					retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
