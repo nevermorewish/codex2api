@@ -5782,6 +5782,16 @@ func (h *Handler) Responses(c *gin.Context) {
 			} else if !isStream {
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 					// The deadline owns the terminal response.
+				} else if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 {
+					// The fallback pool is the terminal route. Preserve its upstream
+					// error payload instead of replacing it with the generic local
+					// "upstream_error" wrapper, so callers can see the actual relay
+					// failure and decide whether/how to retry.
+					contentType := "application/json"
+					if !json.Valid(terminalFailurePayload) {
+						contentType = "text/plain; charset=utf-8"
+					}
+					c.Data(clientFacingHTTPStatus(logStatusCode), contentType, terminalFailurePayload)
 				} else if len(terminalFailurePayload) > 0 {
 					c.JSON(clientFacingHTTPStatus(logStatusCode), gin.H{
 						"error": gin.H{"message": outcome.failureMessage, "type": "upstream_error"},
@@ -7820,6 +7830,12 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			} else if !isStream {
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolChat) {
 					// The deadline owns the terminal response.
+				} else if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 {
+					contentType := "application/json"
+					if !json.Valid(terminalFailurePayload) {
+						contentType = "text/plain; charset=utf-8"
+					}
+					c.Data(clientFacingHTTPStatus(logStatusCode), contentType, terminalFailurePayload)
 				} else if len(terminalFailurePayload) > 0 {
 					c.JSON(clientFacingHTTPStatus(logStatusCode), gin.H{
 						"error": gin.H{"message": outcome.failureMessage, "type": "upstream_error"},
