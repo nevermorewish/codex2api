@@ -105,6 +105,10 @@ func TestRelayRequestRemainsActiveWhileFallbackIsPending(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("fallback did not start")
 	}
+	row := waitLifecycle(t, "relay-pending-test", auth.LifecycleFallback)
+	if row.Attempt != 2 || row.Retries != 1 || row.AccountID != -9 {
+		t.Fatalf("fallback lifecycle: %+v", row)
+	}
 	db.FlushUsageLogs()
 	logs, _, err := db.ListRelayChainLogs(context.Background(), 1, 20)
 	if err != nil || len(logs) != 1 || !logs[0].IsRetryAttempt || !RelayRequestInProgress(logs[0].ParentRequestID) {

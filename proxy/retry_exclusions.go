@@ -429,6 +429,7 @@ const continuousPoolRetryPollInterval = 5 * time.Second
 var retryAccountAvailabilityWait = 30 * time.Second
 
 func waitForContinuousPoolRetry(ctx context.Context) bool {
+	defer auth.WaitRequest(ctx, auth.LifecycleRetry)()
 	if ctx != nil && ctx.Err() != nil {
 		return false
 	}

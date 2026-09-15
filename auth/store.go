@@ -7341,6 +7341,7 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 		metrics.waiters.Add(1)
 		defer metrics.waiters.Add(-1)
 	}
+	defer WaitRequest(ctx, LifecycleScheduler)()
 
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()

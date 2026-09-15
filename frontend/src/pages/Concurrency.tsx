@@ -6,6 +6,7 @@ import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tool
 import { api } from '../api'
 import type { ConcurrencyAccountRow, ConcurrencySnapshot, RelayAttempt, RelayChain } from '../types'
 import PageHeader from '../components/PageHeader'
+import RequestLifecyclePanel from '../components/RequestLifecyclePanel'
 import StateShell from '../components/StateShell'
 import Pagination from '../components/Pagination'
 import { StatTile } from '../components/StatTile'
@@ -312,9 +313,9 @@ export default function Concurrency() {
       >
         {snapshot ? (
           <div className="space-y-5">
-            <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-6">
+            <RequestLifecyclePanel snapshot={snapshot} />
+            <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
               <StatTile label={t('concurrency.globalActive')} value={snapshot.global_active} icon={<Activity className="size-4" />} tone="info" />
-              <StatTile label={t('concurrency.queueDepth')} value={snapshot.queue_depth} icon={<Layers3 className="size-4" />} tone={snapshot.queue_depth > 0 ? 'warning' : 'neutral'} />
               <StatTile label={t('concurrency.active')} value={snapshot.total_active} icon={<Gauge className="size-4" />} tone="success" />
               <StatTile label={t('concurrency.occupied')} value={snapshot.total_occupied} sub={t('concurrency.bufferedCount', { count: Math.max(0, snapshot.total_occupied - snapshot.total_active) })} icon={<Users className="size-4" />} />
               <StatTile label={t('concurrency.capacity')} value={snapshot.capacity} sub={t('concurrency.usableCapacity')} icon={<Gauge className="size-4" />} />

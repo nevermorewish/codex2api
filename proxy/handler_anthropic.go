@@ -661,6 +661,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				return
 			}
 			fallbackState.noteSelected(account)
+			startRequestAttempt(c, account, attempt+1)
 			h.annotateFallbackRequest(c, fallbackState, account)
 			if attempt > 0 {
 				clearNewAPIUpstreamCyberPolicyDecision(c)
@@ -1355,6 +1356,7 @@ func (h *Handler) Messages(c *gin.Context) {
 					isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 					if !ttftRecorded && isFirstToken {
 						firstTokenMs = int(time.Since(start).Milliseconds())
+						auth.RequestFirstToken(c.Request.Context(), int64(firstTokenMs))
 						ttftRecorded = true
 					}
 					if !contentStarted && isFirstTokenResult(parsed) {
@@ -1528,6 +1530,7 @@ func (h *Handler) Messages(c *gin.Context) {
 					ttftGuard.MarkPayload(data)
 					if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
 						firstTokenMs = int(time.Since(start).Milliseconds())
+						auth.RequestFirstToken(c.Request.Context(), int64(firstTokenMs))
 						ttftRecorded = true
 					}
 					if eventType == "response.output_text.delta" || isCodexToolInputDeltaEvent(eventType) {

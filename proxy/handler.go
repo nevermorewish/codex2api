@@ -1168,6 +1168,7 @@ func forwardGrokNativeResponseTo(c *gin.Context, resp *http.Response, protocol G
 			}
 			if !startedAt.IsZero() {
 				firstTokenMs = max(int(time.Since(startedAt).Milliseconds()), 1)
+				auth.RequestFirstToken(c.Request.Context(), int64(firstTokenMs))
 			}
 		}
 		if isFailed && !visible && !wrote {
@@ -1580,6 +1581,9 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateCompactUsageMetaFromRequest(c, input)
 	markCyberPolicyUsageKind(input)
 	observeFallbackMetricUsage(c, input)
+	if c != nil && c.Request != nil && input != nil && input.InternalReason == "" {
+		auth.EndRequestAttempt(c.Request.Context(), input.StatusCode)
+	}
 	h.logUsage(input)
 }
 
@@ -1785,6 +1789,7 @@ func ingressRequestBody(c *gin.Context, fallback []byte) []byte {
 func setRawRequestBody(c *gin.Context, body []byte) {
 	if c != nil {
 		c.Set("raw_body", body)
+		auth.RequestModel(c.Request.Context(), gjson.GetBytes(body, "model").String())
 	}
 }
 
@@ -3179,6 +3184,7 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 			return
 		}
 		c.Set(contextAPIKeyID, apiKeyRow.ID)
+		auth.RequestIdentity(c.Request.Context(), resolveParentRequestID(c), apiKeyRow.ID)
 		c.Set(contextAPIKeyName, strings.TrimSpace(apiKeyRow.Name))
 		c.Set(contextAPIKeyMasked, security.MaskAPIKey(apiKeyRow.Key))
 		c.Set(contextAPIKeyRow, apiKeyRow)
@@ -4073,6 +4079,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				return
 			}
 			fallbackState.noteSelected(account)
+			startRequestAttempt(c, account, attempt+1)
 			h.annotateFallbackRequest(c, fallbackState, account)
 			if attempt > 0 {
 				clearNewAPIUpstreamCyberPolicyDecision(c)
@@ -4577,6 +4584,7 @@ func (h *Handler) Responses(c *gin.Context) {
 						isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 						if !ttftRecorded && isFirstToken {
 							firstTokenMs = int(time.Since(start).Milliseconds())
+							auth.RequestFirstToken(c.Request.Context(), int64(firstTokenMs))
 							ttftRecorded = true
 						}
 						if !contentTokenSeen && isFirstTokenResult(parsed) {
@@ -5279,6 +5287,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 					if !ttftRecorded && isFirstToken {
 						firstTokenMs = int(time.Since(start).Milliseconds())
+						auth.RequestFirstToken(c.Request.Context(), int64(firstTokenMs))
 						ttftRecorded = true
 					}
 					// contentTokenSeen 用严格判定（与 first_token_mode 无关）：loose 模式下
@@ -5573,6 +5582,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					ttftGuard.MarkPayload(data)
 					if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
 						firstTokenMs = int(time.Since(start).Milliseconds())
+						auth.RequestFirstToken(c.Request.Context(), int64(firstTokenMs))
 						ttftRecorded = true
 					}
 					// 累计 delta 字符数
@@ -5901,6 +5911,7 @@ func (h *Handler) Responses(c *gin.Context) {
 
 // ResponsesCompact 处理 /v1/responses/compact 请求（非流式压缩接口，透传到上游 /responses/compact）
 func (h *Handler) ResponsesCompact(c *gin.Context) {
+	defer beginRelayRequest(c)()
 	// 1. 读取请求体
 	rawBody, err := readRawRequestBody(c)
 	if err != nil {
@@ -6136,6 +6147,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				}
 			}
 			fallbackState.noteSelected(account)
+			startRequestAttempt(c, account, attempt+1)
 			h.annotateFallbackRequest(c, fallbackState, account)
 
 			h.AcquireAPIKeyScopeConcurrency(c, account)
@@ -6993,6 +7005,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				return
 			}
 			fallbackState.noteSelected(account)
+			startRequestAttempt(c, account, attempt+1)
 			h.annotateFallbackRequest(c, fallbackState, account)
 			if attempt > 0 {
 				clearNewAPIUpstreamCyberPolicyDecision(c)
@@ -7509,6 +7522,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 					if !ttftRecorded && isFirstToken {
 						firstTokenMs = int(time.Since(start).Milliseconds())
+						auth.RequestFirstToken(c.Request.Context(), int64(firstTokenMs))
 						ttftRecorded = true
 					}
 					if !contentTokenSeen && isFirstTokenResult(parsed) {
@@ -7664,6 +7678,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					ttftGuard.MarkPayload(data)
 					if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
 						firstTokenMs = int(time.Since(start).Milliseconds())
+						auth.RequestFirstToken(c.Request.Context(), int64(firstTokenMs))
 						ttftRecorded = true
 					}
 					switch eventType {

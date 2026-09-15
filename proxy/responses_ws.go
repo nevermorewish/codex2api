@@ -363,6 +363,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	rawBody, requestModel, mappedModel, mappingApplied := h.applyConfiguredModelMappingToBody(rawBody, supportedModels)
 	rawBody, _ = normalizePortableResponsesCompactionHistory(rawBody)
 	c.Set("raw_body", rawBody)
+	auth.RequestModel(c.Request.Context(), gjson.GetBytes(rawBody, "model").String())
 	if mappedModel != "" {
 		model = mappedModel
 	}
@@ -698,6 +699,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			return newResponsesWSCloseError(websocket.CloseTryAgainLater, apiErr.Message, apiErr)
 		}
 		fallbackState.noteSelected(account)
+		startRequestAttempt(c, account, attempt+1)
 		h.annotateFallbackRequest(c, fallbackState, account)
 		maxRetries, maxRateLimitRetries, continuousRetryPolicy = prepareFallbackAttempt(c, account, maxRetries, maxRateLimitRetries, continuousRetryPolicy)
 		if account.IsExternalFallback() {
@@ -1277,6 +1279,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 		if !ttftRecorded && isFirstToken {
 			firstTokenMs = int(time.Since(start).Milliseconds())
+			auth.RequestFirstToken(c.Request.Context(), int64(firstTokenMs))
 			ttftRecorded = true
 		}
 		if !contentTokenSeen && isFirstTokenResult(parsed) {

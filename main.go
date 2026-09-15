@@ -440,6 +440,7 @@ func main() {
 	)
 	wsKeepalive.Start()
 
+	r.Use(proxy.RequestLifecycleMiddleware())
 	r.Use(rateLimiter.Middleware())
 	if settings.GlobalRPM > 0 {
 		log.Printf("全局限流已生效: %d RPM", settings.GlobalRPM)

@@ -30,6 +30,7 @@ func beginRelayRequest(c *gin.Context) func() {
 	if c == nil {
 		return func() {}
 	}
+	finishLifecycle := beginRequestLifecycle(c)
 	previous, _ := c.Get(relayActivityContextKey)
 	activity := &relayRequestActivity{}
 	c.Set(relayActivityContextKey, activity)
@@ -44,6 +45,7 @@ func beginRelayRequest(c *gin.Context) func() {
 		finishStreamRequest = BeginLiveStreamRequest(streamID, requestID, 0)
 	}
 	return func() {
+		finishLifecycle()
 		if finishStreamRequest != nil {
 			finishStreamRequest("")
 		}

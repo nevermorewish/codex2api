@@ -452,6 +452,9 @@ func readRawGrokSSEFramesWithContinuousRetryKeepalive(ctx context.Context, body 
 // goroutine, so it never races normal stream output. A failed heartbeat is a
 // downstream write failure and stops the retry immediately.
 func waitWithContinuousRetryKeepalive(ctx context.Context, interval time.Duration) bool {
+	if interval > 0 {
+		defer auth.WaitRequest(ctx, auth.LifecycleRetry)()
+	}
 	if interval <= 0 {
 		return true
 	}
@@ -489,6 +492,9 @@ func waitWithContinuousRetryKeepalive(ctx context.Context, interval time.Duratio
 }
 
 func waitForRetryInterval(ctx context.Context, interval time.Duration) bool {
+	if interval > 0 {
+		defer auth.WaitRequest(ctx, auth.LifecycleRetry)()
+	}
 	if interval <= 0 {
 		return true
 	}

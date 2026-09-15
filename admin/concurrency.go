@@ -216,9 +216,16 @@ func (h *Handler) GetConcurrencySnapshot(c *gin.Context) {
 	if h.store != nil {
 		queueDepth = h.store.GetSchedulerMetrics().Waiters
 	}
+	lifecycle := auth.SnapshotLifecycle()
 	c.JSON(http.StatusOK, gin.H{
 		"collected_at": now.UTC(), "global_active": globalActive, "queue_depth": queueDepth,
 		"total_active": totalActive, "total_occupied": totalOccupied, "capacity": capacity,
+		"scheduler_waiters": lifecycle.SchedulerWaiters, "retry_waiters": lifecycle.RetryWaiters,
+		"upstream_active": lifecycle.UpstreamActive, "fallback_active": lifecycle.FallbackActive,
+		"total_inflight": lifecycle.TotalInflight, "lifecycle_requests": lifecycle.Requests,
+		"preparing": lifecycle.Preparing, "finishing": lifecycle.Finishing,
+		"scheduler_wait_started": lifecycle.WaitStarted, "retry_wait_started": lifecycle.RetryStarted,
+		"lifecycle_recent": lifecycle.Recent, "lifecycle_truncated": lifecycle.Truncated,
 		"accounts": accountRows, "groups": groupList, "api_keys": keyRows,
 	})
 }

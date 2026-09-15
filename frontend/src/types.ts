@@ -3940,6 +3940,31 @@ export interface ConcurrencyAPIKeyRow {
   expired: boolean
 }
 
+export interface RequestLifecycle {
+  id: string
+  request_id: string
+  endpoint: string
+  model: string
+  api_key_id: number
+  state: string
+  started_at: string
+  state_started_at: string
+  attempt_started_at?: string
+  attempt: number
+  retries: number
+  account_id: number
+  fallback: boolean
+  first_token_ms: number | null
+  first_token_wait_ms: number
+  waiting_first_token: boolean
+  elapsed_ms: number
+  state_elapsed_ms: number
+  scheduler_wait_ms: number
+  retry_wait_ms: number
+  ended_at?: string
+  status_code?: number
+}
+
 export interface ConcurrencySnapshot {
   collected_at: string
   global_active: number
@@ -3950,6 +3975,18 @@ export interface ConcurrencySnapshot {
   accounts: ConcurrencyAccountRow[]
   groups: ConcurrencyGroupRow[]
   api_keys: ConcurrencyAPIKeyRow[]
+  scheduler_waiters?: number
+  retry_waiters?: number
+  upstream_active?: number
+  fallback_active?: number
+  total_inflight?: number
+  preparing?: number
+  finishing?: number
+  scheduler_wait_started?: number
+  retry_wait_started?: number
+  lifecycle_requests?: RequestLifecycle[]
+  lifecycle_recent?: RequestLifecycle[]
+  lifecycle_truncated?: boolean
 }
 
 export interface RelayAttempt {
