@@ -73,7 +73,7 @@ func fallbackConfigs(rows []*database.FallbackAccountRow) []auth.FallbackAccount
 			continue
 		}
 		configs = append(configs, auth.FallbackAccountConfig{
-			ID: row.ID, Name: row.Name, BaseURL: row.BaseURL, APIKey: row.APIKey,
+			ID: row.ID, Name: row.Name, Protocol: row.Protocol, BaseURL: row.BaseURL, APIKey: row.APIKey,
 			Models: row.Models, Model: row.Model, ProxyURL: row.ProxyURL, Concurrency: row.Concurrency, Enabled: row.Enabled,
 		})
 	}
@@ -128,13 +128,7 @@ func normalizeFallbackAccount(row *database.FallbackAccountRow, requireAPIKey bo
 	if row.Name == "" || utf8.RuneCountInString(row.Name) > 120 {
 		return errors.New("name is required and must be at most 120 characters")
 	}
-	row.Protocol = strings.ToLower(strings.TrimSpace(row.Protocol))
-	if row.Protocol == "" {
-		row.Protocol = database.FallbackProtocolOpenAIResponses
-	}
-	if row.Protocol != database.FallbackProtocolOpenAIResponses {
-		return errors.New("only the openai_responses protocol is currently supported")
-	}
+	row.Protocol = database.NormalizeFallbackProtocol(row.Protocol)
 	baseURL, err := auth.NormalizeOpenAIResponsesBaseURL(row.BaseURL)
 	if err != nil {
 		return err
@@ -423,10 +417,6 @@ func (h *Handler) FetchFallbackAccountModels(c *gin.Context) {
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load fallback account"})
-		return
-	}
-	if row.Protocol != database.FallbackProtocolOpenAIResponses {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "only the openai_responses protocol is currently supported"})
 		return
 	}
 	if strings.TrimSpace(row.APIKey) == "" {

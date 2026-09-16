@@ -488,6 +488,82 @@ func relayUpstreamEndpointForAccount(account *auth.Account) string {
 	return auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses")
 }
 
+// relayNativePassthroughEndpoint 返回兜底账号按入站协议原样转发时的上游端点。
+//
+// 兜底账号同时提供 /v1/responses 与 /v1/chat/completions：客户端打哪个端点就转发
+// 到上游的同名端点，请求体与响应体都不改写。此前的实现忽略入站协议、一律把 chat
+// 请求翻译成 Responses 形态后打 /v1/responses，与「原样转发」不符。
+func relayNativePassthroughEndpoint(account *auth.Account, inbound GrokProtocol) string {
+	baseURL, _ := account.OpenAIResponsesCredentials()
+	switch auth.NormalizeGrokProtocol(string(inbound)) {
+	case GrokProtocolChatCompletions:
+		return auth.OpenAIResponsesEndpoint(baseURL, "/v1/chat/completions")
+	default:
+		return auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses")
+	}
+}
+
+// relayNativePassthroughEndpointForRequest 判定该 relay 账号是否按原样转发处理入站
+// 协议。只有显式配置为 chat_completions 的兜底账号走原样转发；其余账号（含未配置
+// 协议的兜底账号与全部第三方中转）保持既有的 Responses 归一化行为不变。Grok 账号
+// 有自己的富目录路由，不在此列。
+func relayNativePassthroughEndpointForRequest(account *auth.Account, inbound GrokProtocol) (string, bool) {
+	if account == nil || !account.IsExternalFallback() || account.IsGrokAPI() {
+		return "", false
+	}
+	if account.FallbackProtocolValue() != auth.FallbackProtocolChatCompletions {
+		return "", false
+	}
+	if auth.NormalizeGrokProtocol(string(inbound)) != GrokProtocolChatCompletions {
+		return "", false
+	}
+	return relayNativePassthroughEndpoint(account, inbound), true
+}
+
+// ExecuteRelayNativePassthroughRequest 把下游请求原样转发到兜底账号的同名端点。
+//
+// 与 ExecuteOpenAIResponsesRequest 的区别：不改写请求体（不注入 instructions、
+// 不删除字段、不做 Codex 客户端元数据协商），也不对响应做 Responses 归一化。
+// 请求头仍走 relay 的既有出站契约（Authorization / UA / 账号自定义头）。
+func ExecuteRelayNativePassthroughRequest(ctx context.Context, account *auth.Account, inbound GrokProtocol, requestBody []byte, proxyOverride string, headers http.Header) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resetUpstreamUserAgentAudit(ctx)
+	resetWsAcquireAudit(ctx)
+
+	baseURL, apiKey := account.OpenAIResponsesCredentials()
+	account.Mu().RLock()
+	proxyURL := account.ProxyURL
+	account.Mu().RUnlock()
+	if proxyOverride != "" {
+		proxyURL = proxyOverride
+	}
+	if baseURL == "" || apiKey == "" {
+		return nil, ErrNoAvailableAccount()
+	}
+
+	endpoint := relayNativePassthroughEndpoint(account, inbound)
+	client := getPooledClient(account, proxyURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
+	if err != nil {
+		return nil, ErrInternalError("创建请求失败", err)
+	}
+	applyOpenAIResponsesRequestHeaders(req, account, apiKey, headers)
+	if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(requestBody, "model").String()); err != nil {
+		return nil, err
+	}
+	resp, err := doTracedUpstreamRequest(client, req, account, proxyURL)
+	if err != nil {
+		if shouldRecyclePooledClient(err) {
+			recyclePooledClient(account, proxyURL)
+		}
+		return nil, ErrUpstream(0, "请求上游失败", err)
+	}
+	markNativePassthroughRoute(resp, inbound)
+	return resp, nil
+}
+
 // ==================== 模型目录 ====================
 
 // FetchGrokModelIDs 用凭据探测 Grok 上游模型目录（GET /models），返回可用模型 ID

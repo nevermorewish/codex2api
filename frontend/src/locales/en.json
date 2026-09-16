@@ -263,6 +263,8 @@
     "name": "Name",
     "namePlaceholder": "e.g. OpenAI backup route",
     "baseURL": "Base URL",
+    "protocol": "Upstream protocol",
+    "protocolHint": "openai_responses translates the chat request into a Responses body and posts /v1/responses. chat_completions forwards /v1/chat/completions to the provider verbatim, letting providers that expose the endpoint natively reply in the chat wire format.",
     "apiKey": "API Key",
     "replaceAPIKey": "Replace API Key",
     "keepAPIKey": "Leave blank to keep the current key",

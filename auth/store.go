@@ -105,6 +105,10 @@ type Account struct {
 	DBID                 int64 // 数据库 ID
 	Name                 string
 	ExternalFallback     bool
+	// FallbackProtocol selects the wire contract for an external fallback
+	// account. Empty keeps the historical OpenAI Responses projection;
+	// "chat_completions" makes /v1/chat/completions pass through verbatim.
+	FallbackProtocol     string
 	RefreshToken         string
 	SessionToken         string
 	AccessToken          string

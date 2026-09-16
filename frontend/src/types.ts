@@ -4039,10 +4039,13 @@ export interface LiveStream {
     data_complete?: boolean
   }
 
+/** Wire contract of an external fallback account. */
+export type FallbackProtocol = 'openai_responses' | 'chat_completions'
+
 export interface FallbackAccount {
   id: number
   name: string
-  protocol: 'openai_responses'
+  protocol: FallbackProtocol
   base_url: string
   /** Explicit model allowlist; an empty list accepts the requested model. */
   models: string[]
@@ -4070,7 +4073,7 @@ export interface FallbackPolicy {
 
 export interface FallbackAccountPayload {
   name: string
-  protocol: 'openai_responses'
+  protocol: FallbackProtocol
   base_url: string
   api_key?: string
   models: string[]

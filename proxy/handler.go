@@ -1084,6 +1084,9 @@ func forwardGrokNativeResponse(c *gin.Context, resp *http.Response, protocol Gro
 func forwardGrokNativeResponseTo(c *gin.Context, resp *http.Response, protocol GrokProtocol, streaming bool, startedAt time.Time, firstVisible func(), output io.Writer, outputFlusher http.Flusher) (*UsageInfo, streamOutcome, bool, int) {
 	privateAttempt := output != nil && output != c.Writer
 	resp.Header.Del(grokNativeRouteHeader)
+	// The native-protocol marker is process-local routing metadata; it must not
+	// be copied downstream by copyGrokNativeResponseHeaders.
+	resp.Header.Del(grokNativeProtocolHeader)
 	if !streaming {
 		body, err := readAllLimited(resp.Body, grokMaxDecodedBody)
 		if err != nil {
@@ -7117,13 +7120,34 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					return ExecuteAntigravityResponsesRequest(upstreamCtx, account, attemptEffectiveModel, codexBody, true, proxyURL)
 				})
 			} else if isRelayAccount {
+				// External fallback accounts can be configured to speak the
+				// inbound protocol natively (chat_completions): forward the
+				// request verbatim instead of translating the chat request into
+				// a Responses body. Accounts left on the Responses contract keep
+				// the canonical projection, which is what every other relay
+				// expects.
+				nativeEndpoint, nativePassthrough := relayNativePassthroughEndpointForRequest(account, GrokProtocolChatCompletions)
 				upstreamBody := codexBody
+				relayInboundBody := upstreamBody
+				if nativePassthrough {
+					upstreamBody = rawBody
+					relayInboundBody = rawBody
+				}
 				if mappedBody, mappedModel, ok := h.applyAccountModelMappingToBodyForModels(upstreamBody, account, logModel, effectiveModel); ok {
 					upstreamBody = mappedBody
 					attemptEffectiveModel = mappedModel
 					attemptLogEffectiveModel = usageEffectiveModelForMapping(logModel, attemptEffectiveModel, true)
+					if nativePassthrough {
+						relayInboundBody = mappedBody
+					}
+				}
+				if nativeEndpoint != "" {
+					upstreamEndpoint = nativeEndpoint
 				}
 				resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
+					if nativePassthrough {
+						return ExecuteRelayNativePassthroughRequest(upstreamCtx, account, GrokProtocolChatCompletions, relayInboundBody, proxyURL, downstreamHeaders)
+					}
 					return ExecuteRelayStyleProtocolRequest(upstreamCtx, account, GrokProtocolChatCompletions, rawBody, upstreamBody, proxyURL, downstreamHeaders)
 				})
 			} else {
@@ -7337,7 +7361,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				h.sendGrokNativeHTTPError(c, GrokProtocolChatCompletions, grokQualityDegradedOutcome())
 				return
 			}
-			if isGrokNativeRouteResponse(resp) {
+			if isGrokNativeRouteResponse(resp) || nativePassthroughProtocol(resp) != "" {
 				downstreamFlusher, _ := c.Writer.(http.Flusher)
 				streamAttempt := h.newContinuousRetryStreamAttempt(isStream && continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, downstreamFlusher)
 				usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseTo(c, resp, GrokProtocolChatCompletions, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher))

@@ -9,11 +9,42 @@ import (
 	"time"
 )
 
+// FallbackProtocolChatCompletions makes an external fallback account speak the
+// inbound protocol natively: /v1/chat/completions requests are forwarded
+// verbatim instead of being translated into a Responses body.
+const FallbackProtocolChatCompletions = "chat_completions"
+
+// NormalizeFallbackProtocol maps a configured protocol to its canonical form.
+// Unknown and empty values keep the historical Responses contract so existing
+// rows are unaffected.
+func NormalizeFallbackProtocol(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case FallbackProtocolChatCompletions, "chat", "chat-completions":
+		return FallbackProtocolChatCompletions
+	default:
+		return ""
+	}
+}
+
+// FallbackProtocolValue returns the account's configured protocol.
+func (a *Account) FallbackProtocolValue() string {
+	if a == nil {
+		return ""
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.FallbackProtocol
+}
+
 type FallbackAccountConfig struct {
 	ID      int64
 	Name    string
 	BaseURL string
 	APIKey  string
+	// Protocol selects the upstream wire contract. The zero value keeps the
+	// historical OpenAI Responses projection; "chat_completions" forwards the
+	// inbound /v1/chat/completions request verbatim instead of translating it.
+	Protocol string
 	// Models is the model allowlist. An empty list means no model restriction.
 	Models []string
 	// Model is kept for legacy configurations that used a single fixed model.
@@ -141,6 +172,7 @@ func (p *FallbackPool) Replace(configs []FallbackAccountConfig) {
 		wasDisabled := atomic.LoadInt32(&account.Disabled) != 0
 		account.Name = strings.TrimSpace(config.Name)
 		account.UpstreamType = UpstreamOpenAIResponses
+		account.FallbackProtocol = NormalizeFallbackProtocol(config.Protocol)
 		account.BaseURL = strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 		account.APIKey = strings.TrimSpace(config.APIKey)
 		account.Models = models

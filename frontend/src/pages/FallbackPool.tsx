@@ -10,11 +10,17 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Select } from '@/components/ui/select'
 import { useToast } from '../hooks/useToast'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { getErrorMessage } from '../utils/error'
 import { cn } from '@/lib/utils'
 import ChipInput from '../components/ChipInput'
+
+const protocolOptions = [
+  { value: 'openai_responses', label: 'openai_responses' },
+  { value: 'chat_completions', label: 'chat_completions' },
+]
 
 const emptyForm: FallbackAccountPayload = {
   name: '', protocol: 'openai_responses', base_url: 'https://api.openai.com', api_key: '',
@@ -67,7 +73,7 @@ export default function FallbackPool() {
 
   const openEdit = (account: FallbackAccount) => {
     setForm({
-      name: account.name, protocol: 'openai_responses', base_url: account.base_url,
+      name: account.name, protocol: account.protocol ?? 'openai_responses', base_url: account.base_url,
       api_key: '', models: account.models?.length ? [...account.models] : (account.model ? [account.model] : []), proxy_url: account.proxy_url,
       concurrency: account.concurrency, enabled: account.enabled,
     })
@@ -143,7 +149,7 @@ export default function FallbackPool() {
   const toggleAccount = async (account: FallbackAccount, enabled: boolean) => {
     try {
       await api.updateFallbackAccount(account.id, {
-        name: account.name, protocol: 'openai_responses', base_url: account.base_url,
+        name: account.name, protocol: account.protocol ?? 'openai_responses', base_url: account.base_url,
         models: account.models ?? (account.model ? [account.model] : []), proxy_url: account.proxy_url, concurrency: account.concurrency, enabled,
       })
       setAccounts((current) => current.map((item) => item.id === account.id ? { ...item, enabled } : item))
@@ -277,6 +283,15 @@ export default function FallbackPool() {
         <div className="grid gap-4">
           <label className="grid gap-1.5 text-sm font-medium">{t('fallback.name')}<Input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder={t('fallback.namePlaceholder')} /></label>
           <label className="grid gap-1.5 text-sm font-medium">{t('fallback.baseURL')}<Input value={form.base_url} onChange={(event) => setForm((current) => ({ ...current, base_url: event.target.value }))} placeholder="https://api.openai.com" /></label>
+          <div className="grid gap-1.5 text-sm font-medium">
+            <span>{t('fallback.protocol')}</span>
+            <Select
+              value={form.protocol}
+              onValueChange={(protocol) => setForm((current) => ({ ...current, protocol: protocol as FallbackAccountPayload['protocol'] }))}
+              options={protocolOptions}
+            />
+            <span className="text-xs font-normal text-muted-foreground">{t('fallback.protocolHint')}</span>
+          </div>
           <label className="grid gap-1.5 text-sm font-medium">{editing ? t('fallback.replaceAPIKey') : t('fallback.apiKey')}<Input type="password" autoComplete="new-password" value={form.api_key ?? ''} onChange={(event) => setForm((current) => ({ ...current, api_key: event.target.value }))} placeholder={editing ? t('fallback.keepAPIKey') : 'sk-...'} />{editing ? <span className="text-xs font-normal text-muted-foreground">{t('fallback.keepAPIKeyHint')}</span> : null}</label>
           <div className="grid gap-1.5 text-sm font-medium">
             <div className="flex items-center justify-between gap-2"><span>{t('fallback.model')}</span><Button type="button" variant="outline" size="sm" onClick={() => void syncModels()} disabled={modelsLoading || (!form.api_key?.trim() && !(editing?.has_api_key ?? false))}><RefreshCw className={cn('size-3.5', modelsLoading && 'animate-spin')} />{modelsLoading ? t('fallback.modelsSyncing') : t('fallback.modelsSync')}</Button></div>

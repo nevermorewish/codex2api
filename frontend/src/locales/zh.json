@@ -263,6 +263,8 @@
     "name": "名称",
     "namePlaceholder": "例如 OpenAI 备用线路",
     "baseURL": "Base URL",
+    "protocol": "上游协议",
+    "protocolHint": "openai_responses：把 chat 请求翻译成 Responses 请求体后打 /v1/responses。chat_completions：把 /v1/chat/completions 原样转发到上游，适用于自带该端点、以 chat 协议回包的供应商。",
     "apiKey": "API Key",
     "replaceAPIKey": "替换 API Key",
     "keepAPIKey": "留空保留当前密钥",

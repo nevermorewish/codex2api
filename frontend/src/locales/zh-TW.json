@@ -122,6 +122,8 @@
     "name": "名稱",
     "namePlaceholder": "例如 OpenAI 備用線路",
     "baseURL": "Base URL",
+    "protocol": "上游協議",
+    "protocolHint": "openai_responses：將 chat 請求轉譯成 Responses 請求體後打 /v1/responses。chat_completions：將 /v1/chat/completions 原樣轉發到上游，適用於自帶該端點、以 chat 協議回包的供應商。",
     "apiKey": "API Key",
     "replaceAPIKey": "替換 API Key",
     "keepAPIKey": "留空保留目前金鑰",

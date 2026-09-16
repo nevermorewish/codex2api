@@ -12,6 +12,23 @@ import (
 
 const FallbackProtocolOpenAIResponses = "openai_responses"
 
+// FallbackProtocolChatCompletions makes the fallback account speak the inbound
+// protocol natively: /v1/chat/completions requests are forwarded verbatim to
+// the provider's /v1/chat/completions instead of being translated into a
+// Responses body and sent to /v1/responses.
+const FallbackProtocolChatCompletions = "chat_completions"
+
+// NormalizeFallbackProtocol maps a stored/administrative protocol value to its
+// canonical form. The empty value keeps the historical Responses contract.
+func NormalizeFallbackProtocol(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case FallbackProtocolChatCompletions, "chat", "chat-completions":
+		return FallbackProtocolChatCompletions
+	default:
+		return FallbackProtocolOpenAIResponses
+	}
+}
+
 type FallbackAccountRow struct {
 	ID       int64  `json:"id"`
 	Name     string `json:"name"`

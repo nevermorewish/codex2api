@@ -48,6 +48,34 @@ func isGrokNativeRouteResponse(resp *http.Response) bool {
 	return resp != nil && resp.Header != nil && resp.Header.Get(grokNativeRouteHeader) == "1"
 }
 
+// grokNativeProtocolHeader 记录原样转发时上游使用的协议，供 HTTP 处理器按同名
+// 协议把响应体直传给下游。
+const grokNativeProtocolHeader = "X-Codex2api-Native-Protocol"
+
+func markNativePassthroughRoute(resp *http.Response, inbound GrokProtocol) {
+	if resp == nil {
+		return
+	}
+	if resp.Header == nil {
+		resp.Header = make(http.Header)
+	}
+	protocol := auth.NormalizeGrokProtocol(string(inbound))
+	if protocol == "" {
+		protocol = GrokProtocolResponses
+	}
+	// Process-local metadata for the HTTP handlers: it is consumed before any
+	// downstream header copy and never reaches the client.
+	resp.Header.Set(grokNativeProtocolHeader, string(protocol))
+}
+
+// nativePassthroughProtocol 返回该响应原样转发时使用的协议；未走原样转发时返回空。
+func nativePassthroughProtocol(resp *http.Response) GrokProtocol {
+	if resp == nil || resp.Header == nil {
+		return ""
+	}
+	return auth.NormalizeGrokProtocol(resp.Header.Get(grokNativeProtocolHeader))
+}
+
 func grokProtocolSuffix(protocol GrokProtocol) string {
 	switch auth.NormalizeGrokProtocol(string(protocol)) {
 	case GrokProtocolChatCompletions:
