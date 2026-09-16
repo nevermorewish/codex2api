@@ -916,6 +916,18 @@ func clientFacingHTTPStatus(status int) int {
 	return status
 }
 
+// shouldPassThroughFallbackTerminalPayload keeps the provider's terminal
+// response for genuine upstream failures. Locally synthesized fallback
+// failures (currently the missing-billable-usage guard) must still use the
+// normal API error wrapper so callers receive an error object rather than an
+// internal response.failed event.
+func shouldPassThroughFallbackTerminalPayload(outcome streamOutcome, payload []byte) bool {
+	if len(payload) == 0 || strings.EqualFold(strings.TrimSpace(outcome.failureKind), "usage_missing") {
+		return false
+	}
+	return !strings.Contains(strings.ToLower(string(payload)), "upstream_usage_missing")
+}
+
 // fallbackSucceededWithoutUsage 判定兜底账号的零用量伪成功。
 //
 // 生产现象(2026-09-10)：主账号池全被降载后请求切入兜底号池，上游返回
@@ -4818,7 +4830,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					// 覆盖预设的 SSE Content-Type 后按真实错误码返回 JSON,
 					// 避免下游中转/计费方把它当成功并按预估 input token 计费(与回调内 reset 呼应)。
 					// 保活已提交 SSE 时不能再追加 JSON,必须回落到协议帧写出口。
-					if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 && !retryKeepaliveCommitted(c) {
+					if c.GetBool(fallbackTerminalAttemptContextKey) && shouldPassThroughFallbackTerminalPayload(outcome, terminalFailurePayload) && !retryKeepaliveCommitted(c) {
 						contentType := "application/json"
 						if !json.Valid(terminalFailurePayload) {
 							contentType = "text/plain; charset=utf-8"
@@ -5810,7 +5822,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			} else if !isStream {
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 					// The deadline owns the terminal response.
-				} else if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 {
+				} else if c.GetBool(fallbackTerminalAttemptContextKey) && shouldPassThroughFallbackTerminalPayload(outcome, terminalFailurePayload) {
 					// The fallback pool is the terminal route. Preserve its upstream
 					// error payload instead of replacing it with the generic local
 					// "upstream_error" wrapper, so callers can see the actual relay
@@ -7859,7 +7871,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				// 覆盖预设的 SSE Content-Type 后按真实错误码返回 JSON,
 				// 避免下游中转/计费方把它当成功并按预估 input token 计费(与回调内 reset 呼应)。
 				// 保活已提交 SSE 时不能再追加 JSON,必须回落到协议帧写出口。
-				if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 && !retryKeepaliveCommitted(c) {
+				if c.GetBool(fallbackTerminalAttemptContextKey) && shouldPassThroughFallbackTerminalPayload(outcome, terminalFailurePayload) && !retryKeepaliveCommitted(c) {
 					contentType := "application/json"
 					if !json.Valid(terminalFailurePayload) {
 						contentType = "text/plain; charset=utf-8"
@@ -7885,7 +7897,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			} else if !isStream {
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolChat) {
 					// The deadline owns the terminal response.
-				} else if c.GetBool(fallbackTerminalAttemptContextKey) && len(terminalFailurePayload) > 0 {
+				} else if c.GetBool(fallbackTerminalAttemptContextKey) && shouldPassThroughFallbackTerminalPayload(outcome, terminalFailurePayload) {
 					contentType := "application/json"
 					if !json.Valid(terminalFailurePayload) {
 						contentType = "text/plain; charset=utf-8"

@@ -198,3 +198,92 @@ func TestFallbackStopsPrimaryRetryDeadline(t *testing.T) {
 		t.Fatal("primary retry deadline canceled the terminal fallback attempt")
 	}
 }
+
+func TestFallbackRequestPolicyIsClampedToTerminalAttempt(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	policy := database.ContinuousRetryPolicy{
+		RequestPolicy: &database.RequestRetryPolicy{
+			Mode:                database.RetryModeFullResponse,
+			MaxAttempts:         3,
+			TotalTimeoutSeconds: 300,
+		},
+	}
+
+	general, rate, got := prepareFallbackAttempt(c, &auth.Account{DBID: -1, ExternalFallback: true}, 5, 5, policy)
+	if general != 0 || rate != 0 {
+		t.Fatalf("fallback budgets = %d/%d, want 0/0", general, rate)
+	}
+	if got.RequestPolicy == nil {
+		t.Fatal("fallback request policy was dropped; full-response buffering must be preserved")
+	}
+	if got.RequestPolicy.AttemptLimit() != 1 {
+		t.Fatalf("fallback attempt limit = %d, want 1", got.RequestPolicy.AttemptLimit())
+	}
+	if !c.GetBool(fallbackTerminalAttemptContextKey) {
+		t.Fatal("fallback terminal context was not marked for a migrated RequestPolicy")
+	}
+
+	outcome := streamOutcome{
+		logStatusCode: http.StatusInternalServerError,
+		failureKind:   "upstream_error_frame",
+	}
+	generalRetries, rateLimitRetries := 0, 0
+	if shouldTransparentRetryStreamWithBudgets(outcome, &generalRetries, &rateLimitRetries, general, rate, false, nil, nil, got) {
+		t.Fatal("terminal fallback must not receive a continuous-retry attempt")
+	}
+}
+
+func TestNonStreamingFallbackRequestPolicyPassesThroughFailedFrame(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var fallbackCalls atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"fallback\"}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"upstream_error\",\"message\":\"fallback failure\"}}}\n\n")
+	}))
+	defer fallback.Close()
+
+	previous := CurrentRuntimeSettings()
+	t.Cleanup(func() { ApplyRuntimeSettings(previous) })
+	settings := previous
+	settings.ContinuousRetryPolicy = database.ContinuousRetryPolicy{
+		RequestPolicy: &database.RequestRetryPolicy{
+			Mode:                database.RetryModeFullResponse,
+			MaxAttempts:         3,
+			TotalTimeoutSeconds: 300,
+		},
+	}
+	settings.CodexForceWebsocket = false
+	settings.CodexPreflightSSEPassthrough = false
+	settings.CodexOverloadPauseEnabled = false
+	ApplyRuntimeSettings(settings)
+
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1})
+	defer store.Stop()
+	pool := auth.NewFallbackPool(store)
+	pool.Replace([]auth.FallbackAccountConfig{{ID: 1, BaseURL: fallback.URL, APIKey: "fallback-key", Enabled: true}})
+	pool.SetPolicy(auth.FallbackPolicy{Enabled: true, NonStreamingDirectFallbackEnabled: true})
+	h := NewHandler(store, nil, nil, nil)
+	h.SetFallbackPool(pool)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`))
+	h.ChatCompletions(c)
+
+	if got := fallbackCalls.Load(); got != 1 {
+		t.Fatalf("fallback calls = %d, want 1", got)
+	}
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"response.failed"`) || !strings.Contains(body, "fallback failure") {
+		t.Fatalf("raw response.failed payload was not passed through: %s", body)
+	}
+	if strings.Contains(body, "无可用账号") {
+		t.Fatalf("terminal fallback failure was replaced by no-account error: %s", body)
+	}
+}

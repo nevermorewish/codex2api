@@ -103,25 +103,46 @@ func prepareFallbackAttempt(c *gin.Context, account *auth.Account, generalLimit,
 	// Unified budgets include the fallback. Keep both the deadline and delivery
 	// mode; a fallback must not silently remove the buffer or extend the timeout.
 	if policy.RequestPolicy != nil {
+		// The external fallback is the terminal route and can only be attempted
+		// once. Preserve full_response buffering (so a pre-content failure can
+		// still become a real HTTP error), but clamp the request policy to one
+		// total attempt. Otherwise continuousRetryLimitsForStream derives a new
+		// budget from the original max_attempts and dispatches the already-used
+		// fallback a second time, which ends as a misleading no-account 503.
+		requestPolicy := *policy.RequestPolicy
+		requestPolicy.MaxAttempts = 1
+		policy.RequestPolicy = &requestPolicy
+		rememberContinuousRetryPolicyForRequest(c, policy)
+		markFallbackTerminalAttempt(c)
 		return 0, 0, policy
 	}
 	policy = database.ContinuousRetryPolicy{}
 	rememberContinuousRetryPolicyForRequest(c, policy)
-	if c != nil {
-		c.Set(fallbackTerminalAttemptContextKey, true)
-		if c.Request != nil {
-			if deadline := continuousRetryDeadlineForContext(c.Request.Context()); deadline != nil {
-				deadline.Stop()
-				// Selection itself may finish just after the primary timer fires
-				// (for example while waiting for a concurrency slot).
-				if continuousRetryDeadlineExceeded(c.Request.Context()) && deadline.parentContext != nil &&
-					deadline.parentContext.Err() == nil && c.Writer != nil && !c.Writer.Written() {
-					c.Request = c.Request.WithContext(deadline.parentContext)
-				}
-			}
+	markFallbackTerminalAttempt(c)
+	return 0, 0, policy
+}
+
+// markFallbackTerminalAttempt marks the external fallback as the terminal
+// route and stops the primary retry deadline. It is shared by legacy retry
+// settings and the migrated RequestPolicy form; both must retain the same
+// terminal-error and raw-payload passthrough behavior.
+func markFallbackTerminalAttempt(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(fallbackTerminalAttemptContextKey, true)
+	if c.Request == nil {
+		return
+	}
+	if deadline := continuousRetryDeadlineForContext(c.Request.Context()); deadline != nil {
+		deadline.Stop()
+		// Selection itself may finish just after the primary timer fires
+		// (for example while waiting for a concurrency slot).
+		if continuousRetryDeadlineExceeded(c.Request.Context()) && deadline.parentContext != nil &&
+			deadline.parentContext.Err() == nil && c.Writer != nil && !c.Writer.Written() {
+			c.Request = c.Request.WithContext(deadline.parentContext)
 		}
 	}
-	return 0, 0, policy
 }
 
 // annotateFallbackRequest carries the primary account that led to a fallback
