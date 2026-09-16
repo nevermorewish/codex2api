@@ -1095,11 +1095,17 @@ func forwardGrokNativeResponseTo(c *gin.Context, resp *http.Response, protocol G
 		if failure, failed := protocolNonStreamFailure(protocol, body); failed {
 			return grokNativeUsage(protocol, body), failure, false, 0
 		}
+		usage := grokNativeUsage(protocol, body)
+		// Callers that must inspect usage before committing pass a private
+		// buffer and publish it themselves (see the verbatim fallback path).
+		if privateAttempt {
+			_, _ = output.Write(body)
+			return usage, streamOutcome{logStatusCode: http.StatusOK}, len(body) > 0, 0
+		}
 		if !claimContinuousRetrySuccess(c, continuousRetryProtocolForGrok(protocol)) {
-			return grokNativeUsage(protocol, body), classifyStreamOutcome(errContinuousRetryDeadlineExceeded, nil, nil, false), false, 0
+			return usage, classifyStreamOutcome(errContinuousRetryDeadlineExceeded, nil, nil, false), false, 0
 		}
 		copyGrokNativeResponseHeaders(c, resp.Header)
-		usage := grokNativeUsage(protocol, body)
 		contentType := resp.Header.Get("Content-Type")
 		if contentType == "" {
 			contentType = "application/json"
@@ -7363,11 +7369,47 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			}
 			if isGrokNativeRouteResponse(resp) || nativePassthroughProtocol(resp) != "" {
 				downstreamFlusher, _ := c.Writer.(http.Flusher)
+				// The verbatim fallback path bypasses the Responses translators,
+				// so the missing-billable-usage guard has to run before anything
+				// reaches the client: a fallback account answering 200 without
+				// usage must not become a silent, unbillable success. Buffer the
+				// non-streaming body until that check passes.
+				var verbatimNonStream bytes.Buffer
+				bufferedVerbatim := !isStream && nativePassthroughProtocol(resp) != ""
+				output := io.Writer(c.Writer)
+				if bufferedVerbatim {
+					output = &verbatimNonStream
+				}
 				streamAttempt := h.newContinuousRetryStreamAttempt(isStream && continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, downstreamFlusher)
-				usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseTo(c, resp, GrokProtocolChatCompletions, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher))
+				usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseTo(c, resp, GrokProtocolChatCompletions, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(output), streamAttempt.flusherOr(downstreamFlusher))
 				totalDuration := int(time.Since(start).Milliseconds())
 				ttftGuard.Stop()
 				resp.Body.Close()
+				// wroteAnyBody reports bytes written to the attempt output; on the
+				// buffered verbatim path that is the private buffer, not the
+				// client. Nothing is visible downstream until the buffer is
+				// published below, so retry/terminal decisions must treat it as
+				// invisible.
+				if bufferedVerbatim {
+					wroteAnyBody = false
+				}
+				if fallbackSucceededWithoutUsage(account, outcome, usage, wroteAnyBody) {
+					outcome = emptyFallbackSuccessOutcome()
+				}
+				// Publish the buffered body only once the usage guard has accepted
+				// it; otherwise the error branches below still own the response.
+				if bufferedVerbatim && outcome.logStatusCode == http.StatusOK && !outcome.terminalLocal {
+					copyGrokNativeResponseHeaders(c, resp.Header)
+					if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+						c.Header("Content-Type", contentType)
+					}
+					if err := writeAll(c.Writer, verbatimNonStream.Bytes()); err != nil {
+						_ = streamAttempt.Close()
+						h.store.Release(account)
+						return
+					}
+					wroteAnyBody = verbatimNonStream.Len() > 0
+				}
 				downstreamWrote := streamAttempt.downstreamWrote(wroteAnyBody)
 				if shouldTransparentRetryStreamWithBudgets(outcome, &generalRetries, &rateLimitRetries, maxRetries, attemptMaxRateLimitRetries, downstreamWrote, c.Request.Context().Err(), nil, continuousRetryPolicy) {
 					rememberContinuousRetryStreamFailure(c.Request.Context(), outcome, outcome.failurePayload)
