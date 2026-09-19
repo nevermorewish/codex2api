@@ -27,6 +27,9 @@ func (i Input) Hash() string {
 	return hex.EncodeToString(h[:])
 }
 func Extract(body []byte, endpoint string) Input {
+	return extractWithLimit(body, endpoint, 12000)
+}
+func extractWithLimit(body []byte, endpoint string, limit int) Input {
 	var text []string
 	images := []string{}
 	var walk func(gjson.Result)
@@ -106,7 +109,7 @@ func Extract(body []byte, endpoint string) Input {
 		add(root.Get("prompt").String())
 		walk(root.Get("images"))
 	}
-	return Input{Text: truncate(strings.Join(strings.Fields(strings.Join(text, "\n")), " "), 12000), Images: unique(images, false)}
+	return Input{Text: truncate(strings.Join(strings.Fields(strings.Join(text, "\n")), " "), limit), Images: unique(images, false)}
 }
 
 // AC automaton: terminal output stores the earliest configured keyword index.

@@ -71,4 +71,22 @@ func TestRiskControlAdminConfigAndAuth(t *testing.T) {
 	if rec.Code != 200 || len(s.Config().APIKeys) != 0 {
 		t.Fatal("explicit clear failed")
 	}
+	for _, test := range []struct {
+		body string
+		want string
+	}{
+		{`{"model_audit":{"nodes":[{"id":"a","name":"A","enabled":true,"base_url":"http://localhost:9999","model":"custom","api_key":"node-private-secret","timeout_ms":40000,"max_input_chars":400000}]}}`, "node-private-secret"},
+		{`{"model_audit":{"nodes":[{"id":"a","name":"A","enabled":true,"base_url":"http://localhost:9999","model":"custom","timeout_ms":40000,"max_input_chars":400000}]}}`, "node-private-secret"},
+		{`{"model_audit":{"nodes":[{"id":"b","name":"B","enabled":true,"base_url":"http://localhost:9999","model":"custom","timeout_ms":40000,"max_input_chars":400000}]}}`, ""},
+		{`{"model_audit":{"nodes":[{"id":"b","name":"B","enabled":true,"base_url":"http://localhost:9999","model":"custom","api_key":"temporary","timeout_ms":40000,"max_input_chars":400000}]}}`, "temporary"},
+		{`{"model_audit":{"nodes":[{"id":"b","name":"B","enabled":true,"base_url":"http://localhost:9999","model":"custom","clear_api_key":true,"timeout_ms":40000,"max_input_chars":400000}]}}`, ""},
+	} {
+		rec = call("PUT", "/config", test.body, "risk-admin-test")
+		if rec.Code != 200 || s.Config().Audit.Nodes[0].APIKey != test.want {
+			t.Fatalf("node update %d %s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "node-private-secret") || strings.Contains(rec.Body.String(), `"api_key":`) {
+			t.Fatal("node secret leaked")
+		}
+	}
 }

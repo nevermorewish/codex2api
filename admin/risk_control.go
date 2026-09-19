@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"github.com/codex2api/security/riskcontrol"
 	"github.com/gin-gonic/gin"
 	"io"
@@ -27,6 +28,7 @@ func (h *Handler) registerRiskControlRoutes(api *gin.RouterGroup) {
 	r.GET("/bans", h.riskBans)
 	r.POST("/keys/:id/unban", h.riskUnban)
 	r.POST("/test", h.riskTest)
+	r.POST("/model-audit/test", h.riskTestModelAudit)
 	r.POST("/api-keys/:id/test", h.riskTestKey)
 	r.DELETE("/api-keys/:id", h.riskRemoveKey)
 	r.POST("/cleanup", h.riskCleanup)
@@ -50,10 +52,28 @@ func (h *Handler) riskRemoveKey(c *gin.Context) {
 	h.riskConfigView(c)
 }
 func (h *Handler) riskConfigView(c *gin.Context) {
-	cfg := h.riskControl.Config()
-	cfg.APIKeys = nil
-	cfg.SMTPPassword = ""
-	c.JSON(200, gin.H{"config": cfg, "smtp_password_configured": h.riskControl.Config().SMTPPassword != "", "categories": riskcontrol.Categories})
+	cfg := h.riskControl.PublicConfig()
+	c.JSON(200, gin.H{"config": cfg, "smtp_password_configured": h.riskControl.Config().SMTPPassword != "", "categories": riskcontrol.Categories, "audit_categories": riskcontrol.AuditCategories, "audit_default_prompt": riskcontrol.DefaultAuditPrompt, "audit_category_prompt": riskcontrol.CategorizedAuditPrompt})
+}
+
+func (h *Handler) riskTestModelAudit(c *gin.Context) {
+	var in struct {
+		Policy riskcontrol.AuditConfig `json:"policy"`
+		Text   string                  `json:"text"`
+		NodeID string                  `json:"node_id"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(c.Request.Body, 2<<20))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&in) != nil || strings.TrimSpace(in.Text) == "" || len([]rune(in.Text)) > 400000 {
+		c.JSON(400, gin.H{"error": "无效试审请求或文本超过 400000 字符"})
+		return
+	}
+	d, err := h.riskControl.TestAudit(c.Request.Context(), in.Policy, in.Text, in.NodeID)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, d)
 }
 func (h *Handler) getRiskConfig(c *gin.Context) { h.riskConfigView(c) }
 func (h *Handler) updateRiskConfig(c *gin.Context) {

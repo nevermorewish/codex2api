@@ -12,6 +12,8 @@ import (
 var Categories = []string{"harassment", "harassment/threatening", "hate", "hate/threatening", "illicit", "illicit/violent", "self-harm", "self-harm/intent", "self-harm/instructions", "sexual", "sexual/minors", "violence", "violence/graphic"}
 
 type Config struct {
+	Engine        string             `json:"audit_engine"`
+	Audit         AuditConfig        `json:"model_audit"`
 	Enabled       bool               `json:"enabled"`
 	Mode          string             `json:"mode"`
 	Strategy      string             `json:"keyword_blocking_mode"`
@@ -50,6 +52,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	c := Config{Mode: "pre_block", Strategy: "keyword_and_api", BaseURL: "https://api.openai.com", Model: "omni-moderation-latest", TimeoutMS: 3000, RetryCount: 2, SampleRate: 100, ModelFilter: "all", BlockStatus: 403, BlockMessage: "内容审计命中风险规则，请调整输入后重试", Workers: 4, QueueSize: 32768, BanThreshold: 10, WindowHours: 720, HitDays: 180, NonHitDays: 3, SMTPPort: 587, Keywords: []string{}, Models: []string{}, GroupIDs: []int64{}, APIKeyIDs: []int64{}, Thresholds: map[string]float64{}}
+	c.Engine, c.Audit = "moderations", DefaultAuditConfig()
 	values := []float64{0.98, 0.90, 0.65, 0.65, 0.95, 0.95, 0.65, 0.85, 0.65, 0.65, 0.65, 0.95, 0.95}
 	for i, k := range Categories {
 		c.Thresholds[k] = values[i]
@@ -58,6 +61,15 @@ func DefaultConfig() Config {
 }
 
 func (c *Config) Validate() error {
+	if c.Engine == "" {
+		c.Engine = "moderations"
+	}
+	if c.Engine != "moderations" && c.Engine != "chat" {
+		return fmt.Errorf("invalid audit engine")
+	}
+	if err := c.Audit.Validate(); err != nil {
+		return err
+	}
 	if c.Mode != "off" && c.Mode != "observe" && c.Mode != "pre_block" {
 		return fmt.Errorf("invalid mode")
 	}

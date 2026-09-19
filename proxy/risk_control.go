@@ -38,7 +38,7 @@ func (h *Handler) checkRiskControl(c *gin.Context, body []byte, endpoint, model 
 	}
 	r := riskcontrol.Request{APIKeyID: c.GetInt64(contextAPIKeyID), APIKeyName: c.GetString(contextAPIKeyName), Endpoint: endpoint, Model: model}
 	if h.riskControl.Enabled() {
-		r.Input = riskcontrol.Extract(body, endpoint)
+		r.Input = h.riskControl.Extract(body, endpoint)
 	}
 	if v, ok := c.Get(contextAPIKeyRow); ok {
 		if row, ok := v.(*database.APIKeyRow); ok {

@@ -31,6 +31,7 @@ import { Switch } from "@/components/ui/switch";
 import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "../hooks/useToast";
 import { getErrorMessage } from "../utils/error";
+import RiskModelAudit from "./RiskModelAudit";
 import {
   parseRiskIDs,
   parseRiskWords,
@@ -121,6 +122,7 @@ export default function RiskControl() {
   const { t } = useTranslation();
   const views = [
     ["policy", t("riskControl.text001")],
+    ["model-audit", t("riskControl.modelAudit.title")],
     ["keys", t("riskControl.text002")],
     ["logs", t("riskControl.text003")],
     ["bans", t("riskControl.text004")],
@@ -379,6 +381,13 @@ export default function RiskControl() {
           {dirty && (
             <span className="text-amber-600">{t("riskControl.text030")}</span>
           )}
+          <span className="text-xs text-muted-foreground">
+            {t(
+              config?.config.audit_engine === "chat"
+                ? "riskControl.modelAudit.chat"
+                : "riskControl.modelAudit.moderations",
+            )}
+          </span>
         </div>
         <span className="text-xs text-muted-foreground">
           {t("riskControl.runtimeCounts", {
@@ -409,6 +418,16 @@ export default function RiskControl() {
         ))}
       </nav>
 
+      {view === "model-audit" && config && (
+        <RiskModelAudit
+          config={form}
+          view={config}
+          onChange={(next) => {
+            setForm(next);
+            setDirty(true);
+          }}
+        />
+      )}
       {view === "policy" && (
         <>
           <Section
@@ -463,7 +482,11 @@ export default function RiskControl() {
             </div>
             <p className="rounded-lg bg-amber-500/10 p-3 text-xs leading-6 text-amber-700 dark:text-amber-300">
               <AlertTriangle className="mr-1 inline size-4" />
-              {t("riskControl.text047")}
+              {t(
+                form.audit_engine === "chat"
+                  ? "riskControl.modelAudit.runtimeHint"
+                  : "riskControl.text047",
+              )}
             </p>
           </Section>
           <Section
@@ -485,7 +508,11 @@ export default function RiskControl() {
               {t("riskControl.keywordCount", {
                 count: parseRiskWords(words).length,
               })}{" "}
-              {t("riskControl.inputBoundary")}
+              {t(
+                form.audit_engine === "chat"
+                  ? "riskControl.modelAudit.inputBoundary"
+                  : "riskControl.inputBoundary",
+              )}
             </p>
           </Section>
           <Section
@@ -966,7 +993,7 @@ export default function RiskControl() {
                             {t("riskControl.text144")}
                           </summary>
                           <pre className="max-w-xs overflow-auto py-2">
-                            {JSON.stringify(e.scores ?? {}, null, 2)}
+                            {JSON.stringify(e.audit ?? e.scores ?? {}, null, 2)}
                           </pre>
                           <p className="break-all font-mono">{e.input_hash}</p>
                         </details>

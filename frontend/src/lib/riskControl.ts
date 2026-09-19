@@ -1,4 +1,6 @@
 export interface RiskConfig {
+  audit_engine: "moderations" | "chat";
+  model_audit: ModelAuditPolicy;
   enabled: boolean;
   mode: "off" | "observe" | "pre_block";
   keyword_blocking_mode: "keyword_only" | "keyword_and_api" | "api_only";
@@ -38,6 +40,30 @@ export interface RiskConfigView {
   config: RiskConfig;
   smtp_password_configured: boolean;
   categories: string[];
+  audit_categories: string[];
+  audit_default_prompt: string;
+  audit_category_prompt: string;
+}
+export interface AuditNode {
+  id: string;
+  name: string;
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  api_key?: string;
+  has_api_key?: boolean;
+  clear_api_key?: boolean;
+  timeout_ms: number;
+  max_input_chars: number;
+}
+export interface ModelAuditPolicy {
+  nodes: AuditNode[];
+  system_prompt: string;
+  categorized: boolean;
+  categories: string[];
+  block_threshold: number;
+  flag_threshold: number;
+  fail_open: boolean;
 }
 export interface RiskKeyHealth {
   id: string;
@@ -64,6 +90,16 @@ export interface RiskStatus {
   keys: RiskKeyHealth[];
 }
 export interface RiskEvent {
+  audit?: {
+    risk: string;
+    confidence: number;
+    categories: string[];
+    reason: string;
+    node_id: string;
+    model: string;
+    chunks: number;
+    would_block: boolean;
+  };
   id: string;
   created_at: number;
   api_key_id: number;

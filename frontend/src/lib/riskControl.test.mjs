@@ -14,5 +14,17 @@ test('risk center follows shared controls, routes and localization contracts',()
  const locales=['zh','zh-TW','en'].map(name=>JSON.parse(readFileSync(new URL('../locales/'+name+'.json',import.meta.url),'utf8')))
  assert.deepEqual(Object.keys(locales[0].riskControl),Object.keys(locales[1].riskControl))
  assert.deepEqual(Object.keys(locales[0].riskControl),Object.keys(locales[2].riskControl))
- for(const locale of locales){assert.ok(locale.nav.riskControl);for(const [,key] of page.matchAll(/t\("riskControl\.([^"]+)"/g))assert.ok(locale.riskControl[key],key)}
+ for(const locale of locales){assert.ok(locale.nav.riskControl);for(const [,key] of page.matchAll(/t\("riskControl\.([^"]+)"/g))assert.ok(key.split('.').reduce((value,part)=>value?.[part],locale.riskControl),key)}
+})
+
+test('custom model audit exposes pool, policy, prompt and dry-run with shared controls',()=>{
+ const page=readFileSync(new URL('../pages/RiskModelAudit.tsx',import.meta.url),'utf8')
+ assert.doesNotMatch(page,/<select[\s>]|<Input\s+type="number"|window\.confirm/)
+ for(const token of ['api.testModelAudit','system_prompt','block_threshold','flag_threshold','fail_open','max_input_chars','clear_api_key','ArrowUp','ArrowDown','useConfirmDialog','<DraftNumberInput','<Switch','<Select'])assert.ok(page.includes(token),token)
+ const locales=['zh','zh-TW','en'].map(name=>JSON.parse(readFileSync(new URL('../locales/'+name+'.json',import.meta.url),'utf8')).riskControl.modelAudit)
+ for(const locale of locales) {
+   assert.deepEqual(Object.keys(locale),Object.keys(locales[0]))
+   assert.equal(Object.keys(locale.categories).length,9)
+   for(const [,key] of page.matchAll(/tr\("([^"]+)"\)/g)) assert.ok(locale[key],key)
+ }
 })

@@ -35,6 +35,7 @@ type Request struct {
 	Input      Input   `json:"input"`
 }
 type Decision struct {
+	Audit          *AuditResult       `json:"audit,omitempty"`
 	Blocked        bool               `json:"blocked"`
 	Flagged        bool               `json:"flagged"`
 	Action         string             `json:"action"`
@@ -206,6 +207,18 @@ func (s *Service) Patch(ctx context.Context, raw []byte) error {
 		return fmt.Errorf("expected one config object")
 	}
 	c := s.Config()
+	oldAudit := c.Audit
+	// encoding/json reuses struct elements in slices. Reset a supplied node list
+	// before decoding so omitted keys cannot migrate to another node by index.
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) == nil {
+		var auditFields map[string]json.RawMessage
+		if json.Unmarshal(fields["model_audit"], &auditFields) == nil {
+			if _, supplied := auditFields["nodes"]; supplied {
+				c.Audit.Nodes = nil
+			}
+		}
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&c); err != nil {
@@ -215,6 +228,7 @@ func (s *Service) Patch(ctx context.Context, raw []byte) error {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return fmt.Errorf("expected one config object")
 	}
+	mergeAuditSecrets(&c.Audit, oldAudit)
 	return s.saveLocked(ctx, c)
 }
 
@@ -356,7 +370,7 @@ func (s *Service) local(ctx context.Context, r Request, c Config, m *matcher) (D
 		}
 	}
 	if c.PreHash {
-		hit, err := s.store.HasRiskHash(ctx, r.Input.Hash())
+		hit, err := s.store.HasRiskHash(ctx, inputPolicyHash(c, r.Input))
 		if err != nil {
 			s.failures.Add(1)
 		}
@@ -397,10 +411,14 @@ func (s *Service) worker(id int) {
 				continue
 			}
 			// Disabling the feature also stops outstanding observation calls.
-			if !s.current.Load().config.Enabled {
+			if !s.Enabled() {
 				continue
 			}
-			ctx, cancel := context.WithTimeout(s.ctx, time.Duration(t.config.TimeoutMS*(t.config.RetryCount+1)+5000)*time.Millisecond)
+			timeout := time.Duration(t.config.TimeoutMS*(t.config.RetryCount+1)+5000) * time.Millisecond
+			if t.config.Engine == "chat" {
+				timeout = 125 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(s.ctx, timeout)
 			d := s.evaluate(ctx, t.request.Input, t.config)
 			d.Blocked = false
 			s.record(ctx, t.request, t.config, &d)
@@ -409,6 +427,9 @@ func (s *Service) worker(id int) {
 	}
 }
 func (s *Service) evaluate(ctx context.Context, input Input, c Config) Decision {
+	if c.Engine == "chat" {
+		return s.evaluateAudit(ctx, input, c)
+	}
 	s.active.Add(1)
 	defer s.active.Add(-1)
 	start := time.Now()
@@ -548,7 +569,7 @@ func (s *Service) record(ctx context.Context, r Request, c Config, d *Decision) 
 	if !d.Flagged && !c.RecordNonHits {
 		return
 	}
-	e := Event{ID: newEventID(), CreatedAt: time.Now().UnixMilli(), APIKeyID: r.APIKeyID, APIKeyName: r.APIKeyName, Endpoint: r.Endpoint, Model: r.Model, Mode: c.Mode, InputHash: r.Input.Hash(), Excerpt: Redact(r.Input.Text), Decision: *d}
+	e := Event{ID: newEventID(), CreatedAt: time.Now().UnixMilli(), APIKeyID: r.APIKeyID, APIKeyName: r.APIKeyName, Endpoint: r.Endpoint, Model: r.Model, Mode: c.Mode, InputHash: inputPolicyHash(c, r.Input), Excerpt: Redact(r.Input.Text), Decision: *d}
 	// Persist the decision and ban atomically before returning a blocking request.
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()

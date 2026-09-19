@@ -135,7 +135,7 @@ func (db *DB) RecordRiskEvent(ctx context.Context, e *riskcontrol.Event, c riskc
 			}
 		}
 	}
-	if counted && e.Action != "keyword_block" {
+	if counted && e.Action != "keyword_block" && (e.Audit == nil || e.Audit.WouldBlock) {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO risk_control_hashes(hash,created_at) VALUES($1,$2) ON CONFLICT(hash) DO NOTHING`, e.InputHash, e.CreatedAt); err != nil {
 			return err
 		}

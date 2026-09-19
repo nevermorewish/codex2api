@@ -535,6 +535,7 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
 }
 
 export const api = {
+  testModelAudit: (policy: import('./lib/riskControl').ModelAuditPolicy, text: string, node_id?: string) => request<Record<string, unknown>>('/risk-control/model-audit/test', {method:'POST', body:JSON.stringify({policy,text,node_id})}),
   getRiskConfig: () => request<import('./lib/riskControl').RiskConfigView>('/risk-control/config'),
   updateRiskConfig: (data: Partial<import('./lib/riskControl').RiskConfig>) => request<import('./lib/riskControl').RiskConfigView>('/risk-control/config', { method: 'PUT', body: JSON.stringify(data) }),
   getRiskStatus: () => request<import('./lib/riskControl').RiskStatus>('/risk-control/status'),

@@ -350,3 +350,62 @@ func TestRiskControlFailureAndTestNoSideEffects(t *testing.T) {
 		t.Fatal("test wrote persistent side effects")
 	}
 }
+
+func TestRiskControlModelAuditPersistenceAndDryRun(t *testing.T) {
+	ctx := context.Background()
+	db := riskTestDB(t)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"risk":"unsafe","confidence":0.5}`}}}})
+	}))
+	defer remote.Close()
+	s, err := riskcontrol.New(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c := s.Config()
+	c.Engine, c.Enabled, c.Strategy, c.PreHash = "chat", true, "api_only", true
+	c.Audit.Nodes = []riskcontrol.AuditNode{{ID: "local", Name: "Local", Enabled: true, Model: "custom", BaseURL: remote.URL, APIKey: "fixture-private-key", TimeoutMS: 1000, MaxInputChars: 1000}}
+	if err = s.Update(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := db.LoadRiskConfig(ctx)
+	if err != nil || loaded.Engine != "chat" || loaded.Audit.Nodes[0].APIKey != "fixture-private-key" {
+		t.Fatalf("persisted model config %+v %v", loaded, err)
+	}
+	before, _ := db.RiskStats(ctx)
+	if d, err := s.TestAudit(ctx, c.Audit, "trial", ""); err != nil || d.Blocked || d.Action != "flag" {
+		t.Fatalf("trial %+v %v", d, err)
+	}
+	after, _ := db.RiskStats(ctx)
+	if before != after {
+		t.Fatal("trial wrote logs, hash or ban")
+	}
+	r := riskcontrol.Request{APIKeyID: 4, Input: riskcontrol.Input{Text: "same content"}}
+	for i := 0; i < 2; i++ {
+		if d := s.Check(ctx, r); d.Blocked || d.Action != "flag" {
+			t.Fatalf("nonblocking result turned into hash block %+v", d)
+		}
+	}
+	st, _ := db.RiskStats(ctx)
+	if st.Hashes != 0 || st.Total != 2 {
+		t.Fatalf("flag-only events cached as blocked: %+v", st)
+	}
+	c.Audit.BlockThreshold = .45
+	if err = s.Update(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if d := s.Check(ctx, r); !d.Blocked || d.Action != "block" {
+		t.Fatalf("threshold update ignored %+v", d)
+	}
+	if d := s.Check(ctx, r); d.Action != "hash_block" {
+		t.Fatalf("blocking result not cached %+v", d)
+	}
+	c.Audit.BlockThreshold = .9
+	if err = s.Update(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if d := s.Check(ctx, r); d.Blocked || d.Action != "flag" {
+		t.Fatalf("stale policy hash reused %+v", d)
+	}
+}
