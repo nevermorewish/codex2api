@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"github.com/codex2api/security/riskcontrol"
 	"io/fs"
 	"log"
 	"net/http"
@@ -421,7 +422,14 @@ func main() {
 	// handler 不再接收 cfg.APIKeys
 	// 从环境变量读取 Codex 画像与 Beta 配置。
 	deviceCfg := proxy.DeviceProfileConfigFromEnv(os.Getenv)
+	riskService, riskErr := riskcontrol.New(backgroundCtx, db)
+	if riskErr != nil {
+		log.Fatalf("初始化风控中心失败: %v", riskErr)
+	}
+	defer riskService.Close()
+	adminHandler.SetRiskControl(riskService)
 	handler := proxy.NewHandler(store, db, cfg, deviceCfg)
+	handler.SetRiskControl(riskService)
 	handler.SetRuntimeCache(tc)
 	handler.SetFallbackPool(fallbackPool)
 	adminHandler.SetAPIKeyConcurrencySnapshotProvider(handler.APIKeyConcurrencySnapshot)

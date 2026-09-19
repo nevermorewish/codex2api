@@ -11,6 +11,9 @@ export interface SelectOption {
 }
 
 interface SelectProps {
+  id?: string
+  'aria-label'?: string
+  'aria-describedby'?: string
   value: string
   onValueChange: (value: string) => void
   options: SelectOption[]
@@ -62,6 +65,9 @@ function applyManualScroll(el: HTMLElement, deltaX: number, deltaY: number): boo
 }
 
 export function Select({
+  id,
+  'aria-label': ariaLabel,
+  'aria-describedby': ariaDescribedBy,
   value,
   onValueChange,
   options,
@@ -217,6 +223,9 @@ export function Select({
   return (
     <div className={cn('relative w-full', className)}>
       <button
+        id={id}
+        aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
         ref={triggerRef}
         data-slot="select-trigger"
         type="button"

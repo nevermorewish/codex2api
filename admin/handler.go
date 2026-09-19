@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/codex2api/security/riskcontrol"
 	"io"
 	"log"
 	"math"
@@ -45,6 +46,7 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
+	riskControl       *riskcontrol.Service
 	store             *auth.Store
 	modelRefreshFuncs map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
 	cache             cache.TokenCache
@@ -1064,6 +1066,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	api := r.Group("/api/admin")
 	api.Use(h.adminAuthMiddleware())
+	h.registerRiskControlRoutes(api)
 	api.Use(func(c *gin.Context) {
 		c.Next()
 		if shouldInvalidateAccountSnapshotCaches(c.Request.Method, c.Request.URL.Path, c.Writer.Status()) {

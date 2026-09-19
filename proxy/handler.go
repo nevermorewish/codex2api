@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/codex2api/security/riskcontrol"
 	"io"
 	"log"
 	"math/rand"
@@ -51,6 +52,7 @@ func upstreamErrorConsoleBody(body []byte) string {
 
 // Handler API 路由处理器
 type Handler struct {
+	riskControl  *riskcontrol.Service
 	store        *auth.Store
 	fallbackPool *auth.FallbackPool
 	configKeys   map[string]bool // 配置文件中的静态 key
@@ -3209,6 +3211,20 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 		c.Set(contextAPIKeyName, strings.TrimSpace(apiKeyRow.Name))
 		c.Set(contextAPIKeyMasked, security.MaskAPIKey(apiKeyRow.Key))
 		c.Set(contextAPIKeyRow, apiKeyRow)
+		if h.riskControl != nil {
+			banned, err := h.riskControl.IsBanned(c.Request.Context(), apiKeyRow.ID)
+			if err != nil {
+				api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeServiceUnavailable, "风控状态暂时不可用", api.ErrorTypeServer), 503)
+				c.Abort()
+				return
+			}
+			if banned {
+				api.SendErrorWithStatus(c, api.NewAPIError(api.ErrorCode("risk_key_banned"), "该 API Key 已被风控封禁，请联系管理员", api.ErrorTypePermission), 403)
+				c.Abort()
+				return
+			}
+		}
+
 		h.attachAPIKeyModelRequestQuota(c, false)
 		c.Set("apiKey", key)
 		if h.enforceRequiredNewAPIIdentityAtIngress(c) {

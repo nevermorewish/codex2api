@@ -1758,6 +1758,10 @@ func normalizeResponsesWebSocketClientPayload(raw []byte) ([]byte, string, *api.
 }
 
 func (h *Handler) inspectPromptFilterOpenAIForWebSocket(c *gin.Context, conn *websocket.Conn, rawBody []byte, endpoint string, model string, policyEventID string) (blocked bool, delegatedToNewAPI bool) {
+	if d := h.checkRiskControl(c, rawBody, endpoint, model); d.Blocked {
+		_ = writeResponsesWSError(conn, api.NewAPIError(api.ErrorCode("content_policy_violation"), d.Message, api.ErrorTypeInvalidRequest))
+		return true, false
+	}
 	if h == nil || h.store == nil {
 		return false, false
 	}

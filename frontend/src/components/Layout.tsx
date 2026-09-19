@@ -31,6 +31,7 @@ const navDefs: NavDef[] = [
   { to: '/fallback-pool', labelKey: 'nav.fallbackPool', icon: <LifeBuoy className="size-[18px]" /> },
   { to: '/images/studio', labelKey: 'nav.images', icon: <ImageIcon className="size-[18px]" />, activePrefix: '/images' },
   { to: '/prompt-filter/overview', labelKey: 'nav.promptFilter', icon: <ShieldAlert className="size-[18px]" />, activePrefix: '/prompt-filter' },
+  { to: '/risk-control/policy', labelKey: 'nav.riskControl', icon: <ShieldAlert className="size-[18px]" />, activePrefix: '/risk-control' },
   { to: '/ops/overview', labelKey: 'nav.ops', icon: <Server className="size-[18px]" />, activePrefix: '/ops' },
   { to: '/error-analysis', labelKey: 'nav.errorAnalysis', icon: <Bug className="size-[18px]" /> },
   { to: '/first-token-analysis', labelKey: 'nav.firstTokenAnalysis', icon: <Activity className="size-[18px]" /> },
