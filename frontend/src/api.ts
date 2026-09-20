@@ -545,14 +545,6 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
 }
 
 export const api = {
-  testModelAudit: (policy: import('./lib/riskControl').ModelAuditPolicy, text: string, node_id?: string) => request<Record<string, unknown>>('/risk-control/model-audit/test', {method:'POST', body:JSON.stringify({policy,text,node_id})}),
-  getRiskConfig: () => request<import('./lib/riskControl').RiskConfigView>('/risk-control/config'),
-  updateRiskConfig: (data: Partial<import('./lib/riskControl').RiskConfig>) => request<import('./lib/riskControl').RiskConfigView>('/risk-control/config', { method: 'PUT', body: JSON.stringify(data) }),
-  getRiskStatus: () => request<import('./lib/riskControl').RiskStatus>('/risk-control/status'),
-  getRiskLogs: (query: string) => request<import('./lib/riskControl').RiskLogPage>(`/risk-control/logs?${query}`),
-  deleteRiskHash: (hash?: string) => request('/risk-control/hashes' + (hash ? '/' + encodeURIComponent(hash) : '?confirm=true'), { method: 'DELETE' }),
-  cleanupRiskLogs: () => request<{deleted: number}>('/risk-control/cleanup', { method: 'POST' }),
-  testRisk: (kind: 'keyword' | 'api', text: string) => request<Record<string, unknown>>('/risk-control/test', { method: 'POST', body: JSON.stringify({kind, text}) }),
   getBranding: () => requestPublic<SiteBranding>('/api/branding'),
   getConcurrency: (signal?: AbortSignal) => request<ConcurrencySnapshot>('/concurrency', { signal }),
   getLiveStreams: (signal?: AbortSignal) => request<{ schema_version?: number; collected_at?: string; streams: LiveStream[]; total: number; truncated: boolean }>('/live-streams', { signal }),

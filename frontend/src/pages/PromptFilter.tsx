@@ -1,7 +1,7 @@
 import { writeClipboardText } from '../lib/clipboard'
 import type { Dispatch, ReactNode, SetStateAction, TextareaHTMLAttributes } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink as RouterNavLink, useLocation, useParams, useSearchParams, type NavLinkProps } from 'react-router-dom'
+import { NavLink, useParams, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ClipboardCheck, Copy, FileText, Gauge, GitBranch, HelpCircle, Layers, ListChecks, Loader2, Network, Pencil, Plus, Power, PowerOff, RefreshCw, Save, Search, Shield, ShieldAlert, Sparkles, Trash2, Users, Wand2, X } from 'lucide-react'
 import { AdminAPIError, api } from '../api'
@@ -44,14 +44,6 @@ import {
 } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-
-// Keep the same editor and APIs available inside the risk-center shell.
-function NavLink(props: NavLinkProps) {
-  const { pathname } = useLocation()
-  const to = pathname.startsWith('/risk-control/prompt/') && typeof props.to === 'string'
-    ? props.to.replace(/^\/prompt-filter(?=\/|$)/, '/risk-control/prompt') : props.to
-  return <RouterNavLink {...props} to={to} />
-}
 
 const PROMPT_FILTER_VIEWS = ['overview', 'logs', 'profiles', 'rules', 'intelligence', 'docs'] as const
 const HIT_START_MARKER = '⟦PF_HIT⟧'

@@ -59,9 +59,6 @@ func (h *Handler) InspectPromptFilterOpenAIWithBlockMessage(c *gin.Context, rawB
 }
 
 func (h *Handler) inspectPromptFilterOpenAIWithBlockWriter(c *gin.Context, rawBody []byte, endpoint string, model string, writeBlock func(*gin.Context, string)) bool {
-	if h.inspectRiskControl(c, rawBody, endpoint, model) {
-		return true
-	}
 	if c != nil && c.GetBool("prompt_intelligence_internal") {
 		return false
 	}
@@ -109,9 +106,6 @@ func (h *Handler) inspectPromptFilterOpenAIWithBlockWriter(c *gin.Context, rawBo
 }
 
 func (h *Handler) inspectPromptFilterTextOpenAI(c *gin.Context, text string, endpoint string, model string) bool {
-	if h.inspectRiskControlText(c, text, endpoint, model) {
-		return true
-	}
 	if h == nil || h.store == nil {
 		return false
 	}
@@ -147,11 +141,6 @@ func (h *Handler) inspectPromptFilterTextOpenAI(c *gin.Context, text string, end
 }
 
 func (h *Handler) inspectPromptFilterAnthropic(c *gin.Context, rawBody []byte, endpoint string, model string) bool {
-	if d := h.checkRiskControlHTTP(c, rawBody, endpoint, model); d.Blocked {
-		sendAnthropicError(c, d.Status, "permission_error", d.Message)
-		c.Abort()
-		return true
-	}
 	if h == nil || h.store == nil {
 		return false
 	}

@@ -474,9 +474,6 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		if err := db.ensureFallbackAccountsSchema(ctx); err != nil {
 			return nil, fmt.Errorf("创建兜底账号表失败: %w", err)
 		}
-		if err := db.ensureRiskControlSchema(ctx); err != nil {
-			return nil, fmt.Errorf("initialize risk control schema: %w", err)
-		}
 		if err := db.ensureCodexRefreshSchema(ctx); err != nil {
 			return nil, fmt.Errorf("初始化 Codex 刷新保护表失败: %w", err)
 		}

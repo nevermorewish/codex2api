@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { relayFallbackReasonKey } from './relayFallbackReason.ts'
 
 test('fallback reasons retain distinct routing causes', () => {
-  for (const reason of ['relay_limit', 'retry_budget', 'retry_deadline', 'rate_limit_budget', 'affinity_capacity_full', 'queue_threshold', 'no_eligible_primary', 'primary_wait_ended', 'primary_unavailable', 'oversized_request', 'non_streaming', 'content_review']) {
+  for (const reason of ['relay_limit', 'retry_budget', 'retry_deadline', 'rate_limit_budget', 'affinity_capacity_full', 'queue_threshold', 'no_eligible_primary', 'primary_wait_ended', 'primary_unavailable', 'oversized_request', 'non_streaming']) {
     assert.equal(relayFallbackReasonKey(` ${reason} `), `concurrency.fallbackReasons.${reason}`)
   }
 })

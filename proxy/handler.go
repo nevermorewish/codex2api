@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/codex2api/security/riskcontrol"
 	"io"
 	"log"
 	"math/rand"
@@ -56,7 +55,6 @@ func upstreamErrorConsoleBody(body []byte) string {
 
 // Handler API 路由处理器
 type Handler struct {
-	riskControl     *riskcontrol.Service
 	store           *auth.Store
 	fallbackPool    *auth.FallbackPool
 	configKeys      map[string]bool // 配置文件中的静态 key
@@ -3354,7 +3352,6 @@ func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFu
 		c.Set(contextAPIKeyName, strings.TrimSpace(apiKeyRow.Name))
 		c.Set(contextAPIKeyMasked, security.MaskAPIKey(apiKeyRow.Key))
 		c.Set(contextAPIKeyRow, apiKeyRow)
-
 		h.attachAPIKeyModelRequestQuota(c, false)
 		c.Set("apiKey", key)
 		if h.enforceRequiredNewAPIIdentityAtIngress(c) {
@@ -4161,9 +4158,6 @@ func (h *Handler) Responses(c *gin.Context) {
 	}
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()
-	if !requireRiskControlFallbackHTTP(c, fallbackState, !compactionAffinity.Known && !turnContinuationPinned) {
-		return
-	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {
@@ -6236,9 +6230,6 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		fallbackState = h.newFallbackRouteStateForRequest(accountFilter, len(rawBody), false)
 		maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	}
-	if !requireRiskControlFallbackHTTP(c, fallbackState, !compactionAffinity.Known) {
-		return
-	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {
@@ -7129,9 +7120,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()
-	if !requireRiskControlFallbackHTTP(c, fallbackState, true) {
-		return
-	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {

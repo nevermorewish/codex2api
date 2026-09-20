@@ -356,8 +356,6 @@ func stripNewAPIPolicyWebSocketEventID(payload []byte) ([]byte, string) {
 func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.Conn, rawPayload []byte, policyEventID string, options *responsesWSForwardOptions) (returnErr error) {
 	defer beginRelayRequest(c)()
 	// A Gin context lives for the whole downstream WS connection, not one turn.
-	c.Set(contextRiskControlFallback, nil)
-	c.Set(contextRiskPrimarySelected, false)
 	c.Set(contextFallbackAccountName, "")
 	c.Set(contextFallbackReason, "")
 	c.Set(contextSourceAccountID, int64(0))
@@ -668,11 +666,6 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			forwardOptions.deferPreContentForFallback = true
 			options = &forwardOptions
 		}
-	}
-	if d := requireRiskControlFallback(c, fallbackState, !compactionAffinity.Known && !preserveContinuationBinding()); d != nil {
-		apiErr := api.NewAPIError(api.ErrorCode("content_policy_violation"), d.Message, api.ErrorTypeInvalidRequest)
-		_ = writeResponsesWSError(conn, apiErr)
-		return newResponsesWSCloseError(websocket.ClosePolicyViolation, d.Message, apiErr)
 	}
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()
@@ -1816,10 +1809,6 @@ func normalizeResponsesWebSocketClientPayload(raw []byte) ([]byte, string, *api.
 }
 
 func (h *Handler) inspectPromptFilterOpenAIForWebSocket(c *gin.Context, conn *websocket.Conn, rawBody []byte, endpoint string, model string, policyEventID string) (blocked bool, delegatedToNewAPI bool) {
-	if d := h.checkRiskControl(c, rawBody, endpoint, model); d.Blocked {
-		_ = writeResponsesWSError(conn, api.NewAPIError(api.ErrorCode("content_policy_violation"), d.Message, api.ErrorTypeInvalidRequest))
-		return true, false
-	}
 	if h == nil || h.store == nil {
 		return false, false
 	}

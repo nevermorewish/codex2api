@@ -26,8 +26,6 @@ const Usage = lazy(() => import('./pages/Usage'))
 const ImageStudio = lazy(() => import('./pages/ImageStudio'))
 const QualityTest = lazy(() => import('./pages/QualityTest'))
 const PromptFilter = lazy(() => import('./pages/PromptFilter'))
-const RiskControl = lazy(() => import('./pages/RiskControl'))
-const RiskPrompt = lazy(() => import('./pages/RiskPrompt'))
 const ThemeSettings = lazy(() => import('./pages/ThemeSettings'))
 const ModelPricing = lazy(() => import('./pages/ModelPricing'))
 const PayloadRules = lazy(() => import('./pages/PayloadRules'))
@@ -87,9 +85,6 @@ function AdminApp() {
           <Route path="/quality-test" element={<QualityTest />} />
           <Route path="/prompt-filter" element={<Navigate to="/prompt-filter/overview" replace />} />
           <Route path="/prompt-filter/:view" element={<PromptFilter />} />
-          <Route path="/risk-control" element={<Navigate to="/risk-control/policy" replace />} />
-          <Route path="/risk-control/:view" element={<RiskControl />} />
-          <Route path="/risk-control/prompt/:view" element={<RiskPrompt />} />
           <Route path="/ops" element={<Navigate to="/ops/overview" replace />} />
           <Route path="/ops/overview" element={<Operations />} />
           <Route path="/ops/runtime" element={<RuntimeStatus />} />
