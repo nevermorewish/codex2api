@@ -17,9 +17,15 @@ const (
 	ClientCompatModeAuto     = "auto"
 	ClientCompatModeForce    = "force"
 
+	CodexTurnStateAccountModePersonal = "personal"
+	CodexTurnStateAccountModeTeam     = "team"
+	CodexTurnStateAccountModeAuto     = "auto"
+
 	StreamFlushPolicyImmediate = "immediate"
 	StreamFlushPolicyCoalesce  = "coalesce"
 
+	// FirstTokenModeStrict 已退役：首字统计统一按宽松口径(loose)记录，
+	// 常量仅保留给旧配置/旧库值的兼容归一化。
 	FirstTokenModeStrict = "strict"
 	FirstTokenModeLoose  = "loose"
 
@@ -40,7 +46,7 @@ const (
 	defaultStreamFlushIntervalMS = 20
 	minStreamFlushIntervalMS     = 1
 	maxStreamFlushIntervalMS     = 1000
-	defaultFirstTokenMode        = FirstTokenModeStrict
+	defaultFirstTokenMode        = FirstTokenModeLoose
 	defaultFirstTokenTimeoutSec  = 0
 	maxFirstTokenTimeoutSec      = 600
 	defaultBillingTierPolicy     = BillingTierPolicyActual
@@ -68,12 +74,21 @@ type RuntimeSettings struct {
 	ClientCompatMode       string
 	CodexMinCLIVersion     string
 	CodexUserAgentConfig   string
-	StreamFlushPolicy      string
-	StreamFlushIntervalMS  int
-	FirstTokenMode         string
-	FirstTokenTimeoutMode  string // first_token or request_size
-	FirstTokenTimeoutSec   int
-	BillingTierPolicy      string
+	CodexTelemetryEnabled  bool
+	// CodexTurnStateTemplateCache enables X-Codex-Turn-State Fernet template cache (experimental, default false).
+	CodexTurnStateTemplateCache bool
+	// CodexTurnStateAccountMode selects personal|team|auto length/block policy (default auto).
+	CodexTurnStateAccountMode string
+	// CodexTelemetryTimingDebug 打开模拟遥测的临时计时探针（仅打日志，默认关闭）。
+	CodexTelemetryTimingDebug bool
+	// CodexImagesMainModel 为空时沿用环境变量或内置生图文本驱动模型。
+	CodexImagesMainModel  string
+	StreamFlushPolicy     string
+	StreamFlushIntervalMS int
+	FirstTokenMode        string
+	FirstTokenTimeoutMode string // first_token or request_size
+	FirstTokenTimeoutSec  int
+	BillingTierPolicy     string
 	// ModelsListReadMaxBytes 是上游 /v1/models 与 Codex 模型清单成功响应的读取上限。
 	ModelsListReadMaxBytes int64
 	CodexForceWebsocket    bool // 强制 Codex 上游走 WebSocket（默认 false）
@@ -178,6 +193,10 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		ClientCompatMode:                 defaultClientCompatMode,
 		CodexMinCLIVersion:               defaultCodexMinCLIVersion,
 		CodexUserAgentConfig:             DefaultCodexUserAgentConfigJSON(),
+		CodexTelemetryEnabled:            false,
+		CodexTurnStateTemplateCache:      false,
+		CodexTurnStateAccountMode:        CodexTurnStateAccountModeAuto,
+		CodexTelemetryTimingDebug:        false,
 		StreamFlushPolicy:                defaultStreamFlushPolicy,
 		StreamFlushIntervalMS:            defaultStreamFlushIntervalMS,
 		FirstTokenMode:                   defaultFirstTokenMode,
@@ -238,6 +257,20 @@ func NormalizeClientCompatMode(mode string) string {
 	}
 }
 
+// NormalizeCodexTurnStateAccountMode returns personal|team|auto (default auto).
+func NormalizeCodexTurnStateAccountMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case CodexTurnStateAccountModePersonal:
+		return CodexTurnStateAccountModePersonal
+	case CodexTurnStateAccountModeTeam:
+		return CodexTurnStateAccountModeTeam
+	case "", CodexTurnStateAccountModeAuto:
+		return CodexTurnStateAccountModeAuto
+	default:
+		return CodexTurnStateAccountModeAuto
+	}
+}
+
 func NormalizeStreamFlushPolicy(policy string) string {
 	switch strings.ToLower(strings.TrimSpace(policy)) {
 	case "", StreamFlushPolicyImmediate:
@@ -249,15 +282,10 @@ func NormalizeStreamFlushPolicy(policy string) string {
 	}
 }
 
-func NormalizeFirstTokenMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "", FirstTokenModeStrict:
-		return FirstTokenModeStrict
-	case FirstTokenModeLoose:
-		return FirstTokenModeLoose
-	default:
-		return FirstTokenModeStrict
-	}
+// NormalizeFirstTokenMode 统一返回宽松口径：严格首字开关已取消，旧库/旧请求里
+// 残留的 strict 或任意非法值都按 loose 生效。
+func NormalizeFirstTokenMode(_ string) string {
+	return FirstTokenModeLoose
 }
 
 func NormalizeBillingTierPolicy(policy string) string {
@@ -274,12 +302,14 @@ func NormalizeBillingTierPolicy(policy string) string {
 func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	defaults := DefaultRuntimeSettings()
 	settings.ClientCompatMode = NormalizeClientCompatMode(settings.ClientCompatMode)
+	settings.CodexTurnStateAccountMode = NormalizeCodexTurnStateAccountMode(settings.CodexTurnStateAccountMode)
 	settings.StreamFlushPolicy = NormalizeStreamFlushPolicy(settings.StreamFlushPolicy)
 	settings.FirstTokenMode = NormalizeFirstTokenMode(settings.FirstTokenMode)
 	settings.FirstTokenSizeTimeouts = database.NormalizeFirstTokenTimeoutSettings(settings.FirstTokenSizeTimeouts)
 	settings.BillingTierPolicy = NormalizeBillingTierPolicy(settings.BillingTierPolicy)
 	settings.ModelsListReadMaxBytes = database.NormalizeModelsListReadMaxBytes(settings.ModelsListReadMaxBytes)
 	settings.RequestIsolationMode = NormalizeRequestIsolationMode(settings.RequestIsolationMode)
+	settings.CodexImagesMainModel, _ = NormalizeImagesMainModel(settings.CodexImagesMainModel)
 	if strings.TrimSpace(settings.CodexMinCLIVersion) == "" {
 		settings.CodexMinCLIVersion = defaults.CodexMinCLIVersion
 	} else {
@@ -353,6 +383,11 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.ClientCompatMode = settings.ClientCompatMode
 		next.CodexMinCLIVersion = settings.CodexMinCLIVersion
 		next.CodexUserAgentConfig = settings.CodexUserAgentConfig
+		next.CodexTelemetryEnabled = settings.CodexTelemetryEnabled
+		next.CodexTurnStateTemplateCache = settings.CodexTurnStateTemplateCacheEnabled
+		next.CodexTurnStateAccountMode = settings.CodexTurnStateAccountMode
+		next.CodexTelemetryTimingDebug = settings.CodexTelemetryTimingDebug
+		next.CodexImagesMainModel = settings.CodexImagesMainModel
 		next.StreamFlushPolicy = settings.StreamFlushPolicy
 		next.StreamFlushIntervalMS = settings.StreamFlushIntervalMS
 		next.FirstTokenMode = settings.FirstTokenMode
@@ -457,10 +492,6 @@ func currentFirstTokenTimeout() time.Duration {
 		return 0
 	}
 	return time.Duration(seconds) * time.Second
-}
-
-func currentFirstTokenMode() string {
-	return CurrentRuntimeSettings().FirstTokenMode
 }
 
 // codexContinueThinkingSettings 返回续想折叠开关与最大轮数（一次快照读取）。

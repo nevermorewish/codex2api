@@ -84,7 +84,7 @@ func TestFallbackTakesOverExpiredPrimaryAcrossHTTPProtocols(t *testing.T) {
 					}
 					for id := int64(1); id <= 3; id++ {
 						store.AddAccount(&auth.Account{DBID: id, UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: primary.URL,
-							APIKey: "primary-key", Models: []string{"gpt-5.4"}, PlanType: "api"})
+							APIKey: "primary-key", Models: []string{"gpt-5.5"}, PlanType: "api"})
 					}
 					pool := auth.NewFallbackPool(store)
 					pool.Replace([]auth.FallbackAccountConfig{{ID: 1, BaseURL: fallback.URL, APIKey: "fallback-key", Concurrency: 1, Enabled: true}})
@@ -96,9 +96,9 @@ func TestFallbackTakesOverExpiredPrimaryAcrossHTTPProtocols(t *testing.T) {
 					defer store.Release(occupied)
 					h := NewHandler(store, nil, nil, nil)
 					h.SetFallbackPool(pool)
-					body := fmt.Sprintf(`{"model":"gpt-5.4","input":"hello","stream":%t}`, stream)
+					body := fmt.Sprintf(`{"model":"gpt-5.5","input":"hello","stream":%t}`, stream)
 					if endpoint == "/v1/chat/completions" || endpoint == "/v1/messages" {
-						body = fmt.Sprintf(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":%t}`, stream)
+						body = fmt.Sprintf(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":%t}`, stream)
 					}
 					recorder := httptest.NewRecorder()
 					c, _ := gin.CreateTestContext(recorder)
@@ -255,7 +255,7 @@ func TestFallbackTakesOverExpiredCodexWebsocketUpstream(t *testing.T) {
 	c, _ := gin.CreateTestContext(recorder)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","input":"hello","stream":true}`)).WithContext(ctx)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","input":"hello","stream":true}`)).WithContext(ctx)
 	h.Responses(c)
 	if primaryCalls.Load() != 2 || recorder.Code != http.StatusOK || authorization != "Bearer fallback-key" || !strings.Contains(recorder.Body.String(), "response.completed") {
 		t.Fatalf("primary=%d status=%d fallback=%q body=%s", primaryCalls.Load(), recorder.Code, path, recorder.Body.String())
@@ -293,7 +293,7 @@ func TestFallbackServesWhenPrimaryAndFallbackConcurrencyAreFull(t *testing.T) {
 	h.SetFallbackPool(pool)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","input":"hello","stream":true}`))
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","input":"hello","stream":true}`))
 	c.Request.Header.Set("Session_id", session)
 	h.Responses(c)
 	if recorder.Code != http.StatusOK || authorization != "Bearer fallback-key" || !strings.Contains(recorder.Body.String(), "response.completed") {

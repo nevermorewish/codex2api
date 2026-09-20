@@ -1,5 +1,5 @@
 import { Check, ChevronDown } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
 import { selectAutoScrollKey } from '@/lib/selectScroll'
@@ -8,6 +8,8 @@ export interface SelectOption {
   label: string
   value: string
   triggerLabel?: string
+  content?: ReactNode
+  triggerContent?: ReactNode
 }
 
 interface SelectProps {
@@ -248,8 +250,8 @@ export function Select({
           }
         }}
       >
-        <span className={cn('truncate', selectedOption ? 'text-foreground' : 'text-muted-foreground')}>
-          {selectedOption?.triggerLabel ?? selectedOption?.label ?? placeholder}
+        <span className={cn('min-w-0 flex-1', selectedOption?.triggerContent ? 'block' : 'truncate', selectedOption ? 'text-foreground' : 'text-muted-foreground')}>
+          {selectedOption?.triggerContent ?? selectedOption?.triggerLabel ?? selectedOption?.label ?? placeholder}
         </span>
         <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
       </button>
@@ -296,6 +298,7 @@ export function Select({
                         id={option.value}
                         type="button"
                         role="option"
+                        aria-label={option.label}
                         aria-selected={isSelected}
                         className={cn(
                           'flex w-full items-center justify-between gap-2 text-left transition-colors',
@@ -316,7 +319,7 @@ export function Select({
                         // onClick 兜底：键盘 Enter / Space 触发的合成 click 没有 pointerdown。
                         onClick={() => handleSelect(option.value)}
                       >
-                        <span className="truncate">{option.label}</span>
+                        <span className={cn('min-w-0 flex-1', option.content ? 'block' : 'truncate')}>{option.content ?? option.label}</span>
                         <Check className={cn('size-4 shrink-0', isSelected ? 'opacity-100' : 'opacity-0')} />
                       </button>
                     )

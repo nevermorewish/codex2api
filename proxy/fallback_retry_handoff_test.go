@@ -135,7 +135,7 @@ func testPreContentFailureHandoff(t *testing.T, codexPrimary bool, websocketUpst
 				var accounts []*auth.Account
 				for i := 1; i <= 8; i++ {
 					a := &auth.Account{DBID: int64(i), UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: primary.URL,
-						APIKey: fmt.Sprintf("sk-primary-%d", i), Models: []string{"gpt-5.4"}, PlanType: "api"}
+						APIKey: fmt.Sprintf("sk-primary-%d", i), Models: []string{"gpt-5.5"}, PlanType: "api"}
 					if codexPrimary {
 						a = &auth.Account{DBID: int64(i), AccessToken: fmt.Sprintf("at-primary-%d", i), PlanType: "pro", AccountID: fmt.Sprintf("acct-%d", i)}
 					}
@@ -147,9 +147,9 @@ func testPreContentFailureHandoff(t *testing.T, codexPrimary bool, websocketUpst
 				pool.SetPolicy(auth.FallbackPolicy{Enabled: !tc.disableFallback, RelayCount: tc.relayCount})
 				h := NewHandler(store, nil, nil, nil)
 				h.SetFallbackPool(pool)
-				body := `{"model":"gpt-5.4","input":"hello","stream":true}`
+				body := `{"model":"gpt-5.5","input":"hello","stream":true}`
 				if endpoint != "/v1/responses" {
-					body = `{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":true}`
+					body = `{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":true}`
 				}
 				recorder := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(recorder)

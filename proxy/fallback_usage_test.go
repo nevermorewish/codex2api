@@ -78,7 +78,7 @@ func TestFallbackUsageRequiredAcrossHTTPProtocols(t *testing.T) {
 						pool.SetPolicy(auth.FallbackPolicy{Enabled: true, RelayCount: 3})
 						h := NewHandler(store, db, nil, nil)
 						h.SetFallbackPool(pool)
-						body := fmt.Sprintf(`{"model":"gpt-5.4","input":"hello","messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":%t}`, stream)
+						body := fmt.Sprintf(`{"model":"gpt-5.5","input":"hello","messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":%t}`, stream)
 						recorder := httptest.NewRecorder()
 						c, _ := gin.CreateTestContext(recorder)
 						c.Request = httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
@@ -210,7 +210,7 @@ func TestFallbackUsageRequiredOverWebSocket(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.4","input":"hello"}`)); err != nil {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.5","input":"hello"}`)); err != nil {
 				t.Fatal(err)
 			}
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))

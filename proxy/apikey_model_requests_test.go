@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -55,14 +57,14 @@ func newModelQuotaTestHandler(t *testing.T, limit int64, upstream string, native
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 4, MaxRetries: 0, MaxRateLimitRetries: 0})
 	t.Cleanup(store.Stop)
 	if native {
-		store.AddAccount(&auth.Account{DBID: 1, AccessToken: "test-token", PlanType: "pro", Models: []string{"gpt-6-astra", "gpt-5.4"}})
+		store.AddAccount(&auth.Account{DBID: 1, AccessToken: "test-token", PlanType: "pro", Models: []string{"gpt-6-astra", "gpt-5.5"}})
 	} else {
 		// The early global mapping is deliberately outside the quota; only the
 		// later account mapping exposes the actual model that must be charged.
-		store.SetCodexModelMapping(`{"team-model":"gpt-5.4"}`)
+		store.SetCodexModelMapping(`{"team-model":"gpt-5.5"}`)
 		store.AddAccount(&auth.Account{DBID: 1, UpstreamType: auth.UpstreamOpenAIResponses,
 			BaseURL: upstream, APIKey: "relay-test", PlanType: "api",
-			Models: []string{"gpt-6-astra", "gpt-5.4"}, ModelMapping: `{"team-model":"gpt-6-astra"}`})
+			Models: []string{"gpt-6-astra", "gpt-5.5"}, ModelMapping: `{"team-model":"gpt-6-astra"}`})
 	}
 	h := NewHandler(store, db, &config.Config{}, nil)
 	r := gin.New()
@@ -85,7 +87,7 @@ func TestModelRequestQuotaHTTPMappedModelAndProtocolErrors(t *testing.T) {
 		sent.Add(1)
 		body := readUpstreamRequestBody(r)
 		model := gjson.GetBytes(body, "model").String()
-		if model != "gpt-6-astra" && model != "gpt-5.4" {
+		if model != "gpt-6-astra" && model != "gpt-5.5" {
 			t.Errorf("unexpected wire model %q", model)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -119,7 +121,7 @@ func TestModelRequestQuotaHTTPMappedModelAndProtocolErrors(t *testing.T) {
 	if sent.Load() != 1 {
 		t.Fatalf("exhausted requests reached upstream: calls=%d", sent.Load())
 	}
-	other := performModelQuotaRequest(router, "/v1/responses", `{"model":"gpt-5.4","input":"hi","stream":true}`)
+	other := performModelQuotaRequest(router, "/v1/responses", `{"model":"gpt-5.5","input":"hi","stream":true}`)
 	if other.Code != 200 {
 		t.Fatalf("other model blocked: %d %s", other.Code, other.Body.String())
 	}
@@ -133,6 +135,8 @@ func TestModelRequestQuotaHTTPMappedModelAndProtocolErrors(t *testing.T) {
 	}
 }
 
+// TestModelRequestQuotaExecutorRetriesAndFreshRequest 验证同一逻辑请求的重试共享一次额度扣减，
+// 且重新进入处理器时仍使用新的请求身份。
 func TestModelRequestQuotaExecutorRetriesAndFreshRequest(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -171,6 +175,50 @@ func TestModelRequestQuotaExecutorRetriesAndFreshRequest(t *testing.T) {
 	}
 }
 
+// TestModelRequestQuotaActivatesSSEKeepaliveAfterAdmission 验证额度准入成功后，
+// 上游尚未返回响应头时也会激活下游 SSE 保活。
+func TestModelRequestQuotaActivatesSSEKeepaliveAfterAdmission(t *testing.T) {
+	previousInterval := continuousRetryKeepaliveInterval
+	continuousRetryKeepaliveInterval = 5 * time.Millisecond
+	t.Cleanup(func() { continuousRetryKeepaliveInterval = previousInterval })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(30 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, modelQuotaSSE)
+	}))
+	t.Cleanup(upstream.Close)
+	_, _, router := newModelQuotaTestHandler(t, 2, upstream.URL, false)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+	var informational atomic.Bool
+	trace := &httptrace.ClientTrace{Got1xxResponse: func(code int, _ textproto.MIMEHeader) error {
+		if code == http.StatusProcessing {
+			informational.Store(true)
+		}
+		return nil
+	}}
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodPost, server.URL+"/v1/responses", strings.NewReader(`{"model":"gpt-6-astra","input":"hi","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+modelQuotaTestKey)
+	response, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || !informational.Load() || !strings.Contains(string(body), `"type":"response.completed"`) {
+		t.Fatalf("status=%d informational=%v body=%q", response.StatusCode, informational.Load(), body)
+	}
+}
+
 func TestModelRequestQuotaWebsocketFramesAndOtherModel(t *testing.T) {
 	previousExecute := WebsocketExecuteFunc
 	t.Cleanup(func() { WebsocketExecuteFunc = previousExecute })
@@ -190,7 +238,7 @@ func TestModelRequestQuotaWebsocketFramesAndOtherModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	for i, model := range []string{"gpt-6-astra", "gpt-6-astra", "gpt-5.4"} {
+	for i, model := range []string{"gpt-6-astra", "gpt-6-astra", "gpt-5.5"} {
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"input":"hi"}`, model))); err != nil {
 			t.Fatal(err)
 		}

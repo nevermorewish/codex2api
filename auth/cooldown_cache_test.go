@@ -31,6 +31,13 @@ func TestStoreSkipsCachedAccountCooldown(t *testing.T) {
 	if got.DBID != fallback.DBID {
 		t.Fatalf("Next() picked dbID=%d, want %d", got.DBID, fallback.DBID)
 	}
+	// Selection may stop at the first available account without touching every
+	// cached cooldown. With that account occupied, the cooled account must still
+	// never be admitted and its lazy state is synchronized on inspection.
+	if extra := store.Next(); extra != nil {
+		store.Release(extra)
+		t.Fatalf("cooldown account admitted while fallback occupied: %d", extra.DBID)
+	}
 	if primary.IsAvailable() {
 		t.Fatal("primary account should have been synchronized into cooldown")
 	}

@@ -8,7 +8,7 @@ import (
 func TestWebsocketSizeRouterLearnsAndRoutes(t *testing.T) {
 	var r websocketSizeRouter
 
-	if r.PreferHTTP(10 * 1024 * 1024) {
+	if r.PreferHTTP(wsSizeRouterHardHTTPBytes - 1) {
 		t.Fatal("未学习任何样本时不应改路 HTTP")
 	}
 
@@ -37,7 +37,7 @@ func TestWebsocketSizeRouterLearnsAndRoutes(t *testing.T) {
 func TestWebsocketSizeRouterIgnoresTinySamples(t *testing.T) {
 	var r websocketSizeRouter
 	r.RecordMessageTooBig(wsSizeRouterMinSample - 1)
-	if r.PreferHTTP(10 * 1024 * 1024) {
+	if r.PreferHTTP(wsSizeRouterHardHTTPBytes - 1) {
 		t.Fatal("低于样本下限的 1009 不应参与学习")
 	}
 }
@@ -60,5 +60,12 @@ func TestWebsocketSizeRouterEnvEscapeHatch(t *testing.T) {
 	r.RecordMessageTooBig(400 * 1024)
 	if r.PreferHTTP(500 * 1024) {
 		t.Fatal("CODEX_WS_SIZE_ROUTER=off 时应保持旧行为")
+	}
+}
+
+func TestWebsocketSizeRouterHardLimitWithoutLearning(t *testing.T) {
+	var r websocketSizeRouter
+	if !r.PreferHTTP(wsSizeRouterHardHTTPBytes) {
+		t.Fatal("hard limit must route to HTTP without a learned sample")
 	}
 }

@@ -36,7 +36,7 @@ func unifiedRouter(t *testing.T, policy database.ContinuousRetryPolicy) (*gin.En
 	s.FirstTokenTimeoutSec = 1
 	s.ContinuousRetryPolicy = policy
 	ApplyRuntimeSettings(s)
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 4, MaxRetries: 10, MaxRateLimitRetries: 10, TestModel: "gpt-5.4"})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 4, MaxRetries: 10, MaxRateLimitRetries: 10, TestModel: "gpt-5.5"})
 	t.Cleanup(store.Stop)
 	for id := int64(1); id <= 4; id++ {
 		store.AddAccount(&auth.Account{DBID: id, AccessToken: fmt.Sprint("token-", id), AccountID: fmt.Sprint("account-", id), PlanType: "pro"})
@@ -48,7 +48,7 @@ func unifiedRouter(t *testing.T, policy database.ContinuousRetryPolicy) (*gin.En
 }
 
 func unifiedRequest(endpoint string) *http.Request {
-	req := httptest.NewRequest("POST", endpoint, strings.NewReader(`{"model":"gpt-5.4","stream":true,"input":"hello","messages":[{"role":"user","content":"hello"}],"max_tokens":100}`))
+	req := httptest.NewRequest("POST", endpoint, strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hello","messages":[{"role":"user","content":"hello"}],"max_tokens":100}`))
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }

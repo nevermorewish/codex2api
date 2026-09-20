@@ -279,7 +279,10 @@ func TestStage0MultipartPromptOrderBlocksBeforeFileConversion(t *testing.T) {
 
 func TestStage0BlockedMultipartRemovesTemporaryFiles(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("TMPDIR", t.TempDir())
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+	t.Setenv("TMP", tempDir)
+	t.Setenv("TEMP", tempDir)
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2})
 	t.Cleanup(store.Stop)
 	store.SetPromptFilterConfig(promptGuardTestConfig())
@@ -297,7 +300,16 @@ func TestStage0BlockedMultipartRemovesTemporaryFiles(t *testing.T) {
 	}
 
 	form := c.Request.MultipartForm
-	if form == nil || len(form.File["image"]) != 1 {
+	// Lifecycle cleanup restores the original request after multipart cleanup.
+	// Validate the filesystem even when the restored request has no form metadata.
+	if form == nil {
+		entries, err := os.ReadDir(tempDir)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("multipart temporary files remain: %v, %v", entries, err)
+		}
+		return
+	}
+	if len(form.File["image"]) != 1 {
 		t.Fatalf("parsed multipart file metadata missing: %#v", form)
 	}
 	t.Cleanup(func() { _ = form.RemoveAll() })

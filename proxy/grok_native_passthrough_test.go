@@ -148,7 +148,7 @@ func TestForwardGrokNativePrivateAttemptDoesNotPublishFailedHeaders(t *testing.T
 	t.Cleanup(func() { _ = attempt.Close() })
 
 	_, outcome, _, _ := forwardGrokNativeResponseTo(
-		ctx, resp, GrokProtocolResponses, true, time.Now(), nil,
+		ctx.Request.Context(), ctx, resp, GrokProtocolResponses, true, time.Now(), nil,
 		attempt.writerOr(recorder), attempt.flusherOr(recorder),
 	)
 	if outcome.logStatusCode == http.StatusOK {
@@ -201,6 +201,8 @@ func TestForwardGrokNativeTypelessEventErrorStaysPrivateAcrossProtocols(t *testi
 	}
 }
 
+// TestForwardGrokNativeFailureBeforeVisibleOutputReturnsProtocolHTTPError 验证首个可见事件前
+// 的失败仍返回协议对应的 HTTP 错误，而不会伪造成功流。
 func TestForwardGrokNativeFailureBeforeVisibleOutputReturnsProtocolHTTPError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
@@ -232,7 +234,9 @@ func TestForwardGrokNativeFailureBeforeVisibleOutputReturnsProtocolHTTPError(t *
 	}
 }
 
-func TestSendGrokNativeHTTPErrorAfterKeepaliveUsesProtocolEvent(t *testing.T) {
+// TestSendGrokNativeErrorAfterInitialKeepaliveUsesSSE 验证首个保活提交 SSE 后，
+// Grok 各协议的错误仍以协议事件返回。
+func TestSendGrokNativeErrorAfterInitialKeepaliveUsesSSE(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
 		name       string
@@ -241,7 +245,7 @@ func TestSendGrokNativeHTTPErrorAfterKeepaliveUsesProtocolEvent(t *testing.T) {
 		wantMarker string
 	}{
 		{name: "responses", protocol: GrokProtocolResponses, path: "/v1/responses", wantMarker: `"type":"response.failed"`},
-		{name: "chat", protocol: GrokProtocolChatCompletions, path: "/v1/chat/completions", wantMarker: `"type":"upstream_error"`},
+		{name: "chat", protocol: GrokProtocolChatCompletions, path: "/v1/chat/completions", wantMarker: `"error":{"code":"upstream_stream_break"`},
 		{name: "messages", protocol: GrokProtocolMessages, path: "/v1/messages", wantMarker: "event: error\n"},
 	}
 	for _, tc := range tests {
@@ -252,24 +256,31 @@ func TestSendGrokNativeHTTPErrorAfterKeepaliveUsesProtocolEvent(t *testing.T) {
 			stop := installContinuousRetrySSEKeepalive(ctx, true, "text/event-stream")
 			defer stop()
 
-			// Real stream bytes spend the HTTP status, which is what forces the
-			// later failure to be delivered as an in-band protocol event. A bare
-			// pre-content heartbeat no longer commits the response, so the
-			// terminal status would otherwise still be selectable.
+			// Real stream bytes spend the HTTP status, forcing later failure in-band.
 			setSSEStreamHeaders(ctx, "text/event-stream")
 			if _, err := ctx.Writer.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"); err != nil {
-				t.Fatalf("write real SSE output: %v", err)
+				t.Fatal(err)
 			}
 			if !retryKeepaliveCommitted(ctx) {
 				t.Fatal("real stream output did not commit the response")
+			}
+			keepalive := continuousRetryKeepaliveForContext(ctx.Request.Context()).(*requestContinuousRetryKeepalive)
+			keepalive.Activate()
+			keepalive.last = time.Time{}
+			if err := keepalive.Keepalive(); err != nil {
+				t.Fatal(err)
 			}
 			(&Handler{}).sendGrokNativeHTTPError(ctx, tc.protocol, streamOutcome{
 				logStatusCode:  http.StatusServiceUnavailable,
 				failureMessage: "upstream busy",
 			})
 
-			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), tc.wantMarker) {
-				t.Fatalf("committed protocol error = status %d body %q", recorder.Code, recorder.Body.String())
+			body := recorder.Body.String()
+			if recorder.Code != http.StatusOK ||
+				!strings.Contains(body, downstreamSSEKeepaliveComment) ||
+				!strings.Contains(body, tc.wantMarker) ||
+				!strings.Contains(body, "upstream busy") {
+				t.Fatalf("committed SSE error = status %d body %q", recorder.Code, body)
 			}
 		})
 	}

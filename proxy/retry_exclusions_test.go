@@ -114,7 +114,7 @@ func TestRetryAccountWaitContinuesAcrossSlicesWhileMatchingAccountIsFull(t *test
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	go func() {
-		account, _, _ := handler.nextRetryAccountForSessionWithDispatchGuard(
+		account, _, _, _ := handler.nextRetryAccountForSessionWithDispatchGuard(
 			ctx, "", 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard,
 		)
 		resultCh <- result{account: account}

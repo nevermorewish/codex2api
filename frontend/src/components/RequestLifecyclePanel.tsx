@@ -5,6 +5,7 @@ import { StatTile } from './StatTile'
 import { Input } from './ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
 import { cn } from '../lib/utils'
+import { Select } from './ui/select'
 
 const states: Record<string, string> = {
   preparing: '接收 / 校验', scheduler_wait: '调度队列', retry_wait: '重试等待',
@@ -55,9 +56,7 @@ export default function RequestLifecyclePanel({ snapshot }: { snapshot: Concurre
           {[false, true].map(value => <button key={String(value)} type="button" aria-pressed={recent === value} className={cn('rounded-md px-3 py-1.5', recent === value ? 'bg-primary text-primary-foreground' : 'text-muted-foreground')} onClick={() => { setRecent(value); setStage('all'); setPage(1) }}>{value ? '最近完成（100 条）' : '当前请求'}</button>)}
         </div>
         <Input className="w-full sm:w-64" aria-label="搜索请求" placeholder="请求 ID / 模型 / 账号 / Key ID" value={query} onChange={e => { setQuery(e.target.value); setPage(1) }} />
-        <select aria-label="筛选请求状态" className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={stage} onChange={e => { setStage(e.target.value); setPage(1) }}>
-          <option value="all">全部状态</option>{Object.entries(states).filter(([k]) => recent === ['completed', 'failed', 'canceled'].includes(k)).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-        </select>
+        <Select aria-label="筛选请求状态" className="w-auto" value={stage} onValueChange={value => { setStage(value); setPage(1) }} options={[{ value: 'all', label: '全部状态' }, ...Object.entries(states).filter(([k]) => recent === ['completed', 'failed', 'canceled'].includes(k)).map(([value, label]) => ({ value, label }))]} />
       </div>
       {snapshot.lifecycle_truncated && !recent && <p className="text-xs text-amber-600">明细显示等待最久的 200 个请求；顶部计数包含全部请求。</p>}
       <div className="overflow-x-auto rounded-lg border">

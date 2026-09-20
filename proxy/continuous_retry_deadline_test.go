@@ -457,9 +457,17 @@ func TestContinuousRetryAffinityTimeoutCleanupPreservesOnlyExistingSameAccount(t
 			if !bindContinuousRetrySessionAffinity(ctx, store, affinityKey, current, "") {
 				t.Fatal("affinity bind was rejected before deadline")
 			}
+			// The timer cancels ctx before it runs the timeout cleanups, so
+			// ctx.Done() alone races the affinity unbind. Cleanups run in
+			// registration order; a sentinel registered after the bind fires
+			// only once the unbind has completed.
+			cleaned := make(chan struct{})
+			if !withContinuousRetryDeadlinePendingCleanup(ctx, func() {}, func() { close(cleaned) }) {
+				t.Fatal("sentinel cleanup was rejected before deadline")
+			}
 			deadline.Activate()
 			select {
-			case <-ctx.Done():
+			case <-cleaned:
 			case <-time.After(500 * time.Millisecond):
 				t.Fatal("deadline did not fire")
 			}
@@ -795,7 +803,7 @@ func TestResponsesWebSocketContinuousRetryDeadlineWritesOneErrorAndCloses1013(t 
 	store := auth.NewStore(db, nil, &database.SystemSettings{
 		MaxConcurrency:      2,
 		TestConcurrency:     1,
-		TestModel:           "gpt-5.4",
+		TestModel:           "gpt-5.5",
 		MaxRetries:          0,
 		MaxRateLimitRetries: 0,
 		RetryIntervalMS:     0,
@@ -826,7 +834,7 @@ func TestResponsesWebSocketContinuousRetryDeadlineWritesOneErrorAndCloses1013(t 
 		t.Fatalf("dial Responses websocket: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.4","input":"hello"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.5","input":"hello"}`)); err != nil {
 		t.Fatalf("write Responses websocket request: %v", err)
 	}
 	select {

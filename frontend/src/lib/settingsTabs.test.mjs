@@ -57,11 +57,14 @@ test('channel-specific cards live in their channel tab, shared cards in general'
 
 test('tab and section labels exist in zh and en', () => {
   for (const locale of [zh, en]) {
-    for (const key of ['codex', 'codexDesc', 'claude', 'antigravity', 'grok', 'appearance', 'general', 'generalDesc', 'codexQuota', 'codexQuotaDesc', 'codexTransport', 'codexTransportDesc', 'codexClient', 'codexClientDesc']) {
+    for (const key of ['codex', 'codexDesc', 'claude', 'antigravity', 'grok', 'appearance', 'general', 'generalDesc', 'codexQuota', 'codexQuotaDesc', 'codexTransport', 'codexTransportDesc', 'codexClient', 'codexClientDesc', 'codexImages', 'codexImagesDesc']) {
       assert.equal(typeof locale.settings?.nav?.[key], 'string', `settings.nav.${key}`)
     }
     assert.equal(typeof locale.settings?.codexClientTitle, 'string')
     assert.equal(typeof locale.settings?.codexClientDesc, 'string')
+    for (const key of ['codexImagesDriver', 'codexImagesDriverDesc', 'codexImagesMainModel', 'codexImagesMainModelDesc', 'codexImagesDefault', 'codexImagesScope', 'codexImagesFallback']) {
+      assert.equal(typeof locale.settings?.[key], 'string', `settings.${key}`)
+    }
   }
 })
 
@@ -90,7 +93,7 @@ test('shared settings cards declare which upstream channels they apply to', () =
   for (const title of ['settings.trafficProtection', 'settings.schedulingStrategy', 'settings.runtimeOptimization', 'settings.autoCleanup']) {
     assert.match(settings, new RegExp(`title=\\{t\\('${title.replace('.', '\\.')}'\\)\\}[^\\n]*channels=\\{ALL_UPSTREAM_CHANNELS\\}`), title)
   }
-  assert.match(settings, /title=\{t\('settings\.continuousRetryTitle'\)\}\n\s+channels=\{ALL_UPSTREAM_CHANNELS\}/)
+  assert.match(settings, /title=\{t\('settings\.retryPolicyTitle'\)\}\n\s+channels=\{ALL_UPSTREAM_CHANNELS\}/)
   assert.match(settings, /title=\{t\('settings\.modelCooldownTitle'\)\}\n\s+channels=\{ALL_UPSTREAM_CHANNELS\}/)
   assert.match(settings, /settings\.imageStorage'\)\}[^\n]*channels=\{CHANNELS_CODEX_ONLY\}/)
   assert.match(settings, /settings\.globalAutoPauseTitle'\)\}[^\n]*channels=\{CHANNELS_CODEX_CLAUDE\}/)

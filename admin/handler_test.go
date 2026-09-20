@@ -1731,7 +1731,7 @@ func TestUpdateSettingsResponseIncludesRetrySettings(t *testing.T) {
 	ctx.Request = httptest.NewRequest(
 		http.MethodPut,
 		"/api/admin/settings",
-		strings.NewReader(`{"retry_interval_ms":2500,"transport_retry_policy":"sticky","continuous_retry_enabled":true,"continuous_retry_catch_all":true,"continuous_retry_categories":["http_4xx","server","unknown"],"continuous_retry_status_codes":[404,403,404,99,600],"continuous_retry_error_codes":["Forbidden","forbidden","bad code!"],"continuous_retry_max_duration_seconds":75}`),
+		strings.NewReader(`{"retry_interval_ms":2500,"transport_retry_policy":"sticky","retry_policy":{"mode":"full_response","max_attempts":3,"total_timeout_seconds":75},"continuous_retry_catch_all":true,"continuous_retry_categories":["http_4xx","server","unknown"],"continuous_retry_status_codes":[404,403,404,99,600],"continuous_retry_error_codes":["Forbidden","forbidden","bad code!"]}`),
 	)
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
@@ -2203,7 +2203,7 @@ func TestUpdateSettingsDoesNotPublishContinuousRetryWhenPersistenceFails(t *test
 	cancel()
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPut, "/api/admin/settings", strings.NewReader(`{"continuous_retry_enabled":true,"continuous_retry_status_codes":[403]}`))
+	request := httptest.NewRequest(http.MethodPut, "/api/admin/settings", strings.NewReader(`{"retry_policy":{"mode":"full_response","max_attempts":3,"total_timeout_seconds":75},"continuous_retry_status_codes":[403]}`))
 	ctx.Request = request.WithContext(requestCtx)
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
@@ -3678,5 +3678,116 @@ func assertErrorMessage(t *testing.T, recorder *httptest.ResponseRecorder, want 
 	}
 	if got := payload["error"]; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+// TestUpdateSettingsResponseIncludesPublicPortalFlags 回归 #663：PUT /api/admin/settings
+// 的响应体必须回填三个公开门户开关。此前响应遗漏这些字段，前端「设置」页保存后会用
+// 响应整体覆盖本地表单把它们静默置为 false，下一次「保存设置」再整体提交就把已经开启的
+// /key-usage 等公开页关掉——表现为「开启一天后自动关闭」。
+func TestUpdateSettingsResponseIncludesPublicPortalFlags(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousRuntime := proxy.CurrentRuntimeSettings()
+	t.Cleanup(func() { proxy.ApplyRuntimeSettings(previousRuntime) })
+
+	db := newTestAdminDB(t)
+	tc := cache.NewMemory(4)
+	t.Cleanup(func() { _ = tc.Close() })
+
+	settings := defaultBootstrapSettings()
+	settings.PublicKeyUsagePageEnabled = true
+	settings.PublicImageStudioPageEnabled = true
+	settings.PublicAccountPortalPageEnabled = false
+	if err := db.UpdateSystemSettings(context.Background(), settings); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+	store := auth.NewStore(db, tc, settings)
+	t.Cleanup(store.Stop)
+	proxy.ApplyRuntimeSettingsFromSystem(settings)
+	handler := NewHandler(store, db, tc, proxy.NewRateLimiter(settings.GlobalRPM), "admin-secret")
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/admin/settings", strings.NewReader(`{"site_name":"Portal Response Test"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	handler.UpdateSettings(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	var response settingsResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.PublicKeyUsagePageEnabled {
+		t.Fatal("PUT response PublicKeyUsagePageEnabled = false, want true")
+	}
+	if !response.PublicImageStudioPageEnabled {
+		t.Fatal("PUT response PublicImageStudioPageEnabled = false, want true")
+	}
+	if response.PublicAccountPortalPageEnabled {
+		t.Fatal("PUT response PublicAccountPortalPageEnabled = true, want false")
+	}
+
+	persisted, err := db.GetSystemSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GetSystemSettings: %v", err)
+	}
+	if persisted == nil || !persisted.PublicKeyUsagePageEnabled {
+		t.Fatal("stored PublicKeyUsagePageEnabled = false, want true")
+	}
+}
+
+// TestUpdateSettingsResponseCoversReadSettingsFields 保证 PUT 与 GET 的响应字段集一致。
+// 前端「设置」页用 PUT 响应整体覆盖本地表单，任何只在 GET 里回填的字段都会在保存后被
+// 静默清空，并在下一次保存时写回（#663 的公开门户开关就是这样被关掉的）。
+func TestUpdateSettingsResponseCoversReadSettingsFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousRuntime := proxy.CurrentRuntimeSettings()
+	t.Cleanup(func() { proxy.ApplyRuntimeSettings(previousRuntime) })
+
+	db := newTestAdminDB(t)
+	tc := cache.NewMemory(4)
+	t.Cleanup(func() { _ = tc.Close() })
+
+	settings := defaultBootstrapSettings()
+	if err := db.UpdateSystemSettings(context.Background(), settings); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+	store := auth.NewStore(db, tc, settings)
+	t.Cleanup(store.Stop)
+	proxy.ApplyRuntimeSettingsFromSystem(settings)
+	handler := NewHandler(store, db, tc, proxy.NewRateLimiter(settings.GlobalRPM), "admin-secret")
+
+	readRecorder := httptest.NewRecorder()
+	readCtx, _ := gin.CreateTestContext(readRecorder)
+	readCtx.Request = httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
+	handler.GetSettings(readCtx)
+	if readRecorder.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d body=%s", readRecorder.Code, http.StatusOK, readRecorder.Body.String())
+	}
+
+	writeRecorder := httptest.NewRecorder()
+	writeCtx, _ := gin.CreateTestContext(writeRecorder)
+	writeCtx.Request = httptest.NewRequest(http.MethodPut, "/api/admin/settings", strings.NewReader(`{"site_name":"Field Coverage Test"}`))
+	writeCtx.Request.Header.Set("Content-Type", "application/json")
+	handler.UpdateSettings(writeCtx)
+	if writeRecorder.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want %d body=%s", writeRecorder.Code, http.StatusOK, writeRecorder.Body.String())
+	}
+
+	var readBody, writeBody map[string]json.RawMessage
+	if err := json.Unmarshal(readRecorder.Body.Bytes(), &readBody); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if err := json.Unmarshal(writeRecorder.Body.Bytes(), &writeBody); err != nil {
+		t.Fatalf("decode PUT response: %v", err)
+	}
+	for key := range readBody {
+		if _, ok := writeBody[key]; !ok {
+			t.Fatalf("PUT /api/admin/settings response is missing read field %q; the Settings page would overwrite it with a zero value", key)
+		}
 	}
 }

@@ -220,7 +220,7 @@ func TestFallbackQueueWaitsBelowThreshold(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	go func() {
-		account, _, _ := handler.nextFallbackAwareAccountWithGuard(ctx, state, "queue-test", 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard)
+		account, _, _, _ := handler.nextFallbackAwareAccountWithGuard(ctx, state, "queue-test", 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard)
 		selected <- selection{account: account}
 	}()
 	waitForFallbackQueueDepth(t, store, 1)
@@ -262,7 +262,7 @@ func TestFallbackQueueBypassesAtThreshold(t *testing.T) {
 	pool := newFallbackQueueTestPool(store, 1)
 	handler := &Handler{store: store, fallbackPool: pool}
 	state := handler.newFallbackRouteState(nil)
-	account, _, _ := handler.nextFallbackAwareAccountWithGuard(context.Background(), state, "queue-bypass", 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard)
+	account, _, _, _ := handler.nextFallbackAwareAccountWithGuard(context.Background(), state, "queue-bypass", 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard)
 	if account == nil || !account.IsExternalFallback() {
 		t.Fatal("new request did not bypass the local queue at the configured threshold")
 	}
@@ -298,7 +298,7 @@ func TestFallbackSpillsImmediatelyWhenAffinityAccountIsFull(t *testing.T) {
 	state := handler.newFallbackRouteState(nil)
 
 	started := time.Now()
-	account, _, _ := handler.nextFallbackAwareAccountWithGuard(
+	account, _, _, _ := handler.nextFallbackAwareAccountWithGuard(
 		context.Background(), state, affinityKey, 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard,
 	)
 	if account == nil || !account.IsExternalFallback() {

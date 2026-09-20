@@ -59,7 +59,7 @@ func durationFromEnv(key string, fallback time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil || d < 0 {
-		log.Printf("[CodexTransport] %s=%q 非法，沿用默认 %s", key, raw, fallback)
+		log.Printf("[Config] %s=%q 非法，沿用默认 %s", key, raw, fallback)
 		return fallback
 	}
 	return d
@@ -578,6 +578,8 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	// 指纹收敛在 WS/HTTP 分叉前统一改写请求体，两条上游路径共享结果；请求头侧的
 	// 收敛（ApplyCodexFingerprintHeaders）从同一份「账号 + 下游头」推导，取值一致。
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
+	// 账号绑定时区：改写 environment_context 的时区/日期，与指纹收敛一样在分叉前统一处理。
+	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
 	// lite 信号收敛：签名在 payload 规则改写后采集（规则可注入/删除 WS 标记，改写
 	// 前采集会让注入失效、删除被回填），模型也已被入口映射/规则定稿——已知不支持
 	// lite 的模型带信号上游必 400，发出前剥离。
@@ -591,6 +593,14 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if account.IsCodexAgentIdentity() {
 		wantWebsocket = false
 	}
+	telemetryAttempt := beginCodexTelemetry(codexTelemetryRequest{
+		account: account, body: requestBody, sessionID: sessionID, proxyOverride: proxyOverride,
+		apiKey: apiKey, deviceCfg: deviceCfg, headers: headers,
+	})
+	defer func() { telemetryAttempt.observeResult(upstreamResponse, upstreamErr) }()
+	// 凭据级 turn state 强制注入：模型已由入口映射/规则定稿，传输方式也已定。
+	// 未配置的账号这里是空操作。
+	ctx, requestBody, headers = prepareCodexTurnStateInjection(ctx, account, requestBody, headers, wantWebsocket && WebsocketExecuteFunc != nil)
 	poolRouteKey := ""
 	if wantWebsocket {
 		sessionID = strings.TrimSpace(sessionID)
@@ -710,14 +720,10 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	// requestBody——它们解析 JSON，拿到压缩帧只会静默失配。
 	outboundBody, contentEncoding := CompressCodexRequestBody(requestBody)
 
-	// Resin 反向代理模式：改写 URL，使用标准 HTTP 客户端
-	var client *http.Client
-	if IsResinEnabled() {
-		endpoint = BuildReverseProxyURL(endpoint)
-		client = getResinHTTPClient(account)
-	} else {
-		client = getPooledClient(account, proxyURL)
-	}
+	// 出口链路统一由 ResolveCodexEgress 决定(Resin > 代理 > 直连,见 egress.go)。
+	egress := ResolveCodexEgress(account, endpoint, proxyURL)
+	endpoint = egress.URL
+	client := egress.Client()
 
 	send := func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(outboundBody))
@@ -726,7 +732,13 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		}
 
 		// ==================== 请求头（伪装 Codex CLI） ====================
+		// Outbound turn-state order: Guard (caller) → auto template Apply →
+		// account custom headers → manual credential inject last (ops override).
+		// 292 模板替换兜底：即使调用方漏了 Apply，这里仍按 body.model 改写一次。
+		ApplyCodexTurnStateTemplate(ctx, headers, account, strings.TrimSpace(gjson.GetBytes(requestBody, "model").String()))
 		applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers)
+		// 凭据级 turn state 注入在账号自定义头之后落定：自定义头与自动模板都不该顶掉它。
+		applyCodexTurnStateInjectionHeader(ctx, req.Header)
 		// Content-Encoding 在通用头装配之后设置：真实客户端也是在编码完成时才补这个头
 		// （codex-rs/http-client/src/request.rs prepare_encoded_json），且账号自定义头
 		// 不该有能力声明一个与实际字节不符的编码。
@@ -736,11 +748,8 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		// routing hint 由网关按最终出站 body 合成，须在账号自定义头之后设置。
 		ApplyCodexRoutingHint(req.Header, account, requestBody)
 
-		// Resin 反代：注入账号身份头
-		if IsResinEnabled() {
-			req.Header.Set("X-Resin-Account", ResinAccountID(account))
-		}
-		logCodexFingerprintDebug("http", account, proxyURL, req.Header)
+		egress.ApplyHeaders(req.Header)
+		logCodexFingerprintDebug("http", account, egress.DialProxyURL, req.Header)
 
 		if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(requestBody, "model").String()); err != nil {
 			return nil, err
@@ -803,13 +812,16 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	endpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses")
 	capabilityKey := openAIResponsesCodexMetadataCapabilityKey(account, baseURL)
 	clientMetadataMode := account.OpenAIResponsesCodexClientMetadataMode()
+	relayPassthrough := codexIdentityPassthroughActive(account, headers)
 	proxyInjectedMetadata := false
-	if clientMetadataMode == auth.CodexClientMetadataModeAlways {
-		requestBody, proxyInjectedMetadata = ensureCodexClientInstallationMetadata(requestBody, account, headers)
-	} else if clientMetadataMode == auth.CodexClientMetadataModeAuto {
-		_, required := openAIResponsesCodexMetadataRequired.Load(capabilityKey)
-		if required {
+	if !relayPassthrough {
+		if clientMetadataMode == auth.CodexClientMetadataModeAlways {
 			requestBody, proxyInjectedMetadata = ensureCodexClientInstallationMetadata(requestBody, account, headers)
+		} else if clientMetadataMode == auth.CodexClientMetadataModeAuto {
+			_, required := openAIResponsesCodexMetadataRequired.Load(capabilityKey)
+			if required {
+				requestBody, proxyInjectedMetadata = ensureCodexClientInstallationMetadata(requestBody, account, headers)
+			}
 		}
 	}
 
@@ -837,7 +849,8 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	if err != nil {
 		return nil, err
 	}
-	if account.IsExternalFallback() || clientMetadataMode == auth.CodexClientMetadataModeOff || clientMetadataMode == auth.CodexClientMetadataModeAlways {
+	// 透传模式保持客户端身份原样，不参与安装标识注入/重试改写。
+	if account.IsExternalFallback() || relayPassthrough || clientMetadataMode == auth.CodexClientMetadataModeOff || clientMetadataMode == auth.CodexClientMetadataModeAlways {
 		return resp, nil
 	}
 	if proxyInjectedMetadata {
@@ -916,7 +929,19 @@ func isCodexAccessRestrictedResponse(resp *http.Response) bool {
 	if err != nil {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()), "codex_access_restricted")
+	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()), "codex_access_restricted") {
+		return true
+	}
+	// 部分中转（sub2api 的 codex_cli_only、zzzcoding 等第三方网关）用
+	// {"error":{"message":"This account only allows Codex official clients",
+	// "type":"forbidden_error"}} 表达同样的官方客户端限制。
+	if !strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()), "forbidden_error") {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
+	return strings.Contains(msg, "official clients") ||
+		strings.Contains(msg, "codex client") ||
+		strings.Contains(msg, "codex 客户端")
 }
 
 // ExecuteOpenAIResponsesCompactRequest 向中转（OpenAI Responses API）账号发送
@@ -1012,6 +1037,9 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	// 必须用 prepareCodexResponsesLiteTransport 之后的 headers（它可能返回克隆），
 	// 与下方 applyCodexRequestHeaders 取同一份下游头，两处推导结果才一致。
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
+	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
+	// 凭据级 turn state 强制注入：compact 与普通轮共用同一条回合状态。
+	ctx, requestBody, headers = prepareCodexTurnStateInjection(ctx, account, requestBody, headers, false)
 
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	cacheKey := existingCacheKey
@@ -1023,28 +1051,25 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	// compact 端点
 	endpoint := CodexBaseURL + "/responses/compact"
 
-	// Resin 反向代理模式
-	var client *http.Client
-	if IsResinEnabled() {
-		endpoint = BuildReverseProxyURL(endpoint)
-		client = getResinHTTPClient(account)
-	} else {
-		client = getPooledClient(account, proxyURL)
-	}
+	// 出口链路统一由 ResolveCodexEgress 决定(Resin > 代理 > 直连,见 egress.go)。
+	egress := ResolveCodexEgress(account, endpoint, proxyURL)
+	endpoint = egress.URL
+	client := egress.Client()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
 	if err != nil {
 		return nil, ErrInternalError("创建请求失败", err)
 	}
 
+	// compact: same order — template Apply then manual credential inject last.
+	ApplyCodexTurnStateTemplate(ctx, headers, account, strings.TrimSpace(gjson.GetBytes(requestBody, "model").String()))
 	applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers)
+	applyCodexTurnStateInjectionHeader(ctx, req.Header)
 	// routing hint 由网关按最终出站 body 合成，须在账号自定义头之后设置。
 	ApplyCodexRoutingHint(req.Header, account, requestBody)
 
-	if IsResinEnabled() {
-		req.Header.Set("X-Resin-Account", ResinAccountID(account))
-	}
-	logCodexFingerprintDebug("compact", account, proxyURL, req.Header)
+	egress.ApplyHeaders(req.Header)
+	logCodexFingerprintDebug("compact", account, egress.DialProxyURL, req.Header)
 
 	if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(requestBody, "model").String()); err != nil {
 		return nil, err
@@ -1087,12 +1112,12 @@ func generatedCodexClientHeaders(account *auth.Account, settings RuntimeSettings
 	if settings.ClientCompatMode == ClientCompatModeAuto {
 		versionFloor = settings.CodexMinCLIVersion
 	}
-	if userAgent, version, ok := codexUserAgentFromConfig(settings.CodexUserAgentConfig, versionFloor); ok {
-		return userAgent, version
-	}
 	accountID := int64(0)
 	if account != nil {
 		accountID = account.ID()
+	}
+	if userAgent, version, ok := codexUserAgentFromConfig(settings.CodexUserAgentConfig, accountID, versionFloor); ok {
+		return userAgent, version
 	}
 	profile := ProfileForAccount(accountID)
 	userAgent := strings.TrimSpace(profile.UserAgent)
@@ -1156,7 +1181,11 @@ func resolveCodexOutboundClientHeaders(account *auth.Account, apiKey string, dev
 	if settings.ClientCompatMode == ClientCompatModeAuto {
 		versionFloor = settings.CodexMinCLIVersion
 	}
-	if userAgent, version, ok := codexUserAgentFromConfig(settings.CodexUserAgentConfig, versionFloor); ok {
+	configAccountID := int64(0)
+	if account != nil {
+		configAccountID = account.ID()
+	}
+	if userAgent, version, ok := codexUserAgentFromConfig(settings.CodexUserAgentConfig, configAccountID, versionFloor); ok {
 		return userAgent, version, true
 	}
 	effectiveVersion := effectiveLatestCodexCLIVersion()
@@ -1227,7 +1256,11 @@ func applyCodexRequestHeaders(req *http.Request, account *auth.Account, accessTo
 	if version != "" {
 		req.Header.Set("Version", version)
 	}
-	if originator := strings.TrimSpace(downstreamHeaders.Get("Originator")); !usedGeneratedHeaders && originator != "" && IsCodexOfficialClientByHeaders("", originator) {
+	// Originator 必须与出站 UA 的客户端前缀一致：网关自行生成 UA 时跟随生成结果
+	// （模拟 "Codex Desktop" 就发 "Codex Desktop"），透传官方客户端时沿用下游值。
+	if usedGeneratedHeaders {
+		req.Header.Set("Originator", CodexOriginatorForGeneratedUserAgent(userAgent))
+	} else if originator := strings.TrimSpace(downstreamHeaders.Get("Originator")); originator != "" && IsCodexOfficialClientByHeaders("", originator) {
 		req.Header.Set("Originator", originator)
 	} else {
 		req.Header.Set("Originator", Originator)
@@ -1263,15 +1296,69 @@ func applyOpenAIResponsesRequestHeaders(req *http.Request, account *auth.Account
 	if req == nil {
 		return
 	}
-	userAgent, version, _ := resolveCodexOutboundClientHeaders(account, "", nil, headers)
+	passthrough := codexIdentityPassthroughActive(account, headers)
+	userAgent := ""
+	version := ""
+	var usedGenerated bool
+	if passthrough {
+		// 完全透传：下游声明什么身份就用什么身份，不做生成/改写。
+		userAgent = strings.TrimSpace(headers.Get("User-Agent"))
+		version = firstNonEmptyHeader(headers, "Version", "")
+		if userAgent == "" {
+			userAgent = defaultCodexCLIUserAgent
+		}
+		if version == "" {
+			version = codexVersionFromUserAgent(userAgent, effectiveLatestCodexCLIVersion())
+		}
+	} else {
+		userAgent, version, usedGenerated = resolveCodexOutboundClientHeaders(account, "", nil, headers)
+	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("User-Agent", userAgent)
 	if version != "" {
 		req.Header.Set("Version", version)
+		// 部分中转只放行官方 Codex 客户端，按 x-codex-app-version 判定
+		// （见 cockpit-tools issue #1892：不带该头直接 403 forbidden_error）。
+		req.Header.Set("x-codex-app-version", version)
 	}
-	if headers != nil {
+	// Originator 与出站 UA 的客户端前缀保持一致：生成 UA 时跟随生成结果
+	// （模拟 "Codex Desktop" 就发 "Codex Desktop"）。
+	if passthrough {
+		if originator := strings.TrimSpace(headers.Get("Originator")); originator != "" {
+			req.Header.Set("Originator", originator)
+		} else {
+			req.Header.Set("Originator", Originator)
+		}
+	} else if usedGenerated {
+		req.Header.Set("Originator", CodexOriginatorForGeneratedUserAgent(userAgent))
+	} else {
+		req.Header.Set("Originator", Originator)
+	}
+	if passthrough {
+		// 透传模式把官方客户端身份原样转发给中转：白名单 x-codex-* 头与会话头
+		// 均来自下游，sub2api 等 codex_cli_only 网关按这些指纹判定官方客户端。
+		applyCodexAllowedForwardHeaders(req, headers)
+		if strings.TrimSpace(req.Header.Get(codexBetaFeaturesHeader)) == "" {
+			req.Header.Set(codexBetaFeaturesHeader, defaultCodexBetaFeatures)
+		}
+		if v := strings.TrimSpace(headers.Get("session-id")); v != "" {
+			req.Header.Set("session-id", v)
+		}
+		if v := strings.TrimSpace(headers.Get("thread-id")); v != "" {
+			req.Header.Set("thread-id", v)
+		}
+	}
+	// Preserve legacy relay continuation headers unless the operator explicitly
+	// selected the new off mode. External fallback remains verbatim.
+	explicitIdentityOff := false
+	if account != nil {
+		account.Mu().RLock()
+		explicitIdentityOff = account.CodexPassthroughMode == auth.CodexPassthroughModeOff
+		account.Mu().RUnlock()
+	}
+	if headers != nil && (!explicitIdentityOff || account.IsExternalFallback()) {
 		applyCodexAllowedForwardHeaders(req, headers)
 		for _, key := range []string{
 			"OpenAI-Organization", "OpenAI-Project", "Idempotency-Key", "OpenAI-Beta",
@@ -1282,8 +1369,40 @@ func applyOpenAIResponsesRequestHeaders(req *http.Request, account *auth.Account
 			}
 		}
 	}
+	if headers != nil {
+		for _, key := range []string{"OpenAI-Organization", "OpenAI-Project", "Idempotency-Key", codexResponsesLiteHeader} {
+			if value := firstNonEmptyHeader(headers, key, ""); value != "" {
+				req.Header.Set(key, value)
+			}
+		}
+	}
 	applyAccountCustomHeaders(req, account)
 	RecordUpstreamUserAgent(req.Context(), req.Header.Get("User-Agent"))
+}
+
+// codexIdentityPassthroughActive 判断 OpenAI Responses 中转账号是否开启
+// Codex 身份透传（见 auth.CodexPassthroughMode）：
+//   - always：无论下游是谁都原样转发其身份；
+//   - auto：仅下游已携带官方 Codex 客户端身份（UA/Originator）时透传；
+//   - off：不透传，保持默认的生成/兜底身份（默认值，升级后行为不变）。
+func codexIdentityPassthroughActive(account *auth.Account, headers http.Header) bool {
+	if account == nil {
+		return false
+	}
+	mode := account.OpenAIResponsesCodexPassthroughMode()
+	if mode == auth.CodexPassthroughModeAlways {
+		return true
+	}
+	if mode != auth.CodexPassthroughModeAuto {
+		return false
+	}
+	if headers == nil {
+		return false
+	}
+	return IsCodexOfficialClientByHeaders(
+		strings.TrimSpace(headers.Get("User-Agent")),
+		strings.TrimSpace(headers.Get("Originator")),
+	)
 }
 
 const downstreamAffinityHeader = "X-Codex2API-Affinity-Key"

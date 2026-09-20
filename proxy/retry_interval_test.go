@@ -21,7 +21,7 @@ import (
 
 func newRetryTestHandler(t *testing.T) (*Handler, *auth.Store) {
 	t.Helper()
-	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4", MaxRetries: 2})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.5", MaxRetries: 2})
 	t.Cleanup(store.Stop)
 	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 	return handler, store
@@ -359,7 +359,7 @@ func runWSTransportRetryScenario(t *testing.T, policy string) (first, second int
 	}
 	defer conn.Close()
 
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hello"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.5","input":"hello"}`)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -452,7 +452,7 @@ func TestResponsesWebSocketUnlimitedRetryStopsAfterClientClose(t *testing.T) {
 		}
 		t.Fatalf("dial websocket failed: %v", err)
 	}
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hello"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.5","input":"hello"}`)); err != nil {
 		_ = conn.Close()
 		t.Fatalf("write request: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestResponsesWebSocketInboundOverflowCancelsActiveTurn(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"first"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.5","input":"first"}`)); err != nil {
 		t.Fatalf("write first request: %v", err)
 	}
 	select {
@@ -538,7 +538,7 @@ func TestResponsesWebSocketInboundOverflowCancelsActiveTurn(t *testing.T) {
 		t.Fatal("timed out waiting for active upstream turn")
 	}
 	for i := 0; i <= responsesWSInboundQueueCapacity; i++ {
-		err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"queued"}`))
+		err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.5","input":"queued"}`))
 		if err != nil {
 			// The final write may race with the server closing immediately after
 			// observing the overflowing frame. Earlier failures are unexpected.
@@ -609,7 +609,7 @@ func TestResponsesWSReadPumpAllowsRealtimeBurst(t *testing.T) {
 	}()
 
 	frames := [][]byte{
-		[]byte(`{"type":"session.update","session":{"model":"gpt-5.4"}}`),
+		[]byte(`{"type":"session.update","session":{"model":"gpt-5.5"}}`),
 		[]byte(`{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[]}}`),
 		[]byte(`{"type":"response.create","response":{}}`),
 	}

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -58,7 +59,7 @@ func TestFallbackReasonsForWaitAndOversize(t *testing.T) {
 	state := h.newFallbackRouteState(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	account, _, _ := h.nextFallbackAwareAccountWithGuard(ctx, state, "unbound", 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard)
+	account, _, _, _ := h.nextFallbackAwareAccountWithGuard(ctx, state, "unbound", 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard)
 	if account != nil {
 		store.Release(account)
 		t.Fatal("expected wait to end without an account")
@@ -78,5 +79,17 @@ func TestFallbackReasonsForWaitAndOversize(t *testing.T) {
 	state.activateAfterRetryBudget(10, 10)
 	if state.reason != fallbackReasonOversizedRequest {
 		t.Fatalf("handoff reason changed to %q", state.reason)
+	}
+}
+
+func TestFallbackSelectionPreservesCanceledContext(t *testing.T) {
+	store := newFallbackQueueTestStore()
+	defer store.Stop()
+	h := &Handler{store: store, fallbackPool: newFallbackQueueTestPool(store, 0)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	account, _, _, err := h.nextFallbackAwareAccountWithGuard(ctx, h.newFallbackRouteState(nil), "canceled", 0, newRetryAccountExclusions(), nil, auth.DispatchPolicyStandard)
+	if account != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("account=%v err=%v", account, err)
 	}
 }

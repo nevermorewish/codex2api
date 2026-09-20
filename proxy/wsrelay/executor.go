@@ -137,22 +137,24 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 		return nil, fmt.Errorf("构建 WebSocket URL 失败: %w", err)
 	}
 
-	// Resin 反向代理：改写 WS URL 为 Resin 反代地址
-	if proxy.IsResinEnabled() {
-		wsURL = proxy.BuildWebSocketURL(wsURL)
-	}
+	// 出口链路统一由 ResolveCodexWebsocketEgress 决定(Resin > 代理 > 直连):
+	// Resin 模式下 WS 地址改写为反代路径,拨号侧(createConnection)同样按它跳过代理。
+	egress := proxy.ResolveCodexWebsocketEgress(account, wsURL, effectiveProxyURL(account, proxyOverride))
+	wsURL = egress.URL
 
 	// 准备请求头
-	headers := e.prepareWebsocketHeaders(accessToken, account, accountIDStr, headerSessionID, apiKey, deviceCfg, ginHeaders, wsBody)
+	// Outbound turn-state order (WS handshake): Guard foreign echo → auto
+	// template Apply (if setting on) → manual credential inject last (ops override).
+	affinityKey := proxy.CodexTurnStateAffinityKeyFromContext(ctx)
+	headers := e.prepareWebsocketHeaders(ctx, accessToken, account, accountIDStr, headerSessionID, apiKey, deviceCfg, ginHeaders, wsBody, affinityKey)
+	// 凭据级 turn state 注入在 Guard/模板 Apply 与账号自定义头之后落定（帧体已由 proxy.ExecuteRequest 写入）。
+	proxy.ApplyCodexTurnStateInjectionHeader(ctx, headers)
 	// Record the attempted handshake UA immediately so failed handshakes are
 	// still auditable. A reused connection replaces this below with the UA that
 	// was actually sent when that connection was established.
 	proxy.RecordUpstreamUserAgent(ctx, headers.Get("User-Agent"))
 
-	// Resin 反代：注入账号身份头
-	if proxy.IsResinEnabled() {
-		headers.Set("X-Resin-Account", proxy.ResinAccountID(account))
-	}
+	egress.ApplyHeaders(headers)
 
 	// 获取或创建连接。无显式会话的请求（stateless 连接 ID）在确定性 cache key
 	// 的槽位池内复用连接，避免持续高 RPM 下逐请求握手触发上游限流。
@@ -172,7 +174,9 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	// 续链亲和：上游无服务端存储时，previous_response_id 的上下文只存活在产出
 	// 该响应的那条 WS 连接里。带续链 ID 的请求优先取回原连接（独占成功才用），
 	// 否则落到随机槽位会触发上游 "previous response not found"。
-	poolSessionID := proxy.ResolveCodexWebsocketTransportSessionKey(sessionID, ginHeaders)
+	// 同线程上的后台副请求（request_kind=memory、guardian 子代理）另成一道，
+	// 不与用户在飞轮次同键排队；Desktop 走 HTTP 时元数据只在请求体里。
+	poolSessionID := proxy.ResolveCodexWebsocketTransportSessionKeyWithBody(sessionID, ginHeaders, wsBody)
 	var wc *WsConnection
 	var pr *PendingRequest
 	var err2 error
@@ -186,6 +190,12 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	if baseKey == "" && headerSessionID != sessionID {
 		baseKey = headerSessionID
 	}
+	// Handshake headers (including X-Codex-Turn-State from template Apply) freeze at
+	// dial time. Isolate reusable slots by the same model string used for template
+	// lookup so a later model cannot reuse a connection whose turn-state was frozen
+	// for a different template identity. prompt_cache_key / session header isolation
+	// comments above are unchanged.
+	baseKey = reusablePoolBaseKeyWithModel(baseKey, gjson.GetBytes(wsBody, "model").String())
 	if wc == nil {
 		if proxy.IsStatelessWebsocketSessionID(sessionID) && baseKey != "" && !statelessOneShotEnabled() {
 			wc, pr, poolSessionID, err2 = e.manager.AcquireReusableConnection(ctx, account, wsURL, baseKey, sessionID, statelessConnectionSlots(), headers, proxyOverride)
@@ -314,8 +324,23 @@ func (e *Executor) prepareWebsocketBody(body []byte, sessionID string) []byte {
 	return wsBody
 }
 
-// prepareWebsocketHeaders 准备 WebSocket 请求头
-func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Account, accountID, sessionID, apiKey string, deviceCfg *proxy.DeviceProfileConfig, ginHeaders http.Header, wsBody []byte) http.Header {
+
+// reusablePoolBaseKeyWithModel isolates reusable WS slots by the model string used
+// for turn-state template lookup. Handshake headers freeze at dial time; without
+// this, a later model can reuse a connection whose X-Codex-Turn-State was frozen
+// for a different template identity.
+func reusablePoolBaseKeyWithModel(baseKey, model string) string {
+	baseKey = strings.TrimSpace(baseKey)
+	model = strings.TrimSpace(model)
+	if baseKey == "" || model == "" {
+		return baseKey
+	}
+	return baseKey + "|m:" + model
+}
+
+// prepareWebsocketHeaders 准备 WebSocket 请求头。
+// affinityKey 用于 turn-state 跨账号回声守卫；空串时守卫为空操作。
+func (e *Executor) prepareWebsocketHeaders(ctx context.Context, accessToken string, account *auth.Account, accountID, sessionID, apiKey string, deviceCfg *proxy.DeviceProfileConfig, ginHeaders http.Header, wsBody []byte, affinityKey string) http.Header {
 	headers := http.Header{}
 
 	// 认证头
@@ -349,8 +374,11 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 		headers.Set("X-Codex-Beta-Features", "remote_compaction_v2")
 	}
 
-	// Originator
-	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); !usedGeneratedHeaders && originator != "" && proxy.IsCodexOfficialClientByHeaders("", originator) {
+	// Originator：与 HTTP 路径同规则——生成 UA 时跟随生成的客户端前缀，
+	// 透传官方客户端时沿用下游值。
+	if usedGeneratedHeaders {
+		headers.Set("Originator", proxy.CodexOriginatorForGeneratedUserAgent(headers.Get("User-Agent")))
+	} else if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" && proxy.IsCodexOfficialClientByHeaders("", originator) {
 		headers.Set("Originator", originator)
 	} else {
 		headers.Set("Originator", proxy.Originator)
@@ -362,6 +390,10 @@ func (e *Executor) prepareWebsocketHeaders(accessToken string, account *auth.Acc
 			headers.Set(name, value)
 		}
 	}
+	// 跨账号回声守卫必须在 292 模板替换/注入之前（与 HTTP handler 同序）。
+	proxy.GuardCodexTurnStateEcho(affinityKey, account, headers)
+	// 292 模板替换/注入：在透传+守卫之后、指纹收敛之前。
+	proxy.ApplyCodexTurnStateTemplate(ctx, headers, account, strings.TrimSpace(gjson.GetBytes(wsBody, "model").String()))
 	// 指纹收敛：在透传之后覆盖客户端原值，在账号自定义头之前保留运维覆盖优先级。
 	// 握手头是逐连接冻结的，复用连接沿用建连时的取值；收敛值按账号恒定，正好与
 	// 这一语义相容。off 档为空操作。
@@ -788,6 +820,8 @@ func websocketResponseToHTTP(ctx context.Context, wsResp *WsResponse, statusCode
 		defer wsResp.Close()
 
 		err := wsResp.ReadStream(func(data []byte) bool {
+			// 上游回带的 turn state 只在帧里（握手头是建连时的旧快照），逐帧观测记进追踪。
+			proxy.ObserveCodexTurnStateFrame(ctx, data)
 			// SSE 的 data: 负载以换行为界，含换行的帧（如 pretty-printed JSON）
 			// 必须先压缩成单行，否则下游解析器只能读到第一行。
 			if bytes.IndexByte(data, '\n') >= 0 {

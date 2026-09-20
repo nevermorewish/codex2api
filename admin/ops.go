@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codex2api/cache"
 	"github.com/codex2api/proxy"
+	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 )
 
@@ -341,6 +343,7 @@ func responseCacheOpsResponseFromSnapshot(snapshot proxy.ResponseCacheOpsSnapsho
 		lastSyncAt = snapshot.LastConfigSyncAt.Format(time.RFC3339Nano)
 	}
 	return opsResponseCache{
+		BackendWriteFailures:   snapshot.Stats.BackendWriteFailures,
 		EffectiveConfig:        responseCacheConfigOpsResponse(snapshot.EffectiveConfig),
 		AppliedConfig:          responseCacheConfigOpsResponse(snapshot.AppliedConfig),
 		Entries:                snapshot.Stats.Entries,
@@ -397,17 +400,15 @@ func (h *Handler) GetOpsOverview(c *gin.Context) {
 	var redisStale uint32
 	var redisPoolSize int
 	var redisUsage float64
+	var poolStats cache.PoolStats
 	if h.cache != nil {
-		poolStats := h.cache.Stats()
+		poolStats = h.cache.Stats()
 		redisTotal = poolStats.TotalConns
 		redisIdle = poolStats.IdleConns
 		redisStale = poolStats.StaleConns
 		redisPoolSize = h.cache.PoolSize()
 
-		activeRedis := int(redisTotal) - int(redisIdle) - int(redisStale)
-		if activeRedis < 0 {
-			activeRedis = 0
-		}
+		activeRedis := poolStats.InUse()
 		if redisPoolSize > 0 {
 			redisUsage = float64(activeRedis) / float64(redisPoolSize) * 100
 		}
@@ -420,6 +421,9 @@ func (h *Handler) GetOpsOverview(c *gin.Context) {
 	activeRequests, totalRuntimeRequests := h.store.RuntimeRequestCounts()
 
 	c.JSON(200, opsOverviewResponse{
+		ResponseCacheWriter: proxy.GetResponseCacheWriterSnapshot(),
+		RequestMemory:       security.GetRequestMemorySnapshot(),
+		APIKeyAuthCache:     h.authCacheProxy.APIKeyAuthCacheStats(),
 		UpdatedAt:      time.Now().Format(time.RFC3339),
 		UptimeSeconds:  int64(time.Since(h.startedAt).Seconds()),
 		DatabaseDriver: h.databaseDriver,
@@ -450,6 +454,10 @@ func (h *Handler) GetOpsOverview(c *gin.Context) {
 			UsagePercent: dbUsage,
 		},
 		Redis: opsRedisResponse{
+			WaitCount:       poolStats.WaitCount,
+			WaitDurationNs:  poolStats.WaitDurationNs,
+			Timeouts:        poolStats.Timeouts,
+			PendingRequests: poolStats.PendingRequests,
 			Healthy:      redisHealthy,
 			TotalConns:   redisTotal,
 			IdleConns:    redisIdle,

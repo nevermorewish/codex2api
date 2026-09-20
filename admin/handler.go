@@ -46,17 +46,25 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
-	riskControl       *riskcontrol.Service
-	store             *auth.Store
-	modelRefreshFuncs map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
-	cache             cache.TokenCache
-	db                *database.DB
-	cacheCfgStore     responseCacheSettingsStore
-	rateLimiter       *proxy.RateLimiter
-	systemUpdate      *systemUpdater
-	systemUpdateOnce  sync.Once
-	refreshAccount    func(context.Context, int64) error
-	probeUsage        func(context.Context, *auth.Account) error
+	riskControl        *riskcontrol.Service
+	qualityTestContext context.Context
+	qualityTestWG      sync.WaitGroup
+	store              *auth.Store
+	modelRefreshFuncs  map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
+	proxyRiskJobsMu    sync.RWMutex
+	proxyRiskJobs      map[string]*proxyRiskScoringJob
+	cache              cache.TokenCache
+	authCacheProxy     *proxy.Handler
+	db                 *database.DB
+	cacheCfgStore      responseCacheSettingsStore
+	rateLimiter        *proxy.RateLimiter
+	systemUpdate       *systemUpdater
+	systemUpdateOnce   sync.Once
+	refreshAccount     func(context.Context, int64) error
+	probeUsage         func(context.Context, *auth.Account) error
+
+	codexUsageRefreshRunning atomic.Bool
+
 	// executeClaudeUsageProbe is injectable for tests; production uses the
 	// provider-native Anthropic Messages request directly.
 	executeClaudeUsageProbe func(context.Context, *auth.Account, []byte) (*http.Response, error)
@@ -75,10 +83,12 @@ type Handler struct {
 	// last/in-flight 避免翻页或前端重试把同一号打爆上游，failedAt 给持续
 	// 失败的账号更长的冷却，syncedOnce 记录「成功同步过但上游没有数据」
 	// （官方统计有滞后），让 page-stats 下发显式空态而不是无限触发回补。
-	whamDailyBackfillMu        sync.Mutex
-	whamDailyBackfillLast      map[int64]time.Time
-	whamDailyBackfillInFlight  map[int64]struct{}
-	whamDailyBackfillFailedAt  map[int64]time.Time
+	whamDailyBackfillMu       sync.Mutex
+	whamDailyBackfillLast     map[int64]time.Time
+	whamDailyBackfillInFlight map[int64]struct{}
+	whamDailyBackfillFailedAt map[int64]time.Time
+	// patWhoAmIFailedAt 记录 PAT 账号 whoami 工作区补全最近一次失败时间（退避用）。
+	patWhoAmIFailedAt          map[int64]time.Time
 	whamDailySyncedOnce        map[int64]struct{}
 	whamDailyDeepSynced        map[int64]whamDailyDeepState
 	recordAccountEvent         func(int64, string, string)
@@ -900,6 +910,9 @@ func (h *Handler) deleteRuntimeCache(ctx context.Context, namespace, key string)
 }
 
 func (h *Handler) invalidateAPIKeyRuntimeCaches(ctx context.Context, apiKey string) {
+	if h.authCacheProxy != nil {
+		h.authCacheProxy.InvalidateAPIKeyAuthCache(ctx)
+	}
 	h.deleteRuntimeCache(ctx, adminAPIKeyCountNamespace, "all")
 	if strings.TrimSpace(apiKey) != "" {
 		h.deleteRuntimeCache(ctx, adminAPIKeyCacheNamespace, apiKey)
@@ -907,14 +920,21 @@ func (h *Handler) invalidateAPIKeyRuntimeCaches(ctx context.Context, apiKey stri
 }
 
 func (h *Handler) getUsageStatsCached(ctx context.Context, rangeStart, rangeEnd time.Time, channel string) (*database.UsageStats, error) {
+	return h.getUsageStatsFilteredCached(ctx, rangeStart, rangeEnd, channel, database.UsageLogFilter{})
+}
+
+// getUsageStatsFilteredCached 带维度筛选(账号/密钥/模型/端点/搜索等)的完整统计。
+// 维度指纹并入缓存键:同一筛选组合在 30 秒桶内复用,不同组合互不串味。
+func (h *Handler) getUsageStatsFilteredCached(ctx context.Context, rangeStart, rangeEnd time.Time, channel string, dim database.UsageLogFilter) (*database.UsageStats, error) {
 	cacheKey := ""
 	cacheTTL := adminUsageStatsCacheTTL
-	if rangeStart.IsZero() && rangeEnd.IsZero() && channel == "" {
+	dimKey := usageStatsDimensionCacheKey(dim)
+	if rangeStart.IsZero() && rangeEnd.IsZero() && channel == "" && dimKey == "" {
 		cacheKey = "global"
 	} else if !rangeStart.IsZero() && !rangeEnd.IsZero() {
 		// 仪表盘每 15 秒刷新时 start/end 也会随之平移。按 30 秒桶复用完整统计结果，
 		// 既保留累计、区间、模型和分项口径，又避免同一分钟内重复扫描百万级日志。
-		cacheKey = fmt.Sprintf("range:%d:%d:%s", rangeStart.Unix()/30, rangeEnd.Unix()/30, channel)
+		cacheKey = fmt.Sprintf("range:%d:%d:%s%s", rangeStart.Unix()/30, rangeEnd.Unix()/30, channel, dimKey)
 		cacheTTL = adminUsageRangeCacheTTL
 	}
 	if cacheKey != "" {
@@ -923,7 +943,7 @@ func (h *Handler) getUsageStatsCached(ctx context.Context, rangeStart, rangeEnd 
 			return &cached, nil
 		}
 	}
-	stats, err := h.db.GetUsageStats(ctx, rangeStart, rangeEnd, channel)
+	stats, err := h.db.GetUsageStatsFiltered(ctx, rangeStart, rangeEnd, channel, dim, true)
 	if err != nil {
 		return nil, err
 	}
@@ -933,20 +953,39 @@ func (h *Handler) getUsageStatsCached(ctx context.Context, rangeStart, rangeEnd 
 	return stats, nil
 }
 
+// usageStatsDimensionCacheKey 把维度筛选压成定长指纹(带前导冒号),无筛选时返回空串。
+// 搜索词可能很长且含任意字符,直接拼进缓存键既不稳妥也浪费,统一哈希。
+func usageStatsDimensionCacheKey(dim database.UsageLogFilter) string {
+	raw := dim.DimensionKey()
+	if raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return ":dim:" + hex.EncodeToString(sum[:8])
+}
+
 func (h *Handler) getUsageStatsSummaryCached(ctx context.Context, rangeStart, rangeEnd time.Time, channel string) (*database.UsageStats, error) {
+	return h.getUsageStatsSummaryFilteredCached(ctx, rangeStart, rangeEnd, channel, database.UsageLogFilter{})
+}
+
+func (h *Handler) getUsageStatsSummaryFilteredCached(ctx context.Context, rangeStart, rangeEnd time.Time, channel string, dim database.UsageLogFilter) (*database.UsageStats, error) {
 	cacheKey := "summary:global"
 	cacheTTL := adminUsageStatsCacheTTL
+	dimKey := usageStatsDimensionCacheKey(dim)
 	if !rangeStart.IsZero() && !rangeEnd.IsZero() {
-		cacheKey = fmt.Sprintf("summary:range:%d:%d:%s", rangeStart.Unix()/30, rangeEnd.Unix()/30, channel)
+		cacheKey = fmt.Sprintf("summary:range:%d:%d:%s%s", rangeStart.Unix()/30, rangeEnd.Unix()/30, channel, dimKey)
 		cacheTTL = adminUsageRangeCacheTTL
-	} else if channel != "" {
-		cacheKey += ":" + channel
+	} else {
+		if channel != "" {
+			cacheKey += ":" + channel
+		}
+		cacheKey += dimKey
 	}
 	var cached database.UsageStats
 	if h.getRuntimeJSON(ctx, adminUsageStatsCacheNamespace, cacheKey, &cached) {
 		return &cached, nil
 	}
-	stats, err := h.db.GetUsageStatsSummary(ctx, rangeStart, rangeEnd, channel)
+	stats, err := h.db.GetUsageStatsFiltered(ctx, rangeStart, rangeEnd, channel, dim, false)
 	if err != nil {
 		return nil, err
 	}
@@ -971,10 +1010,14 @@ func parseUsageChannel(c *gin.Context) string {
 	return ""
 }
 
+// SetAPIKeyAuthCacheHandler connects management changes to proxy cache invalidation.
+func (h *Handler) SetAPIKeyAuthCacheHandler(handler *proxy.Handler) { h.authCacheProxy = handler }
+
 // NewHandler 创建管理后台处理器
 func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *proxy.RateLimiter, adminSecretEnv string) *Handler {
 	handler := &Handler{
 		store:                store,
+		proxyRiskJobs:        make(map[string]*proxyRiskScoringJob),
 		cache:                tc,
 		db:                   db,
 		cacheCfgStore:        db,
@@ -1048,6 +1091,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	accountPortal.POST("/generate-auth-url", h.GenerateAccountPortalAuthURL)
 	accountPortal.POST("/submit-code", h.SubmitAccountPortalCode)
 
+	r.GET("/api/image-studio/quota", h.GetPortalImageQuota)
 	imageStudioPortal := r.Group("/api/image-studio")
 	imageStudioPortal.Use(h.imageStudioPortalAuthMiddleware())
 	imageStudioPortal.POST("/jobs", h.CreatePortalImageJob)
@@ -1063,6 +1107,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// 这两个端点必须注册在 adminAuthMiddleware 之外，否则会被 fail-closed 拦截。
 	r.GET("/api/admin/bootstrap-status", h.GetBootstrapStatus)
 	r.POST("/api/admin/bootstrap", h.PostBootstrap)
+	// Static, credential-free shell. Generated HTML is delivered by the parent via
+	// postMessage and remains in an opaque-origin sandbox, never stored by the server.
+	r.GET("/api/quality-test/preview", serveQualityTestPreview)
 
 	api := r.Group("/api/admin")
 	api.Use(h.adminAuthMiddleware())
@@ -1174,12 +1221,24 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/invite/plan", h.GetInviteGuidePlan)
 	api.POST("/accounts/invite/plan/probe", h.ProbeInviteGuidePlan)
 	api.GET("/accounts/:id/test", h.TestConnection)
+	api.GET("/accounts/:id/quality-test/options", h.QualityTestOptions)
+	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
+	api.GET("/quality-tests", h.ListQualityTests)
+	api.GET("/quality-tests/:id", h.GetQualityTest)
+	api.POST("/quality-tests/:id/cancel", h.CancelQualityTest)
+	api.GET("/quality-test-prompts", h.ListQualityTestPrompts)
+	api.POST("/quality-test-prompts", h.CreateQualityTestPrompt)
+	api.PATCH("/quality-test-prompts/:id", h.UpdateQualityTestPrompt)
+	api.DELETE("/quality-test-prompts/:id", h.DeleteQualityTestPrompt)
 	api.GET("/accounts/:id/usage", h.GetAccountUsage)
 	api.POST("/accounts/:id/usage/refresh", h.RefreshAccountUsage)
+	api.GET("/accounts/:id/subscription", h.GetAccountSubscription)
+	api.POST("/accounts/:id/subscription/refresh", h.RefreshAccountSubscription)
 	api.GET("/accounts/:id/auth-json", h.GetAccountAuthJSON)
 	api.PATCH("/accounts/:id/credit", h.UpdateAccountCredit)
 	api.POST("/accounts/batch-test", h.BatchTest)
 	api.POST("/accounts/batch-refresh", h.BatchRefreshAccounts)
+	api.POST("/accounts/batch-refresh-usage", h.BatchRefreshCodexUsage)
 	api.POST("/accounts/batch-delete", h.BatchDeleteAccounts)
 	api.POST("/accounts/batch-update", h.BatchUpdateAccounts)
 	api.POST("/accounts/batch-reset-status", h.BatchResetStatus)
@@ -1231,6 +1290,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
 	api.GET("/settings", h.GetSettings)
 	api.PUT("/settings", h.UpdateSettings)
+	api.GET("/settings/codex-user-agent/catalog", h.GetCodexUserAgentCatalog)
+	api.POST("/settings/codex-user-agent/preview", h.PreviewCodexUserAgent)
 	api.GET("/settings/claude-config", h.GetClaudeConfig)
 	api.PUT("/settings/claude-config", h.UpdateClaudeConfig)
 	api.POST("/settings/claude-config/cli-version/sync", h.SyncClaudeCLIVersion)
@@ -1248,6 +1309,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/prompt-filter/logs", h.ListPromptFilterLogs)
 	api.GET("/prompt-filter/logs/match", h.MatchPromptFilterLog)
 	api.DELETE("/prompt-filter/logs", h.ClearPromptFilterLogs)
+	api.GET("/prompt-filter/retention", h.GetPromptLogRetention)
+	api.PUT("/prompt-filter/retention", h.UpdatePromptLogRetention)
+	api.POST("/prompt-filter/retention/run", h.RunPromptLogRetentionNow)
 	api.GET("/prompt-policy/incidents", h.ListPromptPolicyIncidents)
 	api.DELETE("/prompt-policy/incidents", h.ClearPromptPolicyIncidents)
 	api.DELETE("/prompt-policy/incidents/:incident_id", h.DeletePromptPolicyIncident)
@@ -1285,6 +1349,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/prompt-filter/intelligence/candidates/:id/identity-updates/:evidence_id/apply", h.ApplyPromptIntelligenceIdentityUpdate)
 	api.POST("/prompt-filter/intelligence/candidates/:id/identity-updates/:evidence_id/rollback", h.RollbackPromptIntelligenceIdentityUpdate)
 	api.POST("/prompt-filter/intelligence/candidates/:id/draft", h.CreatePromptIntelligenceCandidateDraft)
+	api.POST("/prompt-filter/intelligence/candidates/:id/draft/suggest", h.SuggestPromptIntelligenceCandidateDraft)
 	api.POST("/prompt-filter/intelligence/candidates/:id/publish", h.PublishPromptIntelligenceCandidate)
 	api.POST("/prompt-filter/intelligence/candidates/:id/dismiss", h.DismissPromptIntelligenceCandidate)
 	api.GET("/models", h.ListModels)
@@ -1317,6 +1382,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/proxies/test", h.TestProxy)
 	api.POST("/proxies/test-all", h.TestAllProxies)
 	api.POST("/proxies/auto-balance", h.AutoBalanceProxies)
+	api.GET("/proxy-risk-scoring/profiles", h.ListProxyRiskScoringProfiles)
+	api.POST("/proxy-risk-scoring/profiles", h.CreateProxyRiskScoringProfile)
+	api.PATCH("/proxy-risk-scoring/profiles/:profile_id", h.UpdateProxyRiskScoringProfile)
+	api.DELETE("/proxy-risk-scoring/profiles/:profile_id", h.DeleteProxyRiskScoringProfile)
+	api.POST("/proxy-risk-scoring/profiles/:profile_id/test", h.TestProxyRiskScoringProfile)
+	api.POST("/proxies/risk-score", h.StartProxyRiskScoringJob)
+	api.GET("/proxies/risk-score/jobs/:job_id", h.GetProxyRiskScoringJob)
+	api.POST("/proxies/risk-score/jobs/:job_id/cancel", h.CancelProxyRiskScoringJob)
+	api.GET("/proxies/:id/risk-score", h.GetProxyRiskScore)
+	api.GET("/proxies/:id/risk-score/history", h.ListProxyRiskScoreHistory)
 
 	// OAuth 授权流程
 	api.POST("/oauth/generate-auth-url", h.GenerateOAuthURL)
@@ -1599,6 +1674,8 @@ func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
 // ==================== Accounts ====================
 
 type accountResponse struct {
+	CodexLastRefreshAt      string `json:"codex_last_refresh_at,omitempty"`
+	CodexRefreshError       string `json:"codex_refresh_error,omitempty"`
 	UpstreamRequestIDHeader string `json:"upstream_request_id_header"`
 	DetailLoaded            bool   `json:"detail_loaded,omitempty"`
 	ID                      int64  `json:"id"`
@@ -1611,11 +1688,14 @@ type accountResponse struct {
 	EffectiveWorkspaceID    string `json:"effective_workspace_id,omitempty"`
 	PlanType                string `json:"plan_type"`
 	SubscriptionExpiresAt   string `json:"subscription_expires_at,omitempty"`
-	Status                  string `json:"status"`
-	ErrorMessage            string `json:"error_message,omitempty"`
-	ATOnly                  bool   `json:"at_only"`
-	CreditEnabled           bool   `json:"credit_enabled"`
-	CreditSkipUsageWindow   bool   `json:"credit_skip_usage_window"`
+	// Subscription 服务端计算的订阅状态对象（业务状态 + 同步状态）；不跟踪订阅的
+	// 套餐（api/无到期时间的 free）为空。
+	Subscription          *auth.SubscriptionStatusView `json:"subscription,omitempty"`
+	Status                string                       `json:"status"`
+	ErrorMessage          string                       `json:"error_message,omitempty"`
+	ATOnly                bool                         `json:"at_only"`
+	CreditEnabled         bool                         `json:"credit_enabled"`
+	CreditSkipUsageWindow bool                         `json:"credit_skip_usage_window"`
 	// UsingCredits 是与 Status 并列的独立信号：用量窗口已打满但积分顶着，
 	// 状态仍是 active（可调度），前端据此在状态徽章旁并列一个「使用积分」徽章。
 	UsingCredits                  bool                        `json:"using_credits,omitempty"`
@@ -1646,6 +1726,7 @@ type accountResponse struct {
 	Models                        []string                    `json:"models,omitempty"`
 	ModelMapping                  string                      `json:"model_mapping,omitempty"`
 	CodexClientMetadataMode       string                      `json:"codex_client_metadata_mode,omitempty"`
+	CodexPassthroughMode          string                      `json:"codex_passthrough_mode,omitempty"`
 	CodexFingerprintMode          string                      `json:"codex_fingerprint_mode,omitempty"`
 	ClaudeFingerprintMode         string                      `json:"claude_fingerprint_mode,omitempty"`
 	ClaudeUserAgent               string                      `json:"claude_user_agent,omitempty"`
@@ -1656,6 +1737,9 @@ type accountResponse struct {
 	ClaudeVersionPolicyOverride   string                      `json:"claude_version_policy_override,omitempty"`
 	ClaudeClientVersionOverride   string                      `json:"claude_client_version_override,omitempty"`
 	Timezone                      string                      `json:"timezone,omitempty"`
+	CodexTurnState                string                      `json:"codex_turn_state,omitempty"`
+	CodexTurnStateModels          string                      `json:"codex_turn_state_models,omitempty"`
+	CodexTurnStateSetAt           string                      `json:"codex_turn_state_set_at,omitempty"`
 	CustomHeaders                 map[string]string           `json:"custom_headers,omitempty"`
 	HealthTier                    string                      `json:"health_tier"`
 	SchedulerScore                float64                     `json:"scheduler_score"`
@@ -1690,10 +1774,13 @@ type accountResponse struct {
 	UsagePercentSpark             *float64                    `json:"usage_percent_spark"`
 	RateLimitResetCredits         *int                        `json:"rate_limit_reset_credits"`
 	ApplicableResetCredits        *int                        `json:"applicable_reset_credits"`
+	CreditsValid                  bool                        `json:"credits_valid"`
 	CreditsBalance                *string                     `json:"credits_balance"`
 	CreditsHasCredits             *bool                       `json:"credits_has_credits"`
 	CreditsUnlimited              *bool                       `json:"credits_unlimited"`
 	CreditsOverageLimitReached    *bool                       `json:"credits_overage_limit_reached"`
+	CreditsSpendControlReached    *bool                       `json:"credits_spend_control_reached,omitempty"`
+	CreditsRateLimitReachedType   string                      `json:"credits_rate_limit_reached_type,omitempty"`
 	AutoPause5hThreshold          *float64                    `json:"auto_pause_5h_threshold"`
 	AutoPause7dThreshold          *float64                    `json:"auto_pause_7d_threshold"`
 	AutoPause5hDisabled           bool                        `json:"auto_pause_5h_disabled"`
@@ -2106,6 +2193,8 @@ type updateAccountSchedulerReq struct {
 	ClaudeVersionPolicy     json.RawMessage `json:"claude_version_policy"`
 	ClaudeClientVersion     json.RawMessage `json:"claude_client_version"`
 	Timezone                json.RawMessage `json:"timezone"`
+	CodexTurnState          json.RawMessage `json:"codex_turn_state"`
+	CodexTurnStateModels    json.RawMessage `json:"codex_turn_state_models"`
 }
 
 type accountSchedulerUpdate struct {
@@ -2130,6 +2219,8 @@ type accountSchedulerUpdate struct {
 	ClaudeVersionPolicy     database.OptionalString
 	ClaudeClientVersion     database.OptionalString
 	Timezone                database.OptionalString
+	CodexTurnState          database.OptionalString
+	CodexTurnStateModels    database.OptionalString
 	CredentialUpdates       map[string]interface{}
 }
 
@@ -2236,6 +2327,17 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	codexTurnStateField, err := parseOptionalStringField(req.CodexTurnState, "codex_turn_state", auth.ValidateCodexTurnState)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	codexTurnStateModelsField, err := parseOptionalStringField(req.CodexTurnStateModels, "codex_turn_state_models", auth.ValidateCodexTurnStateModels)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if codexTurnStateModelsField.Set {
+		codexTurnStateModelsField.Value = auth.NormalizeCodexTurnStateModels(codexTurnStateModelsField.Value)
+	}
 	if codexFingerprintMode.Set {
 		codexFingerprintMode.Value = auth.NormalizeCodexFingerprintMode(codexFingerprintMode.Value)
 	}
@@ -2266,7 +2368,20 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		credentialUpdates[auth.ClaudeClientVersionCredentialKey] = claudeClientVersion.Value
 	}
 	if timezoneField.Set {
-		credentialUpdates["timezone"] = strings.TrimSpace(timezoneField.Value)
+		credentialUpdates[auth.AccountTimezoneCredentialKey] = strings.TrimSpace(timezoneField.Value)
+	}
+	if codexTurnStateField.Set {
+		credentialUpdates[auth.CodexTurnStateCredentialKey] = codexTurnStateField.Value
+		// 时效起点默认随值一起刷新（批量接口拿不到逐账号旧值，只能按"换了新值"处理）；
+		// 单账号接口在值未变且已有起点时保留旧起点，见 refineCodexTurnStateSetAt。
+		setAt := ""
+		if codexTurnStateField.Value != "" {
+			setAt = time.Now().UTC().Format(time.RFC3339)
+		}
+		credentialUpdates[auth.CodexTurnStateSetAtCredentialKey] = setAt
+	}
+	if codexTurnStateModelsField.Set {
+		credentialUpdates[auth.CodexTurnStateModelsCredentialKey] = codexTurnStateModelsField.Value
 	}
 	if autoPause5hThreshold.Set {
 		credentialUpdates["auto_pause_5h_threshold"] = autoPause5hThreshold.Value
@@ -2327,6 +2442,8 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ClaudeVersionPolicy:     claudeVersionPolicy,
 		ClaudeClientVersion:     claudeClientVersion,
 		Timezone:                timezoneField,
+		CodexTurnState:          codexTurnStateField,
+		CodexTurnStateModels:    codexTurnStateModelsField,
 		CredentialUpdates:       credentialUpdates,
 	}, nil
 }
@@ -2369,6 +2486,9 @@ func validateAccountTimezone(value string) error {
 	if v == "" {
 		return nil
 	}
+	if strings.EqualFold(v, "Local") {
+		return fmt.Errorf("timezone must identify a fixed IANA location, not Local")
+	}
 	if _, err := time.LoadLocation(v); err != nil {
 		return fmt.Errorf("timezone must be a valid IANA timezone, e.g. Asia/Shanghai")
 	}
@@ -2383,8 +2503,24 @@ func validateCodexFingerprintMode(value string) error {
 	return errors.New("必须是 off、device、session 或 full")
 }
 
+// refineCodexTurnStateSetAt 让时效起点只在注入值真正换掉时重置：原样重提同一个值不
+// 重置（它还是上游那时候签发的那一个 state）；存量行没有起点时补一次，让倒计时能从
+// 这一刻开始走，而不是逼用户先清空再粘贴一遍。
+func refineCodexTurnStateSetAt(row *database.AccountRow, update accountSchedulerUpdate) {
+	if row == nil || !update.CodexTurnState.Set || update.CodexTurnState.Value == "" {
+		return
+	}
+	current := strings.TrimSpace(row.GetCredential(auth.CodexTurnStateCredentialKey))
+	currentSetAt := strings.TrimSpace(row.GetCredential(auth.CodexTurnStateSetAtCredentialKey))
+	if current == update.CodexTurnState.Value && currentSetAt != "" {
+		delete(update.CredentialUpdates, auth.CodexTurnStateSetAtCredentialKey)
+	}
+}
+
 func (u accountSchedulerUpdate) hasChanges() bool {
 	return u.ScoreBiasOverride.Set ||
+		u.CodexTurnState.Set ||
+		u.CodexTurnStateModels.Set ||
 		u.BaseConcurrencyOverride.Set ||
 		u.SkipWarmTier.Set ||
 		u.AllowedAPIKeyIDs.Set ||
@@ -2487,6 +2623,18 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
+	if update.CodexTurnState.Set && update.CodexTurnState.Value != "" {
+		row, err := h.db.GetAccountByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(c, http.StatusNotFound, "账号不存在")
+				return
+			}
+			writeError(c, http.StatusInternalServerError, "读取账号失败: "+err.Error())
+			return
+		}
+		refineCodexTurnStateSetAt(row, update)
+	}
 	if update.AllowedAPIKeyIDs.Set {
 		missingAPIKeyIDs, err := h.findMissingAPIKeyIDs(ctx, update.AllowedAPIKeyIDs.Values)
 		if err != nil {
@@ -2679,6 +2827,21 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	if value, ok := update.CredentialUpdates[auth.UpstreamRequestIDHeaderCredentialKey].(string); ok {
 		h.store.ApplyAccountUpstreamRequestIDHeader(id, value)
 	}
+	if update.CodexTurnState.Set || update.CodexTurnStateModels.Set {
+		if account := h.store.FindByID(id); account != nil {
+			value, models, setAt := account.CodexTurnStateConfig()
+			if update.CodexTurnState.Set {
+				value = update.CodexTurnState.Value
+			}
+			if update.CodexTurnStateModels.Set {
+				models = update.CodexTurnStateModels.Value
+			}
+			if raw, ok := update.CredentialUpdates[auth.CodexTurnStateSetAtCredentialKey].(string); ok {
+				setAt = auth.ParseCodexTurnStateSetAt(raw)
+			}
+			h.store.ApplyAccountCodexTurnState(id, value, models, setAt)
+		}
+	}
 	if update.CustomHeaders.Set {
 		h.store.ApplyAccountCustomHeaders(id, update.CustomHeaders.Values)
 	} else if update.Timezone.Set {
@@ -2722,6 +2885,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.CodexFingerprintMode.Set {
 		h.store.ApplyAccountCodexFingerprintMode(id, update.CodexFingerprintMode.Value)
+	}
+	if update.Timezone.Set {
+		h.store.ApplyAccountTimezone(id, update.Timezone.Value)
 	}
 }
 
@@ -3825,6 +3991,7 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 		}
 	}
 
+	whoami := &patWhoAmIHydrator{proxyURL: req.ProxyURL}
 	for i, at := range tokens {
 		name := req.Name
 		if name == "" {
@@ -3838,7 +4005,9 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 			allowDuplicate: req.AllowDuplicate,
 			customHeaders:  customHeaders,
 		})
-		if seed.email != "" && effectiveWorkspaceIDFromSeed(seed) != "" {
+		// codex_at 不走 OAuth 身份去重：whoami 补出来的 email+工作区会撞上同工作区的
+		// OAuth 账号，把 PAT 合并进去等于用 PAT 覆盖它的 access_token。PAT 始终按 token 路由键去重。
+		if seed.accessTokenType != accessTokenTypeCodexAT && seed.email != "" && effectiveWorkspaceIDFromSeed(seed) != "" {
 			id, updated, newAcc, err := h.upsertOAuthIdentityAccountDeferred(ctx, name, req.ProxyURL, seed, "manual_at", overwriteAccountProxy)
 			if err != nil {
 				log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
@@ -3873,6 +4042,8 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 			seenATRoutes[routeKey] = true
 		}
 
+		// 去重之后再补身份：重导已知批次不该再付 N 次网络往返。
+		seed = whoami.hydrate(ctx, seed)
 		id, err := h.db.InsertAccountWithCredentials(ctx, name, h.newCodexAccountCredentials(seed), req.ProxyURL)
 		if err != nil {
 			log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
@@ -3958,6 +4129,7 @@ func (h *Handler) streamAddATAccounts(c *gin.Context, req addATAccountReq, token
 	createdIDs := &importedAccountIDs{}
 	pending := make([]*auth.Account, 0, len(tokens))
 
+	whoami := &patWhoAmIHydrator{proxyURL: req.ProxyURL}
 	for i, at := range tokens {
 		name := req.Name
 		if name == "" {
@@ -3967,7 +4139,8 @@ func (h *Handler) streamAddATAccounts(c *gin.Context, req addATAccountReq, token
 		}
 
 		seed := normalizeTokenCredentialSeed(tokenCredentialSeed{accessToken: at, allowDuplicate: req.AllowDuplicate, customHeaders: req.CustomHeaders})
-		if seed.email != "" && effectiveWorkspaceIDFromSeed(seed) != "" {
+		// 同 AddATAccount：codex_at 不进 OAuth 身份去重，见上方注释。
+		if seed.accessTokenType != accessTokenTypeCodexAT && seed.email != "" && effectiveWorkspaceIDFromSeed(seed) != "" {
 			id, updated, newAcc, err := h.upsertOAuthIdentityAccountDeferred(ctx, name, req.ProxyURL, seed, "manual_at", overwriteAccountProxy)
 			if err != nil {
 				log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
@@ -4001,6 +4174,7 @@ func (h *Handler) streamAddATAccounts(c *gin.Context, req addATAccountReq, token
 			seenATRoutes[routeKey] = true
 		}
 
+		seed = whoami.hydrate(ctx, seed)
 		id, err := h.db.InsertAccountWithCredentials(ctx, name, h.newCodexAccountCredentials(seed), req.ProxyURL)
 		if err != nil {
 			log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
@@ -4041,6 +4215,7 @@ type addOpenAIResponsesAccountReq struct {
 	Models                  []string          `json:"models"`
 	ModelMapping            string            `json:"model_mapping"`
 	CodexClientMetadataMode *string           `json:"codex_client_metadata_mode"`
+	CodexPassthroughMode    *string           `json:"codex_passthrough_mode"`
 	ProxyURL                string            `json:"proxy_url"`
 	CustomHeaders           map[string]string `json:"custom_headers"`
 }
@@ -4113,6 +4288,14 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		}
 		codexClientMetadataMode = auth.NormalizeCodexClientMetadataMode(*req.CodexClientMetadataMode)
 	}
+	codexPassthroughMode := auth.CodexPassthroughModeOff
+	if req.CodexPassthroughMode != nil {
+		if !auth.IsValidCodexPassthroughMode(*req.CodexPassthroughMode) {
+			writeError(c, http.StatusBadRequest, "codex_passthrough_mode 必须是 off、auto 或 always")
+			return
+		}
+		codexPassthroughMode = auth.NormalizeCodexPassthroughMode(*req.CodexPassthroughMode)
+	}
 	for _, model := range models {
 		if err := security.ValidateModelName(model); err != nil {
 			writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))
@@ -4145,6 +4328,7 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		"models":                                 models,
 		"model_mapping":                          modelMapping,
 		"codex_client_metadata_mode":             codexClientMetadataMode,
+		"codex_passthrough_mode":                 codexPassthroughMode,
 		"plan_type":                              "api",
 		"email":                                  baseURL,
 	}
@@ -4168,6 +4352,7 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		Models:                  models,
 		ModelMapping:            modelMapping,
 		CodexClientMetadataMode: codexClientMetadataMode,
+		CodexPassthroughMode:    codexPassthroughMode,
 		CustomHeaders:           customHeaders,
 		Email:                   baseURL,
 		PlanType:                "api",
@@ -4323,6 +4508,14 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		}
 		codexClientMetadataMode = auth.NormalizeCodexClientMetadataMode(*req.CodexClientMetadataMode)
 	}
+	codexPassthroughMode := auth.NormalizeCodexPassthroughMode(row.GetCredential("codex_passthrough_mode"))
+	if req.CodexPassthroughMode != nil {
+		if !auth.IsValidCodexPassthroughMode(*req.CodexPassthroughMode) {
+			writeError(c, http.StatusBadRequest, "codex_passthrough_mode 必须是 off、auto 或 always")
+			return
+		}
+		codexPassthroughMode = auth.NormalizeCodexPassthroughMode(*req.CodexPassthroughMode)
+	}
 	for _, model := range models {
 		if err := security.ValidateModelName(model); err != nil {
 			writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))
@@ -4345,6 +4538,7 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		"models":                                 models,
 		"model_mapping":                          modelMapping,
 		"codex_client_metadata_mode":             codexClientMetadataMode,
+		"codex_passthrough_mode":                 codexPassthroughMode,
 		"plan_type":                              "api",
 		"email":                                  baseURL,
 		"custom_headers":                         cloneCustomHeaders(customHeaders),
@@ -4366,7 +4560,7 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		return
 	}
 	if h.store != nil {
-		h.store.ApplyOpenAIResponsesConfig(id, baseURL, req.APIKey, models, modelMapping, codexClientMetadataMode, req.ProxyURL)
+		h.store.ApplyOpenAIResponsesConfig(id, baseURL, req.APIKey, models, modelMapping, codexClientMetadataMode, codexPassthroughMode, req.ProxyURL)
 		h.store.ApplyAccountCustomHeaders(id, customHeaders)
 	}
 	h.db.InsertAccountEventAsync(id, "updated", "manual_openai_responses")
@@ -7347,11 +7541,18 @@ func (h *Handler) GetUsageStats(c *gin.Context) {
 		return
 	}
 
+	// 区间卡片跟随用量页的账号/密钥/模型/端点/搜索等筛选(与 /usage/logs 同一套参数);
+	// 状态类参数(status/error_only 等)对统计无意义,解析后被忽略;累计字段始终全局。
+	dim, ok := parseUsageLogsFilter(c, rangeStart, rangeEnd)
+	if !ok {
+		return
+	}
+
 	var stats *database.UsageStats
 	if strings.EqualFold(strings.TrimSpace(c.Query("detail")), "summary") {
-		stats, err = h.getUsageStatsSummaryCached(ctx, rangeStart, rangeEnd, parseUsageChannel(c))
+		stats, err = h.getUsageStatsSummaryFilteredCached(ctx, rangeStart, rangeEnd, parseUsageChannel(c), dim)
 	} else {
-		stats, err = h.getUsageStatsCached(ctx, rangeStart, rangeEnd, parseUsageChannel(c))
+		stats, err = h.getUsageStatsFilteredCached(ctx, rangeStart, rangeEnd, parseUsageChannel(c), dim)
 	}
 	if err != nil {
 		writeInternalError(c, err)
@@ -8145,6 +8346,10 @@ func parseUsageLogsFilter(c *gin.Context, startTime, endTime time.Time) (databas
 		return database.UsageLogFilter{}, false
 	}
 	filter.ViaWebsocketOnly, ok = parseUsageLogBoolFilter(c, "via_websocket")
+	if !ok {
+		return database.UsageLogFilter{}, false
+	}
+	filter.UltraOnly, ok = parseUsageLogBoolFilter(c, "ultra")
 	if !ok {
 		return database.UsageLogFilter{}, false
 	}
@@ -9004,6 +9209,8 @@ type settingsResponse struct {
 	MaxConcurrency                      int    `json:"max_concurrency"`
 	GlobalRPM                           int    `json:"global_rpm"`
 	TestModel                           string `json:"test_model"`
+	CodexImagesMainModel                string `json:"codex_images_main_model"`
+	CodexImagesDefaultMainModel         string `json:"codex_images_default_main_model"`
 	TestContent                         string `json:"test_content"`
 	TestConcurrency                     int    `json:"test_concurrency"`
 	BackgroundRefreshIntervalMinutes    int    `json:"background_refresh_interval_minutes"`
@@ -9012,6 +9219,7 @@ type settingsResponse struct {
 	UsageProbeResponsesFallbackEnabled  bool   `json:"usage_probe_responses_fallback_enabled"`
 	RecoveryProbeIntervalMinutes        int    `json:"recovery_probe_interval_minutes"`
 	LazyMode                            bool   `json:"lazy_mode"`
+	CodexOAuthKeepaliveEnabled          bool   `json:"codex_oauth_keepalive_enabled"`
 	ProxyURL                            string `json:"proxy_url"`
 	PgMaxConns                          int    `json:"pg_max_conns"`
 	RedisPoolSize                       int    `json:"redis_pool_size"`
@@ -9086,30 +9294,33 @@ type settingsResponse struct {
 	GrokOAuthClientIDEffective   string `json:"grok_oauth_client_id_effective"`
 	// Antigravity OAuth client 配置视图（嵌入展平）。
 	antigravityOAuthSettingsView
-	MaxRetries                         int                              `json:"max_retries"`
-	MaxRateLimitRetries                int                              `json:"max_rate_limit_retries"`
-	RetryIntervalMS                    int                              `json:"retry_interval_ms"`
-	TransportRetryPolicy               string                           `json:"transport_retry_policy"`
-	RetryPolicy                        database.RequestRetryPolicy      `json:"retry_policy"`
-	ContinuousRetryEnabled             bool                             `json:"continuous_retry_enabled"`
-	ContinuousRetryCatchAll            bool                             `json:"continuous_retry_catch_all"`
-	ContinuousRetryCategories          []string                         `json:"continuous_retry_categories"`
-	ContinuousRetryStatusCodes         []int                            `json:"continuous_retry_status_codes"`
-	ContinuousRetryErrorCodes          []string                         `json:"continuous_retry_error_codes"`
-	ContinuousRetryMaxDurationSeconds  int                              `json:"continuous_retry_max_duration_seconds"`
-	CodexFingerprintDefaultMode        string                           `json:"codex_fingerprint_default_mode"`
-	AllowRemoteMigration               bool                             `json:"allow_remote_migration"`
-	DatabaseDriver                     string                           `json:"database_driver"`
-	DatabaseLabel                      string                           `json:"database_label"`
-	CacheDriver                        string                           `json:"cache_driver"`
-	CacheLabel                         string                           `json:"cache_label"`
-	ExpiredCleaned                     int                              `json:"expired_cleaned,omitempty"`
-	ModelMapping                       string                           `json:"model_mapping"`
-	CodexModelMapping                  string                           `json:"codex_model_mapping"`
-	PayloadRules                       string                           `json:"payload_rules"`
-	ReasoningEffortModels              string                           `json:"reasoning_effort_models"`
-	ResinURL                           string                           `json:"resin_url"`
-	ResinPlatformName                  string                           `json:"resin_platform_name"`
+	MaxRetries                        int                         `json:"max_retries"`
+	MaxRateLimitRetries               int                         `json:"max_rate_limit_retries"`
+	RetryIntervalMS                   int                         `json:"retry_interval_ms"`
+	TransportRetryPolicy              string                      `json:"transport_retry_policy"`
+	RetryPolicy                       database.RequestRetryPolicy `json:"retry_policy"`
+	ContinuousRetryEnabled            bool                        `json:"continuous_retry_enabled"`
+	ContinuousRetryCatchAll           bool                        `json:"continuous_retry_catch_all"`
+	ContinuousRetryCategories         []string                    `json:"continuous_retry_categories"`
+	ContinuousRetryStatusCodes        []int                       `json:"continuous_retry_status_codes"`
+	ContinuousRetryErrorCodes         []string                    `json:"continuous_retry_error_codes"`
+	ContinuousRetryMaxDurationSeconds int                         `json:"continuous_retry_max_duration_seconds"`
+	CodexFingerprintDefaultMode       string                      `json:"codex_fingerprint_default_mode"`
+	AllowRemoteMigration              bool                        `json:"allow_remote_migration"`
+	DatabaseDriver                    string                      `json:"database_driver"`
+	DatabaseLabel                     string                      `json:"database_label"`
+	CacheDriver                       string                      `json:"cache_driver"`
+	CacheLabel                        string                      `json:"cache_label"`
+	ExpiredCleaned                    int                         `json:"expired_cleaned,omitempty"`
+	ModelMapping                      string                      `json:"model_mapping"`
+	CodexModelMapping                 string                      `json:"codex_model_mapping"`
+	PayloadRules                      string                      `json:"payload_rules"`
+	ReasoningEffortModels             string                      `json:"reasoning_effort_models"`
+	ResinURL                          string                      `json:"resin_url"`
+	ResinPlatformName                 string                      `json:"resin_platform_name"`
+	// CodexEgress 是后端权威的"Codex 渠道当前由谁承担出站"摘要:Resin 启用时代理池与
+	// proxy_url 对 Codex 不生效,界面据此标注,避免三套配置并存看不出谁在生效(issue #679)。
+	CodexEgress                        proxy.CodexEgressSummary         `json:"codex_egress"`
 	PromptFilterEnabled                bool                             `json:"prompt_filter_enabled"`
 	PromptFilterMode                   string                           `json:"prompt_filter_mode"`
 	PromptFilterThreshold              int                              `json:"prompt_filter_threshold"`
@@ -9132,6 +9343,10 @@ type settingsResponse struct {
 	ClientCompatMode                   string                           `json:"client_compat_mode"`
 	CodexMinCLIVersion                 string                           `json:"codex_min_cli_version"`
 	CodexUserAgentConfig               string                           `json:"codex_user_agent_config"`
+	CodexTelemetryEnabled              bool                             `json:"codex_telemetry_enabled"`
+	CodexTurnStateTemplateCacheEnabled bool                             `json:"codex_turn_state_template_cache_enabled"`
+	CodexTurnStateAccountMode          string                           `json:"codex_turn_state_account_mode"`
+	CodexTelemetryTimingDebug          bool                             `json:"codex_telemetry_timing_debug"`
 	UsageLogMode                       string                           `json:"usage_log_mode"`
 	UsageLogBatchSize                  int                              `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds       int                              `json:"usage_log_flush_interval_seconds"`
@@ -9195,6 +9410,7 @@ type updateSettingsReq struct {
 	MaxConcurrency                      *int                             `json:"max_concurrency"`
 	GlobalRPM                           *int                             `json:"global_rpm"`
 	TestModel                           *string                          `json:"test_model"`
+	CodexImagesMainModel                *string                          `json:"codex_images_main_model"`
 	TestContent                         *string                          `json:"test_content"`
 	TestConcurrency                     *int                             `json:"test_concurrency"`
 	BackgroundRefreshIntervalMinutes    *int                             `json:"background_refresh_interval_minutes"`
@@ -9203,6 +9419,7 @@ type updateSettingsReq struct {
 	UsageProbeResponsesFallbackEnabled  *bool                            `json:"usage_probe_responses_fallback_enabled"`
 	RecoveryProbeIntervalMinutes        *int                             `json:"recovery_probe_interval_minutes"`
 	LazyMode                            *bool                            `json:"lazy_mode"`
+	CodexOAuthKeepaliveEnabled          *bool                            `json:"codex_oauth_keepalive_enabled"`
 	ProxyURL                            *string                          `json:"proxy_url"`
 	PgMaxConns                          *int                             `json:"pg_max_conns"`
 	RedisPoolSize                       *int                             `json:"redis_pool_size"`
@@ -9308,6 +9525,10 @@ type updateSettingsReq struct {
 	ClientCompatMode                    *string                          `json:"client_compat_mode"`
 	CodexMinCLIVersion                  *string                          `json:"codex_min_cli_version"`
 	CodexUserAgentConfig                *string                          `json:"codex_user_agent_config"`
+	CodexTelemetryEnabled               *bool                            `json:"codex_telemetry_enabled"`
+	CodexTurnStateTemplateCacheEnabled  *bool                            `json:"codex_turn_state_template_cache_enabled"`
+	CodexTurnStateAccountMode           *string                          `json:"codex_turn_state_account_mode"`
+	CodexTelemetryTimingDebug           *bool                            `json:"codex_telemetry_timing_debug"`
 	UsageLogMode                        *string                          `json:"usage_log_mode"`
 	UsageLogBatchSize                   *int                             `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        *int                             `json:"usage_log_flush_interval_seconds"`
@@ -10022,6 +10243,8 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		MaxConcurrency:                      h.store.GetMaxConcurrency(),
 		GlobalRPM:                           h.rateLimiter.GetRPM(),
 		TestModel:                           h.store.GetTestModel(),
+		CodexImagesMainModel:                runtimeCfg.CodexImagesMainModel,
+		CodexImagesDefaultMainModel:         proxy.ImagesDefaultMainModel(),
 		TestContent:                         h.store.GetTestContent(),
 		TestConcurrency:                     h.store.GetTestConcurrency(),
 		ResponseCacheLocalMaxBytes:          responseCacheSettings.LocalMaxBytes,
@@ -10041,6 +10264,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		UsageProbeResponsesFallbackEnabled:  h.store.UsageProbeResponsesFallbackEnabled(),
 		RecoveryProbeIntervalMinutes:        h.store.GetRecoveryProbeIntervalMinutes(),
 		LazyMode:                            h.store.GetLazyMode(),
+		CodexOAuthKeepaliveEnabled:          h.store.GetCodexOAuthKeepalive(),
 		ProxyURL:                            h.store.GetProxyURL(),
 		PgMaxConns:                          h.pgMaxConns,
 		RedisPoolSize:                       h.redisPoolSize,
@@ -10132,6 +10356,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		ReasoningEffortModels:               h.store.GetReasoningEffortModels(),
 		ResinURL:                            resinURL,
 		ResinPlatformName:                   resinPlatformName,
+		CodexEgress:                         proxy.CurrentCodexEgressSummary(),
 		PromptFilterEnabled:                 promptFilterCfg.Enabled,
 		PromptFilterMode:                    promptFilterCfg.Mode,
 		PromptFilterThreshold:               promptFilterCfg.Threshold,
@@ -10153,6 +10378,10 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		ClientCompatMode:                    runtimeCfg.ClientCompatMode,
 		CodexMinCLIVersion:                  runtimeCfg.CodexMinCLIVersion,
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
+		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
+		CodexTurnStateTemplateCacheEnabled:  runtimeCfg.CodexTurnStateTemplateCache,
+		CodexTurnStateAccountMode:           runtimeCfg.CodexTurnStateAccountMode,
+		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
 		UsageLogMode:                        h.db.GetUsageLogMode(),
 		UsageLogBatchSize:                   h.db.GetUsageLogBatchSize(),
 		UsageLogFlushIntervalSeconds:        h.db.GetUsageLogFlushIntervalSeconds(),
@@ -10326,6 +10555,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "response_cache_config_generation 为只读字段")
 		return
 	}
+	if req.CodexImagesMainModel != nil {
+		normalized, err := proxy.NormalizeImagesMainModel(*req.CodexImagesMainModel)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.CodexImagesMainModel = &normalized
+	}
 	modelCooldownUpdateRequested := req.RelayModelCooldownMode != nil ||
 		req.RelayModelCooldownSeconds != nil ||
 		req.RelayModelCooldownBackoffEnabled != nil ||
@@ -10475,6 +10712,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	persistedAutoResetCreditsEnabled := false
 	persistedAutoResetCreditsBeforeExpiryMin := 60
 	persistedAutoActivate5hWindowEnabled := false
+	persistedCodexTurnStateTemplateCache := false
+	persistedCodexTurnStateAccountMode := proxy.CodexTurnStateAccountModeAuto
+	codexImagesMainModel := ""
 	persistedUTLSShutdownTimeoutMinutes := database.NormalizeUTLSShutdownTimeoutMinutes(0)
 	modelsListReadMaxBytes := database.DefaultModelsListReadMaxBytes
 	sessionSlotBufferEnabled := h.store.SessionSlotBufferEnabled()
@@ -10498,6 +10738,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		persistedAutoResetCreditsEnabled = existingSettings.AutoResetCreditsEnabled
 		persistedAutoResetCreditsBeforeExpiryMin = existingSettings.AutoResetCreditsBeforeExpiryMin
 		persistedAutoActivate5hWindowEnabled = existingSettings.AutoActivate5hWindowEnabled
+		persistedCodexTurnStateTemplateCache = existingSettings.CodexTurnStateTemplateCacheEnabled
+		persistedCodexTurnStateAccountMode = proxy.NormalizeCodexTurnStateAccountMode(existingSettings.CodexTurnStateAccountMode)
+		codexImagesMainModel = existingSettings.CodexImagesMainModel
 		persistedUTLSShutdownTimeoutMinutes = database.NormalizeUTLSShutdownTimeoutMinutes(existingSettings.UTLSShutdownTimeoutMinutes)
 		modelsListReadMaxBytes = database.NormalizeModelsListReadMaxBytes(existingSettings.ModelsListReadMaxBytes)
 		sessionSlotBufferEnabled = existingSettings.SessionSlotBufferEnabled
@@ -10505,6 +10748,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 	if req.SessionSlotBufferEnabled != nil {
 		sessionSlotBufferEnabled = *req.SessionSlotBufferEnabled
+	}
+	if req.CodexImagesMainModel != nil {
+		codexImagesMainModel = *req.CodexImagesMainModel
 	}
 	if req.SessionSlotBufferSeconds != nil {
 		sessionSlotBufferSeconds = database.NormalizeSessionSlotBufferSeconds(*req.SessionSlotBufferSeconds)
@@ -10572,11 +10818,15 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	previousAutoResetCreditsEnabled := runtimeCfg.AutoResetCreditsEnabled
 	previousAutoResetCreditsBeforeExpiryMin := runtimeCfg.AutoResetCreditsBeforeExpiryMin
 	previousAutoActivate5hWindowEnabled := runtimeCfg.AutoActivate5hWindowEnabled
+	previousCodexTurnStateTemplateCache := runtimeCfg.CodexTurnStateTemplateCache
+	previousCodexTurnStateAccountMode := runtimeCfg.CodexTurnStateAccountMode
 	// 数据库是多实例下的权威来源；用持久值作为本次 partial update 的基线，
 	// 避免旧实例保存无关字段时把自动消费配置回滚成自己的陈旧快照。
 	runtimeCfg.AutoResetCreditsEnabled = persistedAutoResetCreditsEnabled
 	runtimeCfg.AutoResetCreditsBeforeExpiryMin = persistedAutoResetCreditsBeforeExpiryMin
 	runtimeCfg.AutoActivate5hWindowEnabled = persistedAutoActivate5hWindowEnabled
+	runtimeCfg.CodexTurnStateTemplateCache = persistedCodexTurnStateTemplateCache
+	runtimeCfg.CodexTurnStateAccountMode = persistedCodexTurnStateAccountMode
 	runtimeCfg.UTLSShutdownTimeoutMin = persistedUTLSShutdownTimeoutMinutes
 	runtimeCfg.ModelsListReadMaxBytes = modelsListReadMaxBytes
 	continuousRetryPolicy := h.store.GetContinuousRetryPolicy()
@@ -10594,6 +10844,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	autoResetCreditsChanged := (req.AutoResetCreditsEnabled != nil && *req.AutoResetCreditsEnabled != persistedAutoResetCreditsEnabled) ||
 		(req.AutoResetCreditsBeforeExpiryMin != nil && *req.AutoResetCreditsBeforeExpiryMin != persistedAutoResetCreditsBeforeExpiryMin)
 	autoActivate5hChanged := req.AutoActivate5hWindowEnabled != nil && *req.AutoActivate5hWindowEnabled != persistedAutoActivate5hWindowEnabled
+	turnStateTemplateSettingsChanged := (req.CodexTurnStateTemplateCacheEnabled != nil && *req.CodexTurnStateTemplateCacheEnabled != persistedCodexTurnStateTemplateCache) ||
+		(req.CodexTurnStateAccountMode != nil && proxy.NormalizeCodexTurnStateAccountMode(*req.CodexTurnStateAccountMode) != persistedCodexTurnStateAccountMode)
 	usageLogMode := h.db.GetUsageLogMode()
 	usageLogBatchSize := h.db.GetUsageLogBatchSize()
 	usageLogFlushIntervalSeconds := h.db.GetUsageLogFlushIntervalSeconds()
@@ -10697,6 +10949,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: recovery_probe_interval_minutes = %d", v)
 	}
 
+	if req.CodexOAuthKeepaliveEnabled != nil {
+		h.store.SetCodexOAuthKeepalive(*req.CodexOAuthKeepaliveEnabled)
+	}
 	if req.LazyMode != nil {
 		h.store.SetLazyMode(*req.LazyMode)
 		log.Printf("设置已更新: lazy_mode = %t", *req.LazyMode)
@@ -11232,6 +11487,22 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.CodexUserAgentConfig = normalized
 		log.Printf("设置已更新: codex_user_agent_config")
 	}
+	if req.CodexTelemetryEnabled != nil {
+		runtimeCfg.CodexTelemetryEnabled = *req.CodexTelemetryEnabled
+		log.Printf("设置已更新: codex_telemetry_enabled = %t", runtimeCfg.CodexTelemetryEnabled)
+	}
+	if req.CodexTurnStateTemplateCacheEnabled != nil {
+		runtimeCfg.CodexTurnStateTemplateCache = *req.CodexTurnStateTemplateCacheEnabled
+		log.Printf("设置已更新: codex_turn_state_template_cache_enabled = %t", runtimeCfg.CodexTurnStateTemplateCache)
+	}
+	if req.CodexTurnStateAccountMode != nil {
+		runtimeCfg.CodexTurnStateAccountMode = proxy.NormalizeCodexTurnStateAccountMode(*req.CodexTurnStateAccountMode)
+		log.Printf("设置已更新: codex_turn_state_account_mode = %s", runtimeCfg.CodexTurnStateAccountMode)
+	}
+	if req.CodexTelemetryTimingDebug != nil {
+		runtimeCfg.CodexTelemetryTimingDebug = *req.CodexTelemetryTimingDebug
+		log.Printf("设置已更新: codex_telemetry_timing_debug = %t", runtimeCfg.CodexTelemetryTimingDebug)
+	}
 	if req.StreamFlushPolicy != nil {
 		runtimeCfg.StreamFlushPolicy = proxy.NormalizeStreamFlushPolicy(*req.StreamFlushPolicy)
 		log.Printf("设置已更新: stream_flush_policy = %s", runtimeCfg.StreamFlushPolicy)
@@ -11358,6 +11629,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 	if autoActivate5hChanged {
 		effectiveRuntimeCfg.AutoActivate5hWindowEnabled = previousAutoActivate5hWindowEnabled
+	}
+	if turnStateTemplateSettingsChanged {
+		// Hold back until UpdateSystemSettings succeeds (same pattern as auto-reset).
+		effectiveRuntimeCfg.CodexTurnStateTemplateCache = previousCodexTurnStateTemplateCache
+		effectiveRuntimeCfg.CodexTurnStateAccountMode = previousCodexTurnStateAccountMode
 	}
 	effectiveRuntimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 		// CodexSyncedCLIVersion 由后台同步任务独立维护；管理员保存其他设置时
@@ -11589,6 +11865,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		MaxConcurrency:                      h.store.GetMaxConcurrency(),
 		GlobalRPM:                           h.rateLimiter.GetRPM(),
 		TestModel:                           h.store.GetTestModel(),
+		CodexImagesMainModel:                codexImagesMainModel,
 		TestContent:                         h.store.GetTestContent(),
 		TestConcurrency:                     h.store.GetTestConcurrency(),
 		BackgroundRefreshIntervalMinutes:    h.store.GetBackgroundRefreshIntervalMinutes(),
@@ -11597,6 +11874,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		UsageProbeResponsesFallbackEnabled:  h.store.UsageProbeResponsesFallbackEnabled(),
 		RecoveryProbeIntervalMinutes:        h.store.GetRecoveryProbeIntervalMinutes(),
 		LazyMode:                            h.store.GetLazyMode(),
+		CodexOAuthKeepaliveEnabled:          h.store.GetCodexOAuthKeepalive(),
 		ProxyURL:                            h.store.GetProxyURL(),
 		PgMaxConns:                          h.pgMaxConns,
 		RedisPoolSize:                       h.redisPoolSize,
@@ -11683,6 +11961,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		ClientCompatMode:                    runtimeCfg.ClientCompatMode,
 		CodexMinCLIVersion:                  runtimeCfg.CodexMinCLIVersion,
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
+		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
+		CodexTurnStateTemplateCacheEnabled:  runtimeCfg.CodexTurnStateTemplateCache,
+		CodexTurnStateAccountMode:           runtimeCfg.CodexTurnStateAccountMode,
+		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
@@ -11714,6 +11996,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("无法持久化保存设置: %v", err)
 		if feishuChanged {
 			writeError(c, http.StatusInternalServerError, "保存飞书机器人设置失败，设置未生效")
+
+			return
+		}
+		if req.CodexImagesMainModel != nil {
+			writeError(c, http.StatusInternalServerError, "保存生图设置失败，文本驱动模型未生效")
 			return
 		}
 		if req.SessionSlotBufferEnabled != nil || req.SessionSlotBufferSeconds != nil {
@@ -11746,6 +12033,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			writeError(c, http.StatusInternalServerError, "保存 5h 窗口自动激活设置失败，设置未生效")
 			return
 		}
+		if turnStateTemplateSettingsChanged {
+			runtimeCfg = effectiveRuntimeCfg
+			writeError(c, http.StatusInternalServerError, "保存 turn-state 模板缓存设置失败，设置未生效")
+			return
+		}
 		if continuousRetryChanged {
 			writeError(c, http.StatusInternalServerError, "保存持续重试策略失败，设置未生效")
 			return
@@ -11774,6 +12066,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			h.store.SetSessionSlotBuffer(time.Duration(sessionSlotBufferSeconds) * time.Second)
 			log.Printf("设置已更新: session_slot_buffer_seconds = %d", sessionSlotBufferSeconds)
 		}
+		runtimeCfg.CodexImagesMainModel = codexImagesMainModel
+		proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
+			current.CodexImagesMainModel = codexImagesMainModel
+			return current
+		})
 		if req.SessionSlotBufferEnabled != nil {
 			h.store.SetSessionSlotBufferEnabled(sessionSlotBufferEnabled)
 			log.Printf("设置已更新: session_slot_buffer_enabled = %t", sessionSlotBufferEnabled)
@@ -11833,6 +12130,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 				return runtimeCfg
 			})
 			h.triggerAutoActivate5hScan()
+		}
+		if turnStateTemplateSettingsChanged {
+			runtimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
+				runtimeCfg.CodexSyncedCLIVersion = current.CodexSyncedCLIVersion
+				return runtimeCfg
+			})
 		}
 		if modelsListReadLimitChanged {
 			if updateErr := h.db.UpdateModelsListReadMaxBytes(c.Request.Context(), *req.ModelsListReadMaxBytes); updateErr != nil {
@@ -11914,6 +12217,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		MaxConcurrency:                      h.store.GetMaxConcurrency(),
 		GlobalRPM:                           h.rateLimiter.GetRPM(),
 		TestModel:                           h.store.GetTestModel(),
+		CodexImagesMainModel:                runtimeCfg.CodexImagesMainModel,
+		CodexImagesDefaultMainModel:         proxy.ImagesDefaultMainModel(),
 		TestContent:                         h.store.GetTestContent(),
 		TestConcurrency:                     h.store.GetTestConcurrency(),
 		ResponseCacheLocalMaxBytes:          responseCacheSettings.LocalMaxBytes,
@@ -11933,6 +12238,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		UsageProbeResponsesFallbackEnabled:  h.store.UsageProbeResponsesFallbackEnabled(),
 		RecoveryProbeIntervalMinutes:        h.store.GetRecoveryProbeIntervalMinutes(),
 		LazyMode:                            h.store.GetLazyMode(),
+		CodexOAuthKeepaliveEnabled:          h.store.GetCodexOAuthKeepalive(),
 		ProxyURL:                            h.store.GetProxyURL(),
 		PgMaxConns:                          h.pgMaxConns,
 		RedisPoolSize:                       h.redisPoolSize,
@@ -11998,6 +12304,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		GrokQualityGuardHoldTimeoutSec:      h.store.GrokQualityGuardConfig().HoldTimeoutSec,
 		GrokQualityGuardOnExhausted:         h.store.GrokQualityGuardConfig().OnExhausted,
 		GrokQualityGuardCooldownHours:       h.store.GrokQualityGuardConfig().AccountCooldownHours,
+		GrokOAuthClientID:                   auth.ConfiguredGrokOAuthClientID(),
+		GrokOAuthClientIDEnvOverride:        auth.GrokOAuthClientIDFromEnv() != "",
+		GrokOAuthClientIDEffective:          auth.EffectiveGrokOAuthClientID(),
 		MaxRetries:                          h.store.GetMaxRetries(),
 		MaxRateLimitRetries:                 h.store.GetMaxRateLimitRetries(),
 		RetryIntervalMS:                     h.store.GetRetryIntervalMS(),
@@ -12022,6 +12331,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		ReasoningEffortModels:               h.store.GetReasoningEffortModels(),
 		ResinURL:                            resinURL,
 		ResinPlatformName:                   resinPlatformName,
+		CodexEgress:                         proxy.CurrentCodexEgressSummary(),
 		PromptFilterEnabled:                 promptFilterCfg.Enabled,
 		PromptFilterMode:                    promptFilterCfg.Mode,
 		PromptFilterThreshold:               promptFilterCfg.Threshold,
@@ -12044,6 +12354,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		ClientCompatMode:                    runtimeCfg.ClientCompatMode,
 		CodexMinCLIVersion:                  runtimeCfg.CodexMinCLIVersion,
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
+		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
+		CodexTurnStateTemplateCacheEnabled:  runtimeCfg.CodexTurnStateTemplateCache,
+		CodexTurnStateAccountMode:           runtimeCfg.CodexTurnStateAccountMode,
+		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
@@ -12062,6 +12376,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		BillingTierPolicy:                   runtimeCfg.BillingTierPolicy,
 		ModelsListReadMaxBytes:              runtimeCfg.ModelsListReadMaxBytes,
 		ShowFullUsageNumbers:                showFullUsageNumbers,
+		PublicKeyUsagePageEnabled:           publicKeyUsagePageEnabled,
+		PublicImageStudioPageEnabled:        publicImageStudioPageEnabled,
+		PublicAccountPortalPageEnabled:      publicAccountPortalPageEnabled,
 		ImageStorageBackend:                 imgCfg.Backend,
 		ImageS3Endpoint:                     imgCfg.Endpoint,
 		ImageS3Region:                       imgCfg.Region,
@@ -12641,6 +12958,62 @@ func (h *Handler) SyncCodexCLIVersion(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// ==================== Codex User-Agent 形态目录与预览 ====================
+
+// GetCodexUserAgentCatalog 返回 Codex 客户端形态目录(形态、平台、终端、末尾标记名、
+// CLI 版本→构建号配对与默认号池配比),供设置页做搭配选择。
+func (h *Handler) GetCodexUserAgentCatalog(c *gin.Context) {
+	c.JSON(http.StatusOK, proxy.CodexUserAgentCatalog())
+}
+
+type codexUserAgentPreviewRequest struct {
+	Config             string `json:"config"`
+	ClientCompatMode   string `json:"client_compat_mode"`
+	CodexMinCLIVersion string `json:"codex_min_cli_version"`
+}
+
+// PreviewCodexUserAgent 按表单里尚未保存的 UA 配置算出真实出站身份(User-Agent /
+// Originator / Version),与执行链路同一套规则;号池模式下对前几个 Codex 账号逐个抽样。
+// 兼容模式与最低 CLI 版本可随请求传入(表单值),缺省用当前生效设置。
+func (h *Handler) PreviewCodexUserAgent(c *gin.Context) {
+	var req codexUserAgentPreviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	settings := proxy.CurrentRuntimeSettings()
+	compatMode := strings.TrimSpace(req.ClientCompatMode)
+	if compatMode == "" {
+		compatMode = settings.ClientCompatMode
+	}
+	minVersion := strings.TrimSpace(req.CodexMinCLIVersion)
+	if minVersion == "" {
+		minVersion = settings.CodexMinCLIVersion
+	}
+	versionFloor := ""
+	if compatMode == proxy.ClientCompatModeAuto {
+		versionFloor = minVersion
+	}
+	var sampleIDs []int64
+	if h.store != nil {
+		for _, acc := range h.store.Accounts() {
+			if acc == nil || acc.IsRelayStyle() || acc.IsOpenAIResponsesAPI() || acc.IsAntigravityAPI() {
+				continue
+			}
+			sampleIDs = append(sampleIDs, acc.ID())
+			if len(sampleIDs) >= 6 {
+				break
+			}
+		}
+	}
+	preview, err := proxy.PreviewCodexUserAgentConfig(req.Config, versionFloor, sampleIDs)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, preview)
 }
 
 // ==================== 账号趋势 ====================

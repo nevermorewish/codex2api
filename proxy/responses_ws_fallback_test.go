@@ -132,7 +132,7 @@ func TestNativeWSFallbackMultiTurnIsolation(t *testing.T) {
 		}
 	}()
 	for turn, input := range []string{"fallback-first", "primary-success", "fallback-third"} {
-		request := fmt.Sprintf(`{"type":"response.create","model":"gpt-5.4","store":%t,"input":[{"type":"message","role":"user","content":%q}],"prompt_cache_key":"same-multi-turn-session"}`, turn != 0, input)
+		request := fmt.Sprintf(`{"type":"response.create","model":"gpt-5.5","store":%t,"input":[{"type":"message","role":"user","content":%q}],"prompt_cache_key":"same-multi-turn-session"}`, turn != 0, input)
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
 			t.Fatal(err)
 		}
@@ -356,9 +356,9 @@ func TestNativeWSFallbackHandoff(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			request := `{"type":"response.create","model":"gpt-5.4","input":"hello","prompt_cache_key":"native-ws-fallback"}`
+			request := `{"type":"response.create","model":"gpt-5.5","input":"hello","prompt_cache_key":"native-ws-fallback"}`
 			if tc.continuation {
-				request = `{"type":"response.create","model":"gpt-5.4","input":"continue","prompt_cache_key":"native-ws-fallback","previous_response_id":"resp_remote_only","client_metadata":{"x-codex-turn-state":"pinned-turn"}}`
+				request = `{"type":"response.create","model":"gpt-5.5","input":"continue","prompt_cache_key":"native-ws-fallback","previous_response_id":"resp_remote_only","client_metadata":{"x-codex-turn-state":"pinned-turn"}}`
 			}
 			if err = conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
 				t.Fatal(err)

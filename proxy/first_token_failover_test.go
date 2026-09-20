@@ -53,7 +53,7 @@ func TestFirstTokenTimeoutSwitchesAccountAfterStructuralFrames(t *testing.T) {
 					sse := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"retried\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"retried\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"
 					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sse))}, nil
 				}
-				store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, MaxRetries: 1, TestConcurrency: 1, TestModel: "gpt-5.4", RetryIntervalMS: 5000})
+				store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, MaxRetries: 1, TestConcurrency: 1, TestModel: "gpt-5.5", RetryIntervalMS: 5000})
 				t.Cleanup(store.Stop)
 				accounts := []*auth.Account{
 					{DBID: 1, AccessToken: "ttft-1", PlanType: "pro", AccountID: "acct-1"},
@@ -65,7 +65,7 @@ func TestFirstTokenTimeoutSwitchesAccountAfterStructuralFrames(t *testing.T) {
 				handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
 				router := gin.New()
 				handler.RegisterRoutes(router)
-				body := fmt.Sprintf(`{"model":"gpt-5.4","stream":%v,"input":"hello","messages":[{"role":"user","content":"hello"}],"max_tokens":100}`, stream)
+				body := fmt.Sprintf(`{"model":"gpt-5.5","stream":%v,"input":"hello","messages":[{"role":"user","content":"hello"}],"max_tokens":100}`, stream)
 				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 				defer cancel()
 				req := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(body)).WithContext(ctx)

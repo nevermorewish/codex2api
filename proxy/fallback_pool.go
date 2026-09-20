@@ -289,14 +289,17 @@ func (h *Handler) nextFallbackAwareAccountWithGuard(
 	exclusions *retryAccountExclusions,
 	filter auth.AccountFilter,
 	policy auth.DispatchPolicy,
-) (*auth.Account, string, auth.SessionAffinityGuard) {
+) (*auth.Account, string, auth.SessionAffinityGuard, error) {
 	if h == nil || h.store == nil || state == nil {
-		return nil, "", auth.SessionAffinityGuard{}
+		return nil, "", auth.SessionAffinityGuard{}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", auth.SessionAffinityGuard{}, err
 	}
 	exclude := exclusions.ForSelection()
 	account, proxyURL, guard := h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, filter, policy)
 	if account != nil {
-		return account, proxyURL, guard
+		return account, proxyURL, guard, nil
 	}
 	// A bound session account that is simply at its live concurrency ceiling
 	// must not make this request enter the normal availability wait.  Spill it
@@ -305,20 +308,21 @@ func (h *Handler) nextFallbackAwareAccountWithGuard(
 	if state.configured() && h.store.SessionAffinityCapacityFull(affinityKey, apiKeyID, exclude, filter, policy) {
 		state.active = true
 		state.reason = fallbackReasonAffinityFull
-		return state.account(exclude), "", auth.SessionAffinityGuard{}
+		return state.account(exclude), "", auth.SessionAffinityGuard{}, nil
 	}
 	if state.queueThresholdReached(h.store) {
 		state.active = true
 		state.reason = fallbackReasonQueueThreshold
-		return state.account(exclude), "", auth.SessionAffinityGuard{}
+		return state.account(exclude), "", auth.SessionAffinityGuard{}, nil
 	}
 	if !h.store.HasDispatchCandidateWithDispatch(apiKeyID, exclude, filter, policy) {
 		state.reason = fallbackReasonNoEligible
-		return nil, "", auth.SessionAffinityGuard{}
+		return nil, "", auth.SessionAffinityGuard{}, nil
 	}
-	account, proxyURL, guard = h.nextRetryAccountForSessionWithDispatchGuard(ctx, affinityKey, apiKeyID, exclusions, filter, policy)
+	var selectionErr error
+	account, proxyURL, guard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(ctx, affinityKey, apiKeyID, exclusions, filter, policy)
 	if account == nil {
 		state.reason = fallbackReasonWaitEnded
 	}
-	return account, proxyURL, guard
+	return account, proxyURL, guard, selectionErr
 }
