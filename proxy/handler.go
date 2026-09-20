@@ -4158,6 +4158,9 @@ func (h *Handler) Responses(c *gin.Context) {
 	}
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()
+	if !requirePromptFilterFallbackHTTP(c, fallbackState, !compactionAffinity.Known && !turnContinuationPinned) {
+		return
+	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {
@@ -6230,6 +6233,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		fallbackState = h.newFallbackRouteStateForRequest(accountFilter, len(rawBody), false)
 		maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	}
+	if !requirePromptFilterFallbackHTTP(c, fallbackState, !compactionAffinity.Known) {
+		return
+	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {
@@ -7120,6 +7126,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()
+	if !requirePromptFilterFallbackHTTP(c, fallbackState, true) {
+		return
+	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {

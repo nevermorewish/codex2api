@@ -5904,6 +5904,7 @@ export default function Settings() {
                             { label: t('promptFilter.modeMonitor'), value: 'monitor' },
                             { label: t('promptFilter.modeWarn'), value: 'warn' },
                             { label: t('promptFilter.modeBlock'), value: 'block' },
+                            { label: t('promptFilter.modeFallback'), value: 'fallback' },
                           ]}
                         />
                       </SettingField>

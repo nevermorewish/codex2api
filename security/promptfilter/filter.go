@@ -17,13 +17,15 @@ import (
 )
 
 const (
-	ActionAllow = "allow"
-	ActionWarn  = "warn"
-	ActionBlock = "block"
+	ActionAllow    = "allow"
+	ActionWarn     = "warn"
+	ActionBlock    = "block"
+	ActionFallback = "fallback"
 
-	ModeMonitor = "monitor"
-	ModeWarn    = "warn"
-	ModeBlock   = "block"
+	ModeMonitor  = "monitor"
+	ModeWarn     = "warn"
+	ModeBlock    = "block"
+	ModeFallback = "fallback"
 
 	DefaultThreshold              = 50
 	DefaultStrictThreshold        = 90
@@ -252,6 +254,8 @@ func NormalizeConfig(cfg Config) Config {
 		cfg.Mode = defaults.Mode
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
+	case ModeFallback:
+		cfg.Mode = ModeFallback
 	case ModeBlock:
 		cfg.Mode = ModeBlock
 	case ModeWarn:
@@ -996,7 +1000,7 @@ func (e *Engine) inspectPreparedScanViews(evidenceText string, policyText string
 		action = ActionBlock
 	} else if sensitiveIntent || strictHit {
 		switch cfg.Mode {
-		case ModeBlock:
+		case ModeBlock, ModeFallback:
 			action = ActionBlock
 		case ModeWarn:
 			action = ActionWarn

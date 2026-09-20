@@ -71,6 +71,11 @@ func resolveGuardGlobalMode(cfg Config) string {
 	if !cfg.Enabled {
 		return GuardModeOff
 	}
+	// Direct fallback needs a synchronous blocking verdict even if an older
+	// advanced configuration still selects shadow review.
+	if NormalizeConfig(cfg).Mode == ModeFallback {
+		return GuardModeEnforce
+	}
 	mode := NormalizeGuardConfig(cfg.Advanced.Guard).Mode
 	if mode != GuardModeInherit {
 		return mode

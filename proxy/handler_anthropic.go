@@ -608,6 +608,10 @@ func (h *Handler) Messages(c *gin.Context) {
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()
+	if message := requirePromptFilterFallback(c, fallbackState, true); message != "" {
+		sendAnthropicError(c, http.StatusBadRequest, "invalid_request_error", message)
+		return
+	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {

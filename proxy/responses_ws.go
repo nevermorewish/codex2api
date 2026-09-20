@@ -355,6 +355,8 @@ func stripNewAPIPolicyWebSocketEventID(payload []byte) ([]byte, string) {
 
 func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.Conn, rawPayload []byte, policyEventID string, options *responsesWSForwardOptions) (returnErr error) {
 	defer beginRelayRequest(c)()
+	c.Set(contextPromptFilterFallback, false)
+	c.Set(contextFallbackDeadlineState, (*fallbackRouteState)(nil))
 	// A Gin context lives for the whole downstream WS connection, not one turn.
 	c.Set(contextFallbackAccountName, "")
 	c.Set(contextFallbackReason, "")
@@ -667,6 +669,12 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			options = &forwardOptions
 		}
 	}
+	if message := requirePromptFilterFallback(c, fallbackState, !compactionAffinity.Known && !preserveContinuationBinding()); message != "" {
+		apiErr := api.NewAPIError(api.ErrorCode("prompt_blocked"), message, api.ErrorTypeInvalidRequest)
+		_ = writeResponsesWSError(conn, apiErr)
+		return newResponsesWSCloseError(websocket.ClosePolicyViolation, message, apiErr)
+	}
+	c.Set(contextFallbackDeadlineState, fallbackState)
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()
 	var selectionErr error
@@ -1838,8 +1846,12 @@ func (h *Handler) inspectPromptFilterOpenAIForWebSocket(c *gin.Context, conn *we
 		return false, false
 	}
 	evaluation := h.evaluatePromptGuardWithConfig(c, cfg, rawBody, nil, endpoint, model, promptfilter.TransportWebSocket)
+	fallback := h.preparePromptFilterFallback(c, cfg, rawBody, endpoint, evaluation)
 	verdict := evaluation.Verdict
 	h.logPromptGuardEvaluation(c, endpoint, model, "local_filter", "", evaluation)
+	if fallback {
+		return false, false
+	}
 	if verdict.Action != promptfilter.ActionBlock {
 		return false, false
 	}

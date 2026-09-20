@@ -10,6 +10,7 @@ const knownReasons = new Set([
   'primary_unavailable',
   'oversized_request',
   'non_streaming',
+  'content_review',
 ])
 
 export function relayFallbackReasonKey(reason?: string): string {

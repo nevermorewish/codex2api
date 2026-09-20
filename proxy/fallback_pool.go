@@ -26,6 +26,7 @@ const (
 	fallbackReasonUnavailable      = "primary_unavailable"
 	fallbackReasonOversizedRequest = "oversized_request"
 	fallbackReasonNonStreaming     = "non_streaming"
+	fallbackReasonContentReview    = "content_review"
 )
 
 type fallbackRouteState struct {

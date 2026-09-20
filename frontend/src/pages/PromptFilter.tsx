@@ -634,6 +634,7 @@ export default function PromptFilter() {
     { label: t('promptFilter.modeMonitor'), value: 'monitor' },
     { label: t('promptFilter.modeWarn'), value: 'warn' },
     { label: t('promptFilter.modeBlock'), value: 'block' },
+    { label: t('promptFilter.modeFallback'), value: 'fallback' },
   ]
   const booleanOptions = [
     { label: t('common.enabled'), value: 'true' },
@@ -3360,6 +3361,7 @@ function OverviewView({
               </div>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <Field label={t('promptFilter.protectionStrategy')}>
+                  {protectionStrategy === 'fallback' && <p className="text-xs text-muted-foreground">{t('promptFilter.fallbackStrategyHint')}</p>}
                   <Select
                     value={protectionStrategy}
                     onValueChange={updateProtectionStrategy}
@@ -3792,6 +3794,7 @@ function PromptLogFilterControls({
                 { label: t('promptFilter.modeBlock'), value: 'block' },
                 { label: t('promptFilter.modeWarn'), value: 'warn' },
                 { label: t('promptFilter.actionAllow'), value: 'allow' },
+                { label: t('promptFilter.actionFallback'), value: 'fallback' },
               ]}
             />
           </Field>
@@ -6292,6 +6295,7 @@ function LogScoreMeter({
 
 function ActionBadge({ action }: { action: string }) {
   const { t } = useTranslation()
+  if (action === 'fallback') return <Badge variant="secondary">{t('promptFilter.actionFallback')}</Badge>
   if (action === 'block') return <Badge variant="destructive">{t('promptFilter.modeBlock')}</Badge>
   if (action === 'warn') return <Badge variant="outline" className="border-[hsl(var(--warning))]/30 text-[hsl(var(--warning))]">{t('promptFilter.modeWarn')}</Badge>
   return <Badge variant="outline">{t('promptFilter.actionAllow')}</Badge>

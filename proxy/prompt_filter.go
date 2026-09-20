@@ -79,8 +79,12 @@ func (h *Handler) inspectPromptFilterOpenAIWithBlockWriter(c *gin.Context, rawBo
 		return false
 	}
 	evaluation := h.evaluatePromptGuardWithConfig(c, cfg, rawBody, signedBody, endpoint, model, promptfilter.TransportHTTP)
+	fallback := h.preparePromptFilterFallback(c, cfg, rawBody, endpoint, evaluation)
 	verdict := evaluation.Verdict
 	h.logPromptGuardEvaluation(c, endpoint, model, "local_filter", "", evaluation)
+	if fallback {
+		return false
+	}
 	if verdict.Action == promptfilter.ActionWarn {
 		c.Header("X-Prompt-Filter-Warning", promptFilterWarningMessage(evaluation))
 	}
@@ -157,8 +161,12 @@ func (h *Handler) inspectPromptFilterAnthropic(c *gin.Context, rawBody []byte, e
 		return false
 	}
 	evaluation := h.evaluatePromptGuardWithConfig(c, cfg, rawBody, signedBody, endpoint, model, promptfilter.TransportHTTP)
+	fallback := h.preparePromptFilterFallback(c, cfg, rawBody, endpoint, evaluation)
 	verdict := evaluation.Verdict
 	h.logPromptGuardEvaluation(c, endpoint, model, "local_filter", "", evaluation)
+	if fallback {
+		return false
+	}
 	if verdict.Action == promptfilter.ActionWarn {
 		c.Header("X-Prompt-Filter-Warning", promptFilterWarningMessage(evaluation))
 	}
@@ -189,6 +197,12 @@ func (h *Handler) logPromptFilterVerdict(c *gin.Context, endpoint string, model 
 
 func (h *Handler) logPromptGuardEvaluation(c *gin.Context, endpoint string, model string, source string, errorCode string, evaluation promptGuardEvaluation) {
 	h.capturePromptRuleLearningEvidence(c, endpoint, model, evaluation)
+	if c != nil && c.GetBool(contextPromptFilterFallback) && evaluation.Verdict.Action == promptfilter.ActionBlock {
+		evaluation.Verdict.Action = promptfilter.ActionFallback
+		evaluation.Verdict.Mode = promptfilter.ModeFallback
+		evaluation.Decision.Action = promptfilter.ActionFallback
+		evaluation.Decision.StrikeEligible = false
+	}
 	h.logPromptFilterVerdictWithDecision(c, endpoint, model, source, errorCode, evaluation.Verdict, &evaluation.Decision, &evaluation.Envelope)
 	h.scheduleDeferredPromptGuardAudit(c, endpoint, model, source, errorCode, evaluation)
 }
@@ -237,7 +251,7 @@ func (h *Handler) logPromptFilterVerdictWithDecision(c *gin.Context, endpoint st
 		return
 	}
 	priority := database.PromptFilterLogPriorityLow
-	if verdict.Action == promptfilter.ActionWarn || verdict.Action == promptfilter.ActionBlock || source == "upstream_cyber_policy" {
+	if verdict.Action == promptfilter.ActionWarn || verdict.Action == promptfilter.ActionBlock || verdict.Action == promptfilter.ActionFallback || source == "upstream_cyber_policy" {
 		priority = database.PromptFilterLogPriorityHigh
 	}
 	// Audit persistence must never delay account selection, upstream connect, or
@@ -436,7 +450,7 @@ func (h *Handler) buildPromptFilterLogInput(auditContext promptFilterAuditContex
 	}
 	// 被拦截（block）的请求仅记录脱敏后的检查文本预览，便于排查触发原因，
 	// 同时避免把 Authorization/API Key/token 等敏感值持久化到日志。
-	if verdict.Action == promptfilter.ActionBlock {
+	if verdict.Action == promptfilter.ActionBlock || verdict.Action == promptfilter.ActionFallback {
 		input.FullText = promptfilter.RedactedPreview(verdict.FullText, promptFilterFullTextMaxRunes)
 	}
 	input.APIKeyID = auditContext.APIKeyID

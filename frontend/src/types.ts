@@ -2167,7 +2167,7 @@ export interface SystemSettings {
   /** 后端权威的 Codex 出口摘要(只读):Resin 启用时代理池/分组/账号/全局代理对 Codex 渠道均不参与出站。 */
   codex_egress?: CodexEgressSummary
   prompt_filter_enabled: boolean
-  prompt_filter_mode: 'monitor' | 'warn' | 'block' | string
+  prompt_filter_mode: 'monitor' | 'warn' | 'block' | 'fallback' | string
   prompt_filter_threshold: number
   prompt_filter_strict_threshold: number
   prompt_filter_strict_terminal_enabled: boolean

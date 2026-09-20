@@ -287,6 +287,7 @@
     "relayDecision": "决策",
     "relayFallbackReason": "进入兜底原因",
     "fallbackReasons": {
+      "content_review": "Prompt 违规",
       "relay_limit": "达到本地接力次数上限",
       "retry_budget": "本地普通重试预算耗尽",
       "retry_deadline": "主池持续重试时限耗尽",
@@ -3282,6 +3283,9 @@
     "clearFailed": "清空失败",
     "modeMonitor": "监控",
     "modeWarn": "警告",
+    "modeFallback": "兜底",
+    "actionFallback": "转兜底",
+    "fallbackStrategyHint": "违规请求直接进入已启用的兜底池，跳过主池。审核故障仍按复核失败策略处理；兜底不可用、不支持的接口或已绑定上游的续接请求仍会拦截。",
     "modeBlock": "拦截",
     "actionAllow": "放行",
     "status": "状态",

@@ -262,6 +262,9 @@
     "edit": "編輯"
   },
   "concurrency": {
+    "fallbackReasons": {
+      "content_review": "Prompt 違規"
+    },
     "cooldown": "冷卻情況",
     "coolingAccounts": "冷卻帳號",
     "onlyCooling": "僅看冷卻",
@@ -1189,6 +1192,9 @@
     "testReviewCleared": "審查判定通過",
     "testReviewSkipped": "未進行審查",
     "modeWarn": "警告",
+    "modeFallback": "兜底",
+    "actionFallback": "轉兜底",
+    "fallbackStrategyHint": "違規請求直接進入已啟用的兜底池，跳過主池。審核故障仍按復核失敗策略處理；兜底不可用、不支援的介面或已綁定上游的續接請求仍會攔截。",
     "modeBlock": "攔截",
     "actionAllow": "放行",
     "auditRecordsCount": "CY 事件 {{incidents}} 筆，模型複核 {{reviews}} 筆，本機稽核 {{logs}} 筆",
