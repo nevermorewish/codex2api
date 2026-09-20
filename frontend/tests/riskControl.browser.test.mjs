@@ -202,16 +202,19 @@ test("HTTP dashboard adds, saves and reloads custom audit models without ban con
       0,
     );
     await page.getByText("审计服务故障自动放行：", { exact: false }).waitFor();
-    const summary = page.getByRole("region", { name: "统一审核配置" });
-    assert.equal(await summary.getByRole("combobox").count(), 0);
-    assert.equal(await summary.getByRole("switch").count(), 0);
+    const policyLink = page.getByRole("region", { name: "统一审核配置" });
+    assert.equal(await policyLink.getByRole("combobox").count(), 0);
+    assert.equal(await policyLink.getByRole("switch").count(), 0);
     await page.getByRole("link", { name: "前往审核策略设置" }).click();
+    await page.getByLabel("审核模式", { exact: true }).waitFor();
+    assert.equal(await page.getByLabel("审核模式", { exact: true }).count(), 1);
     await page.getByLabel("审核模式", { exact: true }).click();
     await page.getByRole("option", { name: "异步观察", exact: true }).click();
     await page
       .getByRole("link", { name: "自定义模型审计", exact: true })
       .click();
-    assert.ok((await summary.innerText()).includes("异步观察"));
+    await policyLink.waitFor();
+    assert.equal(await page.getByText("审核模式", { exact: true }).count(), 0);
     const prompt = page.getByRole("textbox", {
       name: "自定义审核提示词",
       exact: true,
@@ -245,10 +248,11 @@ test("HTTP dashboard adds, saves and reloads custom audit models without ban con
       "Return JSON only. Custom audit prompt persistence test.",
     );
     await page.reload();
-    await summary.waitFor();
+    await policyLink.waitFor();
     assert.equal(await prompt.inputValue(), saved.model_audit.system_prompt);
     assert.equal(await savePrompt.isDisabled(), true);
-    assert.ok((await summary.innerText()).includes("异步观察"));
+    await policyLink.waitFor();
+    assert.equal(await page.getByText("审核模式", { exact: true }).count(), 0);
     await page.getByRole("link", { name: "前往审核策略设置" }).click();
     assert.equal(
       await page.getByLabel("审核模式", { exact: true }).innerText(),

@@ -7222,7 +7222,7 @@
       "savePromptHint": "Like Save configuration at the top, this saves the prompt and all current configuration drafts. Changes take effect after a successful save.",
       "savePrompt": "Save audit prompt",
       "editSharedPolicy": "Go to review policy settings",
-      "sharedPolicyHint": "The review toggle, mode and keyword strategy are managed only on the Review policy page. This summary reflects the current draft; unsaved changes take effect after saving.",
+      "sharedPolicyHint": "Configure audit nodes, prompts and risk thresholds here, not a separate enable toggle or execution mode. Enable content review and configure its policy only on the Review policy page; saved settings apply to the custom audit pool.",
       "sharedPolicy": "Shared review settings",
       "probeOk": "Connection OK",
       "probeFailed": "Connection failed; see trial result below",

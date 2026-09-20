@@ -24,6 +24,7 @@ test('custom model audit exposes pool, policy, prompt and dry-run with shared co
  for(const token of ['api.testModelAudit','system_prompt','block_threshold','flag_threshold','tr("failOpen")','max_input_chars','clear_api_key','ArrowUp','ArrowDown','useConfirmDialog','<DraftNumberInput','<Switch','onSave()','tr("savePrompt")'])assert.ok(page.includes(token),token)
  assert.doesNotMatch(page, /<Select|mode: v|enabled: v|keyword_blocking_mode:|patch\(\{ fail_open/)
  assert.ok(page.includes('to="/risk-control/policy"'))
+ assert.doesNotMatch(page, /config\.mode\b|config\.enabled\b|config\.keyword_blocking_mode\b|riskControl\.text038/)
  const locales=['zh','zh-TW','en'].map(name=>JSON.parse(readFileSync(new URL('../locales/'+name+'.json',import.meta.url),'utf8')).riskControl.modelAudit)
  for(const locale of locales) {
    assert.deepEqual(Object.keys(locale),Object.keys(locales[0]))

@@ -164,48 +164,6 @@ export default function RiskModelAudit({
           <p className="text-sm text-muted-foreground">
             {tr("sharedPolicyHint")}
           </p>
-          <dl className="grid gap-4 text-sm md:grid-cols-3">
-            <div>
-              <dt className="text-muted-foreground">
-                {t("riskControl.text037")}
-              </dt>
-              <dd>
-                {t(
-                  config.enabled
-                    ? "riskControl.text026"
-                    : "riskControl.text027",
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">
-                {t("riskControl.text038")}
-              </dt>
-              <dd>
-                {t(
-                  config.mode === "off"
-                    ? "riskControl.text039"
-                    : config.mode === "observe"
-                      ? "riskControl.text028"
-                      : "riskControl.text040",
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">
-                {t("riskControl.text041")}
-              </dt>
-              <dd>
-                {t(
-                  config.keyword_blocking_mode === "keyword_only"
-                    ? "riskControl.text043"
-                    : config.keyword_blocking_mode === "api_only"
-                      ? "riskControl.text044"
-                      : "riskControl.text042",
-                )}
-              </dd>
-            </div>
-          </dl>
           <Link
             className="inline-block text-sm text-primary underline underline-offset-4"
             to="/risk-control/policy"
