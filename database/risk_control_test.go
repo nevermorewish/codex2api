@@ -5,71 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/codex2api/security/riskcontrol"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
-
-func TestRiskControlNotificationFailureIsAsync(t *testing.T) {
-	// A local SMTP endpoint that immediately closes exercises notification errors
-	// without external credentials or outbound email.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
-	db := riskTestDB(t)
-	s, err := riskcontrol.New(context.Background(), db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	c := s.Config()
-	c.Enabled, c.EmailOnHit, c.Strategy = true, true, "keyword_only"
-	c.Keywords = []string{"blocked"}
-	c.SMTPHost, c.EmailFrom, c.EmailTo = "127.0.0.1", "from@example.test", "to@example.test"
-	_, port, _ := net.SplitHostPort(listener.Addr().String())
-	c.SMTPPort, _ = strconv.Atoi(port)
-	if err = s.Update(context.Background(), c); err != nil {
-		t.Fatal(err)
-	}
-	d := s.Check(context.Background(), riskcontrol.Request{APIKeyID: 1, Input: riskcontrol.Input{Text: "blocked"}})
-	if !d.Blocked {
-		t.Fatal("notification failure changed moderation decision")
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		status, err := s.Status(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if status.NotificationErrors == 1 {
-			logs, err := db.RiskLogs(context.Background(), riskcontrol.LogFilter{})
-			if err != nil || len(logs.Items) != 1 || logs.Items[0].EmailSent {
-				t.Fatalf("incorrect notification persistence: %+v %v", logs, err)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("notification worker did not report failure")
-}
 
 func TestRiskControlPostgresIntegration(t *testing.T) {
 	dsn := os.Getenv("RISK_TEST_POSTGRES_DSN")
@@ -88,7 +32,7 @@ func TestRiskControlPostgresIntegration(t *testing.T) {
 	if err = db.SaveRiskConfig(ctx, c); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := db.LoadRiskConfig(ctx); err != nil || got.BanThreshold != 4 {
+	if got, err := db.LoadRiskConfig(ctx); err != nil || got.BanThreshold != 0 || got.AutoBan {
 		t.Fatalf("config: %+v %v", got, err)
 	}
 	id := time.Now().UnixNano()
@@ -109,18 +53,13 @@ func TestRiskControlPostgresIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if banned, err := db.RiskBan(ctx, id); err != nil || !banned {
-		t.Fatalf("ban: %v %v", banned, err)
+	var banCount int
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM risk_control_bans WHERE api_key_id=$1`, id).Scan(&banCount); err != nil || banCount != 0 {
+		t.Fatalf("legacy ban unexpectedly created: %d %v", banCount, err)
 	}
 	page, err := db.RiskLogs(ctx, riskcontrol.LogFilter{APIKeyID: id, PageSize: 20})
 	if err != nil || page.Total != 8 {
 		t.Fatalf("logs: %+v %v", page, err)
-	}
-	if err = db.UnbanRiskKey(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if banned, _ := db.RiskBan(ctx, id); banned {
-		t.Fatal("unban failed")
 	}
 	if hit, err := db.HasRiskHash(ctx, fmt.Sprint(id)); err != nil || !hit {
 		t.Fatal("missing hash", err)
@@ -156,7 +95,7 @@ func TestRiskControlPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	read, err := db.LoadRiskConfig(ctx)
-	if err != nil || len(read.APIKeys) != 1 || read.APIKeys[0] != c.APIKeys[0] {
+	if err != nil || len(read.APIKeys) != 0 || read.Engine != "chat" {
 		t.Fatalf("load %+v %v", read, err)
 	}
 	c.AutoBan = true
@@ -174,26 +113,20 @@ func TestRiskControlPersistence(t *testing.T) {
 	if hit, _ := db.HasRiskHash(ctx, "hash"); hit {
 		t.Fatal("keyword wrote hash")
 	}
-	if banned, _ := db.RiskBan(ctx, 9); !banned {
-		t.Fatal("threshold failed to ban")
+	var banCount int
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM risk_control_bans`).Scan(&banCount); err != nil || banCount != 0 {
+		t.Fatalf("legacy ban unexpectedly created: %d %v", banCount, err)
 	}
 	logs, err := db.RiskLogs(ctx, riskcontrol.LogFilter{Page: 1, PageSize: 1, Action: "keyword_block", APIKeyID: 9})
 	if err != nil || logs.Total != 2 || len(logs.Items) != 1 {
 		t.Fatalf("logs %+v %v", logs, err)
 	}
-	if err := db.UnbanRiskKey(ctx, 9); err != nil {
-		t.Fatal(err)
-	}
-	if banned, _ := db.RiskBan(ctx, 9); banned {
-		t.Fatal("unban failed")
-	}
-	time.Sleep(2 * time.Millisecond)
 	e := event("three", "block")
 	if err := db.RecordRiskEvent(ctx, e, c); err != nil {
 		t.Fatal(err)
 	}
-	if e.ViolationCount != 1 {
-		t.Fatalf("reset count=%d", e.ViolationCount)
+	if e.ViolationCount != 0 || e.AutoBanned {
+		t.Fatalf("removed violation counter=%d", e.ViolationCount)
 	}
 	if hit, _ := db.HasRiskHash(ctx, "hash"); !hit {
 		t.Fatal("API hit did not persist hash")
@@ -227,7 +160,7 @@ func TestRiskControlServicePaths(t *testing.T) {
 	var calls atomic.Int64
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.URL.Path != "/v1/moderations" {
+		if r.URL.Path != "/v1/chat/completions" {
 			t.Errorf("path %s", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer test-key" {
@@ -238,7 +171,7 @@ func TestRiskControlServicePaths(t *testing.T) {
 			t.Error("body")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"results":[{"category_scores":{"violence":0.99}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"risk\":\"unsafe\",\"confidence\":0.99}"}}]}`))
 	}))
 	defer remote.Close()
 	s, err := riskcontrol.New(ctx, db)
@@ -248,8 +181,7 @@ func TestRiskControlServicePaths(t *testing.T) {
 	defer s.Close()
 	c := riskcontrol.DefaultConfig()
 	c.Enabled = true
-	c.APIKeys = []string{"test-key"}
-	c.BaseURL = remote.URL
+	c.Audit.Nodes = []riskcontrol.AuditNode{{ID: "audit", Name: "audit", Enabled: true, BaseURL: remote.URL, Model: "custom", APIKey: "test-key", TimeoutMS: 1000, MaxInputChars: 400000}}
 	c.Keywords = []string{"secret"}
 	r := riskcontrol.Request{APIKeyID: 1, APIKeyName: "test", Endpoint: "/v1/responses", Model: "model", Input: riskcontrol.Input{Text: "contains SECRET"}}
 	if err = s.Update(ctx, c); err != nil {
@@ -320,8 +252,8 @@ func TestRiskControlServicePaths(t *testing.T) {
 	if err = s.Update(ctx, c); err != nil {
 		t.Fatal(err)
 	}
-	if d = s.Check(ctx, r); d.Blocked {
-		t.Fatal("model scope")
+	if d = s.Check(ctx, r); !d.Blocked {
+		t.Fatal("retired model scope bypassed review")
 	}
 }
 func TestRiskControlFailureAndTestNoSideEffects(t *testing.T) {
@@ -335,6 +267,7 @@ func TestRiskControlFailureAndTestNoSideEffects(t *testing.T) {
 	c := riskcontrol.DefaultConfig()
 	c.Enabled = true
 	c.RecordNonHits = true
+	c.Audit.FailOpen = true
 	c.Strategy = "api_only"
 	if err = s.Update(ctx, c); err != nil {
 		t.Fatal(err)
@@ -407,5 +340,138 @@ func TestRiskControlModelAuditPersistenceAndDryRun(t *testing.T) {
 	}
 	if d := s.Check(ctx, r); d.Blocked || d.Action != "flag" {
 		t.Fatalf("stale policy hash reused %+v", d)
+	}
+}
+
+func TestRiskControlLegacyBansHaveNoEffect(t *testing.T) {
+	db := riskTestDB(t)
+	ctx := context.Background()
+	if _, err := db.conn.ExecContext(ctx, `INSERT INTO risk_control_bans(api_key_id,name,blocked,created_at,reset_at) VALUES(9,'old',TRUE,1,0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.conn.ExecContext(ctx, `INSERT INTO risk_control_config(id,payload) VALUES(1,'{"auto_ban_enabled":true,"ban_threshold":1,"violation_window_hours":24}')`); err != nil {
+		t.Fatal(err)
+	}
+	s, err := riskcontrol.New(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Config().AutoBan || s.Config().BanThreshold != 0 {
+		t.Fatal("legacy config remained active")
+	}
+	for _, enabled := range []bool{false, true} {
+		cfg := s.Config()
+		cfg.Enabled = enabled
+		cfg.Strategy = "keyword_only"
+		cfg.Keywords = []string{"blocked"}
+		if err := s.Update(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+		if d := s.Check(ctx, riskcontrol.Request{APIKeyID: 9, Input: riskcontrol.Input{Text: "clean"}}); d.Blocked {
+			t.Fatalf("legacy ban affected request: %+v", d)
+		}
+	}
+	var blocked bool
+	if err := db.conn.QueryRowContext(ctx, `SELECT blocked FROM risk_control_bans WHERE api_key_id=9`).Scan(&blocked); err != nil || !blocked {
+		t.Fatal("legacy history was destroyed", err)
+	}
+}
+
+func TestRiskControlFallbackSwitchDefaultsAndPersistence(t *testing.T) {
+	db := riskTestDB(t)
+	ctx := context.Background()
+	cfg, err := db.LoadRiskConfig(ctx)
+	if err != nil || !cfg.FallbackOnBlock {
+		t.Fatalf("new config should default on: %v", err)
+	}
+	if _, err := db.conn.ExecContext(ctx, `INSERT INTO risk_control_config(id,payload) VALUES(1,'{"enabled":true}')`); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = db.LoadRiskConfig(ctx)
+	if err != nil || !cfg.FallbackOnBlock {
+		t.Fatalf("legacy config should default on: %v", err)
+	}
+	for _, enabled := range []bool{false, true} {
+		cfg.FallbackOnBlock = enabled
+		if err := db.SaveRiskConfig(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+		service, err := riskcontrol.New(ctx, db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := service.Config().FallbackOnBlock
+		service.Close()
+		if got != enabled {
+			t.Fatalf("restart lost explicit switch: got %v want %v", got, enabled)
+		}
+	}
+}
+
+func TestRiskControlLegacyScopeAndEmailAreIgnored(t *testing.T) {
+	db := riskTestDB(t)
+	ctx := context.Background()
+	if _, err := db.conn.ExecContext(ctx, `INSERT INTO risk_control_config(id,payload) VALUES(1,'{"enabled":true,"keyword_blocking_mode":"keyword_only","blocked_keywords":["blocked"],"model_filter":"include","models":["old-model"],"api_key_ids":[7],"group_ids":[9],"email_on_hit":true,"smtp_host":"legacy.example","smtp_password":"old-secret"}')`); err != nil {
+		t.Fatal(err)
+	}
+	s, err := riskcontrol.New(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, model := range []string{"old-model", "new-model", "vendor/custom"} {
+		d := s.Check(ctx, riskcontrol.Request{APIKeyID: 123, Model: model, Input: riskcontrol.Input{Text: "blocked"}})
+		if !d.Blocked {
+			t.Fatalf("review skipped model %s", model)
+		}
+	}
+	cfg := s.Config()
+	if cfg.EmailOnHit || cfg.SMTPPassword != "" || cfg.ModelFilter != "all" || len(cfg.Models)+len(cfg.APIKeyIDs)+len(cfg.GroupIDs) != 0 {
+		t.Fatalf("legacy settings active")
+	}
+	logs, err := db.RiskLogs(ctx, riskcontrol.LogFilter{})
+	if err != nil || logs.Total != 3 {
+		t.Fatalf("missing audit evidence: %+v %v", logs, err)
+	}
+	for _, event := range logs.Items {
+		if event.EmailSent {
+			t.Fatal("unexpected email")
+		}
+	}
+}
+
+func TestRiskControlLegacyEngineKeepsCustomPool(t *testing.T) {
+	db := riskTestDB(t)
+	ctx := context.Background()
+	cfg := riskcontrol.DefaultConfig()
+	cfg.Engine = "moderations"
+	cfg.APIKeys = []string{"retired-credential"}
+	cfg.BaseURL = "http://retired.example"
+	cfg.Audit.Nodes = []riskcontrol.AuditNode{{ID: "existing", Name: "Existing", Enabled: true, BaseURL: "http://audit.example/v1", Model: "vendor/custom", APIKey: "keep-this-secret", TimeoutMS: 1000, MaxInputChars: 1000}}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.conn.ExecContext(ctx, `INSERT INTO risk_control_config(id,payload) VALUES(1,$1)`, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	s, err := riskcontrol.New(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got := s.Config()
+	if got.Engine != "chat" || len(got.APIKeys) != 0 || got.BaseURL != "" {
+		t.Fatal("legacy credentials still active")
+	}
+	if len(got.Audit.Nodes) != 1 || got.Audit.Nodes[0].APIKey != "keep-this-secret" || got.Audit.Nodes[0].Model != "vendor/custom" {
+		t.Fatal("existing pool lost")
+	}
+	if err := s.Patch(ctx, []byte(`{"audit_engine":"moderations","api_keys":["old-client-key"],"sample_rate":75}`)); err != nil {
+		t.Fatal(err)
+	}
+	if s.Config().Engine != "chat" || s.Config().Audit.Nodes[0].APIKey != "keep-this-secret" {
+		t.Fatal("legacy client changed active pool")
 	}
 }

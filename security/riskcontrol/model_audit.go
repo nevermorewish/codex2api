@@ -10,7 +10,6 @@ import (
 	"html"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -144,16 +143,9 @@ func (s *Service) PublicConfig() Config {
 	return c
 }
 func (s *Service) Extract(body []byte, endpoint string) Input {
-	limit := 12000
-	if s.current.Load().config.Engine == "chat" {
-		limit = 400000
-	}
-	return extractWithLimit(body, endpoint, limit)
+	return extractWithLimit(body, endpoint, 400000)
 }
 func inputPolicyHash(c Config, input Input) string {
-	if c.Engine != "chat" {
-		return input.Hash()
-	}
 	a := c.Audit
 	a.Nodes = append([]AuditNode{}, a.Nodes...)
 	for i := range a.Nodes {
@@ -246,10 +238,6 @@ func (s *Service) callAuditNode(ctx context.Context, c Config, node AuditNode, t
 	if client == nil {
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		defer transport.CloseIdleConnections()
-		if c.ProxyURL != "" {
-			u, _ := url.Parse(c.ProxyURL)
-			transport.Proxy = http.ProxyURL(u)
-		}
 		client = &http.Client{Transport: transport}
 	}
 	copy := *client

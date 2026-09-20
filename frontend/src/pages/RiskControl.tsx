@@ -33,13 +33,11 @@ import { useToast } from "../hooks/useToast";
 import { getErrorMessage } from "../utils/error";
 import RiskModelAudit from "./RiskModelAudit";
 import {
-  parseRiskIDs,
   parseRiskWords,
   type RiskConfig,
   type RiskConfigView,
   type RiskStatus,
   type RiskLogPage,
-  type RiskBan,
 } from "../lib/riskControl";
 const textarea =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring min-h-28";
@@ -123,9 +121,8 @@ export default function RiskControl() {
   const views = [
     ["policy", t("riskControl.text001")],
     ["model-audit", t("riskControl.modelAudit.title")],
-    ["keys", t("riskControl.text002")],
     ["logs", t("riskControl.text003")],
-    ["bans", t("riskControl.text004")],
+    ["hashes", t("riskControl.text004")],
     ["test", t("riskControl.text005")],
     ["prompt", t("riskControl.text006")],
   ] as const;
@@ -140,18 +137,10 @@ export default function RiskControl() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [words, setWords] = useState(""),
-    [models, setModels] = useState(""),
-    [groups, setGroups] = useState(""),
-    [scopeKeys, setScopeKeys] = useState("");
-  const [secrets, setSecrets] = useState(""),
-    [password, setPassword] = useState("");
-  const [logs, setLogs] = useState<RiskLogPage | null>(null),
-    [bans, setBans] = useState<RiskBan[]>([]);
+  const [words, setWords] = useState("");
+  const [logs, setLogs] = useState<RiskLogPage | null>(null);
   const [logsLoading, setLogsLoading] = useState(true);
   const [logsError, setLogsError] = useState("");
-  const [bansLoading, setBansLoading] = useState(true);
-  const [bansError, setBansError] = useState("");
   const [action, setAction] = useState(""),
     [query, setQuery] = useState(""),
     [keyFilter, setKeyFilter] = useState(""),
@@ -162,16 +151,10 @@ export default function RiskControl() {
     );
   const [hash, setHash] = useState("");
   const logVersion = useRef(0);
-  const banVersion = useRef(0);
   const apply = useCallback((v: RiskConfigView) => {
     setConfig(v);
     setForm(v.config);
     setWords(v.config.blocked_keywords.join("\n"));
-    setModels(v.config.models.join("\n"));
-    setGroups(v.config.group_ids.join(", "));
-    setScopeKeys(v.config.api_key_ids.join(", "));
-    setSecrets("");
-    setPassword("");
     setDirty(false);
   }, []);
   const load = useCallback(async () => {
@@ -220,24 +203,9 @@ export default function RiskControl() {
       if (version === logVersion.current) setLogsLoading(false);
     }
   }, [page, action, query, keyFilter, t]);
-  const loadBans = useCallback(async () => {
-    const version = ++banVersion.current;
-    setBansLoading(true);
-    setBansError("");
-    try {
-      const result = await api.getRiskBans();
-      if (version === banVersion.current) setBans(result.items);
-    } catch (e) {
-      if (version === banVersion.current)
-        setBansError(getErrorMessage(e, t("riskControl.text010")));
-    } finally {
-      if (version === banVersion.current) setBansLoading(false);
-    }
-  }, [t]);
   useEffect(() => {
     if (view === "logs") void loadLogs();
-    if (view === "bans") void loadBans();
-  }, [view, loadLogs, loadBans]);
+  }, [view, loadLogs]);
   function patch<K extends keyof RiskConfig>(key: K, value: RiskConfig[K]) {
     setForm((f) => (f ? { ...f, [key]: value } : f));
     setDirty(true);
@@ -248,7 +216,6 @@ export default function RiskControl() {
       await fn();
       showToast(message, "success");
       setStatus(await api.getRiskStatus());
-      if (view === "bans") await loadBans();
       if (view === "logs") await loadLogs();
     } catch (e) {
       showToast(getErrorMessage(e, t("riskControl.text011")), "error");
@@ -263,28 +230,12 @@ export default function RiskControl() {
       const next = {
         ...form,
         blocked_keywords: parseRiskWords(words),
-        models: parseRiskWords(models),
-        group_ids: parseRiskIDs(groups),
-        api_key_ids: parseRiskIDs(scopeKeys),
       };
-      delete next.api_keys;
-      delete next.smtp_password;
-      if (secrets.trim())
-        next.api_keys = secrets
-          .split(/\r?\n/)
-          .map((v) => v.trim())
-          .filter(Boolean);
-      if (password) next.smtp_password = password;
       apply(await api.updateRiskConfig(next));
       setStatus(await api.getRiskStatus());
       showToast(t("riskControl.text012"), "success");
     } catch (e) {
-      showToast(
-        e instanceof Error && e.message === "invalid_scope_ids"
-          ? t("riskControl.invalidIDs")
-          : getErrorMessage(e, t("riskControl.text013")),
-        "error",
-      );
+      showToast(getErrorMessage(e, t("riskControl.text013")), "error");
     } finally {
       setBusy(false);
     }
@@ -305,6 +256,8 @@ export default function RiskControl() {
       />
     </Field>
   );
+  if (view === "keys")
+    return <Navigate to="/risk-control/model-audit" replace />;
   if (!views.some(([v]) => v === view))
     return <Navigate to="/risk-control/policy" replace />;
   if (error)
@@ -346,13 +299,12 @@ export default function RiskControl() {
           </>
         }
       />
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         {[
           [t("riskControl.text003"), status?.total],
           [t("riskControl.text022"), status?.hits],
           [t("riskControl.text023"), status?.blocked],
           [t("riskControl.text024"), status?.hashes],
-          [t("riskControl.text025"), status?.bans],
         ].map(([label, value]) => (
           <Card key={label}>
             <CardContent className="p-4">
@@ -382,11 +334,7 @@ export default function RiskControl() {
             <span className="text-amber-600">{t("riskControl.text030")}</span>
           )}
           <span className="text-xs text-muted-foreground">
-            {t(
-              config?.config.audit_engine === "chat"
-                ? "riskControl.modelAudit.chat"
-                : "riskControl.modelAudit.moderations",
-            )}
+            {t("riskControl.modelAudit.title")}
           </span>
         </div>
         <span className="text-xs text-muted-foreground">
@@ -482,11 +430,7 @@ export default function RiskControl() {
             </div>
             <p className="rounded-lg bg-amber-500/10 p-3 text-xs leading-6 text-amber-700 dark:text-amber-300">
               <AlertTriangle className="mr-1 inline size-4" />
-              {t(
-                form.audit_engine === "chat"
-                  ? "riskControl.modelAudit.runtimeHint"
-                  : "riskControl.text047",
-              )}
+              {t("riskControl.modelAudit.runtimeHint")}
             </p>
           </Section>
           <Section
@@ -508,107 +452,27 @@ export default function RiskControl() {
               {t("riskControl.keywordCount", {
                 count: parseRiskWords(words).length,
               })}{" "}
-              {t(
-                form.audit_engine === "chat"
-                  ? "riskControl.modelAudit.inputBoundary"
-                  : "riskControl.inputBoundary",
-              )}
+              {t("riskControl.modelAudit.inputBoundary")}
             </p>
           </Section>
-          <Section
-            title={t("riskControl.text053")}
-            description={t("riskControl.text054")}
-          >
-            <div className="grid gap-5 md:grid-cols-2">
-              <Field label={t("riskControl.text055")}>
-                <Input
-                  value={groups}
-                  onChange={(e) => {
-                    setGroups(e.target.value);
-                    setDirty(true);
-                  }}
-                  placeholder={t("riskControl.text056")}
-                />
-              </Field>
-              <Field label={t("riskControl.text057")}>
-                <Input
-                  value={scopeKeys}
-                  onChange={(e) => {
-                    setScopeKeys(e.target.value);
-                    setDirty(true);
-                  }}
-                  placeholder={t("riskControl.text058")}
-                />
-              </Field>
-              <Field label={t("riskControl.text059")}>
-                <Select
-                  value={form.model_filter}
-                  onValueChange={(value) =>
-                    patch("model_filter", value as RiskConfig["model_filter"])
-                  }
-                  options={[
-                    { value: "all", label: t("riskControl.text060") },
-                    { value: "include", label: t("riskControl.text061") },
-                    { value: "exclude", label: t("riskControl.text062") },
-                  ]}
-                />
-              </Field>
-              <Field label={t("riskControl.text063")}>
-                <textarea
-                  className={textarea}
-                  disabled={form.model_filter === "all"}
-                  value={models}
-                  onChange={(e) => {
-                    setModels(e.target.value);
-                    setDirty(true);
-                  }}
-                />
-              </Field>
-            </div>
-          </Section>
-          <Section
-            title={t("riskControl.text064")}
-            description={t("riskControl.text065")}
-          >
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {config?.categories.map((cat) => (
-                <Field key={cat} label={cat}>
-                  <DraftNumberInput
-                    min={0}
-                    max={1}
-                    step="0.01"
-                    integer={false}
-                    value={form.thresholds[cat]}
-                    onValueChange={(value) =>
-                      patch("thresholds", { ...form.thresholds, [cat]: value })
-                    }
-                  />
-                </Field>
-              ))}
-            </div>
-          </Section>
           <Section title={t("riskControl.text066")}>
+            <Toggle
+              label={t("riskControl.fallbackOnBlock")}
+              checked={form.fallback_on_block_enabled ?? true}
+              onChange={(v) => patch("fallback_on_block_enabled", v)}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("riskControl.fallbackOnBlockHint")}
+            </p>
             <div className="flex flex-wrap gap-6">
               <Toggle
                 label={t("riskControl.text067")}
                 checked={form.pre_hash_check_enabled}
                 onChange={(v) => patch("pre_hash_check_enabled", v)}
               />
-              <Toggle
-                label={t("riskControl.text068")}
-                checked={form.auto_ban_enabled}
-                onChange={(v) => patch("auto_ban_enabled", v)}
-              />
             </div>
             <div className="grid gap-4 md:grid-cols-3">
               {number("block_status", t("riskControl.text069"), 400, 499)}
-              {number("ban_threshold", t("riskControl.text070"), 1, 100000)}
-              {number(
-                "violation_window_hours",
-                t("riskControl.text071"),
-                1,
-                87600,
-              )}
             </div>
             <Field label={t("riskControl.text072")}>
               <Input
@@ -650,229 +514,6 @@ export default function RiskControl() {
             >
               {t("riskControl.text083")}
             </Button>
-          </Section>
-          <Section
-            title={t("riskControl.text084")}
-            description={t("riskControl.text085")}
-          >
-            <Toggle
-              label={t("riskControl.text086")}
-              checked={form.email_on_hit}
-              onChange={(v) => patch("email_on_hit", v)}
-            />
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label={t("riskControl.text087")}>
-                <Input
-                  value={form.smtp_host}
-                  onChange={(e) => patch("smtp_host", e.target.value)}
-                />
-              </Field>
-              {number(
-                "smtp_port",
-                t("riskControl.text088"),
-                1,
-                65535,
-                t("riskControl.text089"),
-              )}
-              <Field label={t("riskControl.text090")}>
-                <Input
-                  autoComplete="off"
-                  value={form.smtp_username}
-                  onChange={(e) => patch("smtp_username", e.target.value)}
-                />
-              </Field>
-              <Field
-                label={t("riskControl.text091")}
-                hint={
-                  config?.smtp_password_configured
-                    ? t("riskControl.text092")
-                    : t("riskControl.text093")
-                }
-              >
-                <Input
-                  type="password"
-                  autoComplete="new-password"
-                  value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value);
-                    setDirty(true);
-                  }}
-                />
-              </Field>
-              <Field label={t("riskControl.text094")}>
-                <Input
-                  type="email"
-                  value={form.email_from}
-                  onChange={(e) => patch("email_from", e.target.value)}
-                />
-              </Field>
-              <Field label={t("riskControl.text095")}>
-                <Input
-                  type="email"
-                  value={form.email_to}
-                  onChange={(e) => patch("email_to", e.target.value)}
-                />
-              </Field>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {t("riskControl.notificationErrors", {
-                count: status?.notification_errors ?? 0,
-              })}
-            </p>
-          </Section>
-        </>
-      )}
-
-      {view === "keys" && (
-        <>
-          <Section
-            title={t("riskControl.text097")}
-            description={t("riskControl.text098")}
-          >
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label={t("riskControl.baseURL")}>
-                <Input
-                  value={form.base_url}
-                  onChange={(e) => patch("base_url", e.target.value)}
-                />
-              </Field>
-              <Field label={t("riskControl.text099")}>
-                <Input
-                  value={form.model}
-                  onChange={(e) => patch("model", e.target.value)}
-                />
-              </Field>
-              {number("timeout_ms", t("riskControl.text100"), 100, 30000)}
-              {number("retry_count", t("riskControl.text101"), 0, 5)}
-              <Field label={t("riskControl.text102")}>
-                <Input
-                  value={form.proxy_url}
-                  onChange={(e) => patch("proxy_url", e.target.value)}
-                />
-              </Field>
-            </div>
-            <Field
-              label={t("riskControl.text103")}
-              hint={t("riskControl.text104")}
-            >
-              <textarea
-                autoComplete="off"
-                className={textarea + " [-webkit-text-security:disc]"}
-                value={secrets}
-                onChange={(e) => {
-                  setSecrets(e.target.value);
-                  setDirty(true);
-                }}
-              />
-            </Field>
-            <Button
-              variant="outline"
-              disabled={busy || !status?.keys.length}
-              onClick={async () => {
-                if (await ask(t("riskControl.text105")))
-                  void perform(
-                    async () =>
-                      apply(await api.updateRiskConfig({ api_keys: [] })),
-                    t("riskControl.text106"),
-                  );
-              }}
-            >
-              <Trash2 className="size-4" />
-              {t("riskControl.text107")}
-            </Button>
-          </Section>
-          <Section
-            title={t("riskControl.text108")}
-            description={t("riskControl.text109")}
-          >
-            {!status?.keys.length ? (
-              <p className="text-sm text-muted-foreground">
-                {t("riskControl.text110")}
-              </p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="text-muted-foreground">
-                    <tr>
-                      {[
-                        t("riskControl.text111"),
-                        t("riskControl.text112"),
-                        t("riskControl.text113"),
-                        t("riskControl.text114"),
-                        "HTTP",
-                        t("riskControl.text115"),
-                        t("riskControl.text116"),
-                      ].map((x) => (
-                        <th className="p-3" key={x}>
-                          {x}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {status.keys.map((k) => (
-                      <tr className="border-t" key={k.id}>
-                        <td className="p-3 font-mono">{k.hint}</td>
-                        <td className="p-3">{k.status}</td>
-                        <td className="p-3">
-                          {k.calls} / {k.errors}
-                        </td>
-                        <td className="p-3">{k.latency_ms} ms</td>
-                        <td className="p-3">{k.http_status || "—"}</td>
-                        <td className="p-3">
-                          {k.frozen_until
-                            ? new Date(k.frozen_until * 1000).toLocaleString()
-                            : "—"}
-                        </td>
-                        <td className="p-3">
-                          <div className="flex gap-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled={busy}
-                              onClick={() =>
-                                void perform(async () => {
-                                  const result = await api.testRiskKey(k.id);
-                                  if (result.status !== "ok")
-                                    throw new Error(
-                                      t("riskControl.connectionError", {
-                                        status: result.http_status,
-                                      }),
-                                    );
-                                }, t("riskControl.text118"))
-                              }
-                            >
-                              {t("riskControl.text119")}
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled={busy}
-                              onClick={async () => {
-                                if (await ask(t("riskControl.text120")))
-                                  void perform(
-                                    async () =>
-                                      apply(await api.removeRiskKey(k.id)),
-                                    t("riskControl.text121"),
-                                  );
-                              }}
-                            >
-                              {t("riskControl.text122")}
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <NavLink
-              to="/risk-control/test"
-              className="text-sm text-primary underline"
-            >
-              {t("riskControl.text123")}
-            </NavLink>
           </Section>
         </>
       )}
@@ -949,7 +590,6 @@ export default function RiskControl() {
                       t("riskControl.text140"),
                       t("riskControl.text141"),
                       t("riskControl.text142"),
-                      t("riskControl.text143"),
                       t("riskControl.text114"),
                     ].map((x) => (
                       <th key={x} className="p-3">
@@ -998,14 +638,6 @@ export default function RiskControl() {
                           <p className="break-all font-mono">{e.input_hash}</p>
                         </details>
                       </td>
-                      <td className="p-3">
-                        {e.violation_count}
-                        {e.auto_banned && (
-                          <p className="text-red-600">
-                            {t("riskControl.text145")}
-                          </p>
-                        )}
-                      </td>
                       <td className="p-3 whitespace-nowrap">
                         {e.latency_ms} ms
                       </td>
@@ -1041,60 +673,8 @@ export default function RiskControl() {
         </Section>
       )}
 
-      {view === "bans" && (
+      {view === "hashes" && (
         <>
-          <Section
-            title={t("riskControl.text151")}
-            description={t("riskControl.text152")}
-          >
-            {bansError ? (
-              <div role="alert" className="space-y-3 text-destructive">
-                <p>{bansError}</p>
-                <Button variant="outline" onClick={() => void loadBans()}>
-                  {t("riskControl.text014")}
-                </Button>
-              </div>
-            ) : bansLoading ? (
-              <p role="status">{t("riskControl.text137")}</p>
-            ) : bans.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                {t("riskControl.text153")}
-              </p>
-            ) : (
-              bans.map((b) => (
-                <div
-                  key={b.api_key_id}
-                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4"
-                >
-                  <div>
-                    <strong>
-                      #{b.api_key_id} {b.name}
-                    </strong>
-                    <p className="text-xs text-muted-foreground">
-                      {new Date(b.created_at).toLocaleString()}
-                    </p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    disabled={busy}
-                    onClick={async () => {
-                      if (
-                        await ask(
-                          t("riskControl.text154", { value0: b.api_key_id }),
-                        )
-                      )
-                        void perform(
-                          () => api.unbanRiskKey(b.api_key_id),
-                          t("riskControl.text155"),
-                        );
-                    }}
-                  >
-                    {t("riskControl.text156")}
-                  </Button>
-                </div>
-              ))
-            )}
-          </Section>
           <Section
             title={t("riskControl.text157")}
             description={t("riskControl.text158")}

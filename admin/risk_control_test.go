@@ -36,6 +36,38 @@ func TestRiskControlAdminConfigAndAuth(t *testing.T) {
 		r.ServeHTTP(rec, req)
 		return rec
 	}
+	if !s.Config().FallbackOnBlock {
+		t.Fatal("fallback switch should default on")
+	}
+	for _, test := range []struct {
+		body string
+		want bool
+	}{
+		{`{"fallback_on_block_enabled":false}`, false},
+		{`{"sample_rate":50}`, false}, // Omitted field must preserve an explicit false.
+		{`{"fallback_on_block_enabled":true}`, true},
+	} {
+		rec := call("PUT", "/config", test.body, "risk-admin-test")
+		expected := `"fallback_on_block_enabled":false`
+		if test.want {
+			expected = `"fallback_on_block_enabled":true`
+		}
+		if rec.Code != 200 || s.Config().FallbackOnBlock != test.want || !strings.Contains(rec.Body.String(), expected) {
+			t.Fatalf("switch patch: %d %s", rec.Code, rec.Body.String())
+		}
+		stored, err := db.LoadRiskConfig(context.Background())
+		if err != nil || stored.FallbackOnBlock != test.want {
+			t.Fatalf("switch persistence: %+v %v", stored, err)
+		}
+	}
+	for _, route := range []struct{ method, path string }{{"GET", "/bans"}, {"POST", "/keys/1/unban"}, {"POST", "/api-keys/legacy/test"}, {"DELETE", "/api-keys/legacy"}} {
+		if rec := call(route.method, route.path, "", "risk-admin-test"); rec.Code != 404 {
+			t.Fatalf("removed route: %d", rec.Code)
+		}
+	}
+	if rec := call("PUT", "/config", `{"auto_ban_enabled":true,"ban_threshold":1,"violation_window_hours":24}`, "risk-admin-test"); rec.Code != 200 || strings.Contains(rec.Body.String(), "auto_ban_enabled") || s.Config().AutoBan {
+		t.Fatalf("legacy patch: %d %s", rec.Code, rec.Body.String())
+	}
 	if rec := call("GET", "/config", "", ""); rec.Code != 401 {
 		t.Fatalf("auth %d %s", rec.Code, rec.Body.String())
 	}
@@ -47,7 +79,7 @@ func TestRiskControlAdminConfigAndAuth(t *testing.T) {
 		t.Fatal("secret leaked")
 	}
 	rec = call("PUT", "/config", `{"sample_rate":30}`, "risk-admin-test")
-	if rec.Code != 200 || len(s.Config().APIKeys) != 1 || s.Config().SMTPPassword != "smtp-private-secret" {
+	if rec.Code != 200 || len(s.Config().APIKeys) != 0 || s.Config().SMTPPassword != "" {
 		t.Fatal("partial update lost secrets")
 	}
 	rec = call("PUT", "/config", `{"worker_count":0}`, "risk-admin-test")

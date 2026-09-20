@@ -8,35 +8,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
-func TestRiskControlScopesAndSampling(t *testing.T) {
+func TestRiskControlSampling(t *testing.T) {
 	c := DefaultConfig()
-	c.APIKeyIDs, c.GroupIDs = []int64{7}, []int64{3}
-	r := Request{APIKeyID: 7, GroupIDs: []int64{2, 3}, Model: "Model-A"}
-	if !inScope(c, r) {
-		t.Fatal("matching caller scope excluded")
-	}
-	r.GroupIDs = nil
-	if inScope(c, r) {
-		t.Fatal("unrestricted caller must not implicitly match explicit group scope")
-	}
-	r.GroupIDs = []int64{3}
-	r.APIKeyID = 8
-	if inScope(c, r) {
-		t.Fatal("caller key scope ignored")
-	}
-	r.APIKeyID = 7
-	c.ModelFilter, c.Models = "include", []string{"model-a"}
-	if !inScope(c, r) {
-		t.Fatal("case-insensitive model include failed")
-	}
-	c.ModelFilter = "exclude"
-	if inScope(c, r) {
-		t.Fatal("model exclusion ignored")
-	}
-	c = DefaultConfig()
+	r := Request{Model: "Model-A"}
 	c.SampleRate = 0
 	c.Keywords = []string{"blocked"}
 	r.Input.Text = "BLOCKED"
@@ -47,38 +23,6 @@ func TestRiskControlScopesAndSampling(t *testing.T) {
 	r.Input.Text = "clean"
 	if d, done := s.local(context.Background(), r, c, newMatcher(c.Keywords)); !done || d.Action != "sample_skipped" {
 		t.Fatal("zero sampling invoked API")
-	}
-}
-
-func TestRiskControlKeyRetryCooldown(t *testing.T) {
-	var badCalls, goodCalls atomic.Int64
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "Bearer bad-fixture" {
-			badCalls.Add(1)
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		goodCalls.Add(1)
-		_, _ = w.Write([]byte(`{"results":[{"category_scores":{"violence":0.1}}]}`))
-	}))
-	defer remote.Close()
-	c := DefaultConfig()
-	c.BaseURL, c.APIKeys, c.RetryCount = remote.URL, []string{"bad-fixture", "good-fixture"}, 1
-	s := &Service{health: map[string]KeyHealth{}}
-	for i := 0; i < 3; i++ {
-		if scores, err := s.call(context.Background(), Input{Text: "test"}, c); err != nil || scores["violence"] != 0.1 {
-			t.Fatalf("retry/cooldown call %d: %v %v", i, scores, err)
-		}
-	}
-	if badCalls.Load() != 1 || goodCalls.Load() != 3 {
-		t.Fatal("frozen credential reused or retry failed")
-	}
-	h := s.keyHealth("bad-fixture")
-	if h.Status != "frozen" || h.HTTPStatus != 401 || h.FrozenUntil < time.Now().Add(9*time.Minute).Unix() {
-		t.Fatalf("credential cooldown: %+v", h)
-	}
-	if strings.Contains(h.Hint, "bad-fixture") {
-		t.Fatal("full credential leaked")
 	}
 }
 
@@ -102,25 +46,25 @@ func TestRiskControlQueueBudgets(t *testing.T) {
 	}
 }
 
-func TestRiskControlModerationRedirectAndInvalidResponse(t *testing.T) {
+func TestRiskControlAuditRedirectAndInvalidResponse(t *testing.T) {
 	var leaked atomic.Int64
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { leaked.Add(1) }))
 	defer destination.Close()
 	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, destination.URL, 302) }))
 	defer redirect.Close()
 	c := DefaultConfig()
-	c.BaseURL = redirect.URL
+	node := auditTestNode("redirect", redirect.URL)
 	s := &Service{}
-	if _, code, err := s.callOnce(context.Background(), Input{Text: "test"}, c, "private-key"); code != 302 || err == nil {
-		t.Fatalf("redirect: %d %v", code, err)
+	if _, err := s.callAuditNode(context.Background(), c, node, "test"); err == nil {
+		t.Fatalf("redirect accepted")
 	}
 	if leaked.Load() != 0 {
 		t.Fatal("followed redirect with sensitive input")
 	}
 	for _, body := range []string{`{}`, `{"results":[]}`, `{"results":[{"category_scores":{"unknown":1}}]}`, `{"results":[{"category_scores":{"violence":2}}]}`} {
 		remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
-		c.BaseURL = remote.URL
-		if _, _, err := s.callOnce(context.Background(), Input{Text: "test"}, c, "key"); err == nil {
+		node.BaseURL = remote.URL
+		if _, err := s.callAuditNode(context.Background(), c, node, "test"); err == nil {
 			t.Errorf("accepted invalid response %s", body)
 		}
 		remote.Close()
@@ -202,12 +146,12 @@ func TestRiskControlConfigAndRedaction(t *testing.T) {
 		t.Fatal("worker bounds")
 	}
 	c = DefaultConfig()
-	c.Thresholds["hate"] = 2
+	c.Audit.BlockThreshold = 2
 	if c.Validate() == nil {
 		t.Fatal("threshold bounds")
 	}
 	c = DefaultConfig()
-	c.BaseURL = "https://user:secret@example.test"
+	c.Audit.Nodes = []AuditNode{auditTestNode("invalid", "https://user:secret@example.test")}
 	if c.Validate() == nil {
 		t.Fatal("URL credentials")
 	}

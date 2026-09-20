@@ -608,6 +608,9 @@ func (h *Handler) Messages(c *gin.Context) {
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()
+	if !requireRiskControlFallbackHTTP(c, fallbackState, true) {
+		return
+	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {
@@ -771,6 +774,7 @@ func (h *Handler) Messages(c *gin.Context) {
 					claudeRequestBody = normalized
 				}
 				if !account.IsClaudeAPIKey() && !bytes.Equal(claudeRequestBody, reviewedClaudeBody) {
+					c.Set(contextRiskPrimarySelected, !account.IsExternalFallback())
 					// Recheck changed prompt content once; transport-only normalization and
 					// retries of an already reviewed payload do not repeat external review.
 					if !sameAnthropicPromptContent(claudeRequestBody, reviewedClaudeBody) && h.inspectPromptFilterAnthropic(c, claudeRequestBody, "/v1/messages", model) {

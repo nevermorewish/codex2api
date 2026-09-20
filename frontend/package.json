@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --experimental-strip-types --test src/lib/*.test.mjs",
+    "test:risk": "node --experimental-strip-types --test tests/riskControl.browser.test.mjs",
     "test:svg": "node --experimental-strip-types --test tests/qualityTestSVG.browser.test.mjs",
     "typecheck": "tsc --noEmit",
     "audit:ci": "node scripts/audit-gate.mjs"

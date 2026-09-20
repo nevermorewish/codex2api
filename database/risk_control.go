@@ -38,9 +38,11 @@ func (db *DB) LoadRiskConfig(ctx context.Context) (riskcontrol.Config, error) {
 		return c, err
 	}
 	err = json.Unmarshal([]byte(raw), &c)
+	c.NormalizeRetiredSettings()
 	return c, err
 }
 func (db *DB) SaveRiskConfig(ctx context.Context, c riskcontrol.Config) error {
+	c.NormalizeRetiredSettings()
 	raw, err := json.Marshal(c)
 	if err != nil {
 		return err
@@ -63,78 +65,15 @@ func (db *DB) DeleteRiskHash(ctx context.Context, hash string) error {
 	_, err := db.conn.ExecContext(ctx, q, args...)
 	return err
 }
-func (db *DB) RiskBan(ctx context.Context, id int64) (bool, error) {
-	var blocked bool
-	err := db.conn.QueryRowContext(ctx, `SELECT blocked FROM risk_control_bans WHERE api_key_id=$1`, id).Scan(&blocked)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return blocked, err
-}
-func (db *DB) UnbanRiskKey(ctx context.Context, id int64) error {
-	tx, err := db.conn.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `UPDATE risk_control_bans SET blocked=FALSE,reset_at=$1 WHERE api_key_id=$2`, time.Now().UnixMilli(), id); err != nil {
-		return err
-	}
-	// Clear only the counting flag, not historical evidence. This avoids losing
-	// a new violation that happens within the same millisecond as an unban.
-	if _, err = tx.ExecContext(ctx, `UPDATE risk_control_logs SET counted=FALSE WHERE api_key_id=$1`, id); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-func (db *DB) RiskBans(ctx context.Context) ([]riskcontrol.Ban, error) {
-	rows, err := db.conn.QueryContext(ctx, `SELECT api_key_id,name,created_at,reset_at,blocked FROM risk_control_bans WHERE blocked=TRUE ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []riskcontrol.Ban{}
-	for rows.Next() {
-		var b riskcontrol.Ban
-		if err := rows.Scan(&b.APIKeyID, &b.Name, &b.CreatedAt, &b.ResetAt, &b.Blocked); err != nil {
-			return nil, err
-		}
-		out = append(out, b)
-	}
-	return out, rows.Err()
-}
 func (db *DB) RecordRiskEvent(ctx context.Context, e *riskcontrol.Event, c riskcontrol.Config) error {
 	tx, err := db.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	// Legacy bans are retained only as historical data; new events never ban keys.
+	e.AutoBanned, e.ViolationCount = false, 0
 	counted := e.Flagged && e.Action != "hash_block"
-	if counted && e.APIKeyID > 0 {
-		// The upsert obtains the per-key row lock before counting (also serializes SQLite writers).
-		_, err = tx.ExecContext(ctx, `INSERT INTO risk_control_bans(api_key_id,name,blocked,created_at,reset_at) VALUES($1,$2,FALSE,$3,0) ON CONFLICT(api_key_id) DO UPDATE SET name=excluded.name`, e.APIKeyID, e.APIKeyName, e.CreatedAt)
-		if err != nil {
-			return err
-		}
-		var reset int64
-		if err = tx.QueryRowContext(ctx, `SELECT reset_at FROM risk_control_bans WHERE api_key_id=$1`, e.APIKeyID).Scan(&reset); err != nil {
-			return err
-		}
-		since := time.Now().Add(-time.Duration(c.WindowHours) * time.Hour).UnixMilli()
-		if reset > since {
-			since = reset
-		}
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM risk_control_logs WHERE api_key_id=$1 AND counted=TRUE AND created_at>=$2`, e.APIKeyID, since).Scan(&e.ViolationCount); err != nil {
-			return err
-		}
-		e.ViolationCount++
-		if c.AutoBan && e.ViolationCount >= c.BanThreshold {
-			e.AutoBanned = true
-			if _, err = tx.ExecContext(ctx, `UPDATE risk_control_bans SET blocked=TRUE,created_at=$1 WHERE api_key_id=$2`, e.CreatedAt, e.APIKeyID); err != nil {
-				return err
-			}
-		}
-	}
 	if counted && e.Action != "keyword_block" && (e.Audit == nil || e.Audit.WouldBlock) {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO risk_control_hashes(hash,created_at) VALUES($1,$2) ON CONFLICT(hash) DO NOTHING`, e.InputHash, e.CreatedAt); err != nil {
 			return err
@@ -198,7 +137,7 @@ func (db *DB) RiskStats(ctx context.Context) (riskcontrol.Stats, error) {
 		query  string
 		target *int64
 	}{
-		{`SELECT COUNT(*) FROM risk_control_logs`, &s.Total}, {`SELECT COUNT(*) FROM risk_control_logs WHERE flagged=TRUE`, &s.Hits}, {`SELECT COUNT(*) FROM risk_control_logs WHERE blocked=TRUE`, &s.Blocked}, {`SELECT COUNT(*) FROM risk_control_hashes`, &s.Hashes}, {`SELECT COUNT(*) FROM risk_control_bans WHERE blocked=TRUE`, &s.Bans},
+		{`SELECT COUNT(*) FROM risk_control_logs`, &s.Total}, {`SELECT COUNT(*) FROM risk_control_logs WHERE flagged=TRUE`, &s.Hits}, {`SELECT COUNT(*) FROM risk_control_logs WHERE blocked=TRUE`, &s.Blocked}, {`SELECT COUNT(*) FROM risk_control_hashes`, &s.Hashes},
 	} {
 		if err := db.conn.QueryRowContext(ctx, q.query).Scan(q.target); err != nil {
 			return s, err
@@ -213,22 +152,4 @@ func (db *DB) CleanupRiskLogs(ctx context.Context, c riskcontrol.Config) (int64,
 		return 0, err
 	}
 	return res.RowsAffected()
-}
-
-func (db *DB) MarkRiskEmailSent(ctx context.Context, id string) error {
-	var raw string
-	if err := db.conn.QueryRowContext(ctx, `SELECT payload FROM risk_control_logs WHERE id=$1`, id).Scan(&raw); err != nil {
-		return err
-	}
-	var event riskcontrol.Event
-	if err := json.Unmarshal([]byte(raw), &event); err != nil {
-		return err
-	}
-	event.EmailSent = true
-	encoded, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	_, err = db.conn.ExecContext(ctx, `UPDATE risk_control_logs SET payload=$1 WHERE id=$2`, string(encoded), id)
-	return err
 }

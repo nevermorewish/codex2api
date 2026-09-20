@@ -25,35 +25,16 @@ func (h *Handler) registerRiskControlRoutes(api *gin.RouterGroup) {
 	r.PUT("/config", h.updateRiskConfig)
 	r.GET("/status", h.riskStatus)
 	r.GET("/logs", h.riskLogs)
-	r.GET("/bans", h.riskBans)
-	r.POST("/keys/:id/unban", h.riskUnban)
 	r.POST("/test", h.riskTest)
 	r.POST("/model-audit/test", h.riskTestModelAudit)
-	r.POST("/api-keys/:id/test", h.riskTestKey)
-	r.DELETE("/api-keys/:id", h.riskRemoveKey)
 	r.POST("/cleanup", h.riskCleanup)
 	r.DELETE("/hashes/:hash", h.riskDeleteHash)
 	r.DELETE("/hashes", h.riskDeleteHash)
 }
 
-func (h *Handler) riskTestKey(c *gin.Context) {
-	v, err := h.riskControl.TestKey(c.Request.Context(), c.Param("id"))
-	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(200, v)
-}
-func (h *Handler) riskRemoveKey(c *gin.Context) {
-	if err := h.riskControl.DeleteKey(c.Request.Context(), c.Param("id")); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-	h.riskConfigView(c)
-}
 func (h *Handler) riskConfigView(c *gin.Context) {
 	cfg := h.riskControl.PublicConfig()
-	c.JSON(200, gin.H{"config": cfg, "smtp_password_configured": h.riskControl.Config().SMTPPassword != "", "categories": riskcontrol.Categories, "audit_categories": riskcontrol.AuditCategories, "audit_default_prompt": riskcontrol.DefaultAuditPrompt, "audit_category_prompt": riskcontrol.CategorizedAuditPrompt})
+	c.JSON(200, gin.H{"config": cfg, "audit_categories": riskcontrol.AuditCategories, "audit_default_prompt": riskcontrol.DefaultAuditPrompt, "audit_category_prompt": riskcontrol.CategorizedAuditPrompt})
 }
 
 func (h *Handler) riskTestModelAudit(c *gin.Context) {
@@ -106,26 +87,6 @@ func (h *Handler) riskLogs(c *gin.Context) {
 		return
 	}
 	c.JSON(200, v)
-}
-func (h *Handler) riskBans(c *gin.Context) {
-	v, err := h.riskControl.Store().RiskBans(c.Request.Context())
-	if err != nil {
-		c.JSON(500, gin.H{"error": "读取封禁记录失败"})
-		return
-	}
-	c.JSON(200, gin.H{"items": v})
-}
-func (h *Handler) riskUnban(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || id <= 0 {
-		c.JSON(400, gin.H{"error": "API Key ID 格式错误"})
-		return
-	}
-	if err = h.riskControl.Store().UnbanRiskKey(c.Request.Context(), id); err != nil {
-		c.JSON(500, gin.H{"error": "解封失败"})
-		return
-	}
-	c.JSON(200, gin.H{"ok": true})
 }
 func (h *Handler) riskDeleteHash(c *gin.Context) {
 	hash := c.Param("hash")

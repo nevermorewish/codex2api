@@ -3354,19 +3354,6 @@ func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFu
 		c.Set(contextAPIKeyName, strings.TrimSpace(apiKeyRow.Name))
 		c.Set(contextAPIKeyMasked, security.MaskAPIKey(apiKeyRow.Key))
 		c.Set(contextAPIKeyRow, apiKeyRow)
-		if h.riskControl != nil {
-			banned, err := h.riskControl.IsBanned(c.Request.Context(), apiKeyRow.ID)
-			if err != nil {
-				api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeServiceUnavailable, "风控状态暂时不可用", api.ErrorTypeServer), 503)
-				c.Abort()
-				return
-			}
-			if banned {
-				api.SendErrorWithStatus(c, api.NewAPIError(api.ErrorCode("risk_key_banned"), "该 API Key 已被风控封禁，请联系管理员", api.ErrorTypePermission), 403)
-				c.Abort()
-				return
-			}
-		}
 
 		h.attachAPIKeyModelRequestQuota(c, false)
 		c.Set("apiKey", key)
@@ -4174,6 +4161,9 @@ func (h *Handler) Responses(c *gin.Context) {
 	}
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()
+	if !requireRiskControlFallbackHTTP(c, fallbackState, !compactionAffinity.Known && !turnContinuationPinned) {
+		return
+	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {
@@ -6246,6 +6236,9 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		fallbackState = h.newFallbackRouteStateForRequest(accountFilter, len(rawBody), false)
 		maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	}
+	if !requireRiskControlFallbackHTTP(c, fallbackState, !compactionAffinity.Known) {
+		return
+	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {
@@ -7136,6 +7129,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	maxRetries, maxRateLimitRetries = fallbackState.retryBudgets(maxRetries, maxRateLimitRetries)
 	endLiveAttempt := func() {}
 	defer func() { endLiveAttempt() }()
+	if !requireRiskControlFallbackHTTP(c, fallbackState, true) {
+		return
+	}
 	c.Set(contextFallbackDeadlineState, fallbackState)
 	nextAttempt := 0
 	runAttempts := func() {

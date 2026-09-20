@@ -24,6 +24,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useConfirmDialog } from "../hooks/useConfirmDialog";
 import { getErrorMessage } from "../utils/error";
 import { api } from "../api";
+import { createAuditNodeID } from "../lib/riskControl";
 import type {
   AuditNode,
   ModelAuditPolicy,
@@ -148,22 +149,7 @@ export default function RiskModelAudit({
     <div className="space-y-5">
       {confirmDialog}
       <Section title={tr("title")} description={tr("intro")}>
-        <div className="grid gap-5 md:grid-cols-3">
-          <Field label={tr("engine")}>
-            <Select
-              value={config.audit_engine}
-              onValueChange={(v) =>
-                onChange({
-                  ...config,
-                  audit_engine: v as RiskConfig["audit_engine"],
-                })
-              }
-              options={[
-                { value: "moderations", label: tr("moderations") },
-                { value: "chat", label: tr("chat") },
-              ]}
-            />
-          </Field>
+        <div className="grid gap-5 md:grid-cols-2">
           <Field label={t("riskControl.text038")}>
             <Select
               value={config.mode}
@@ -208,7 +194,7 @@ export default function RiskModelAudit({
           disabled={a.nodes.length >= 16}
           onClick={() =>
             setEditing({
-              id: crypto.randomUUID(),
+              id: createAuditNodeID(),
               name: "",
               enabled: true,
               base_url: "https://api.openai.com",
