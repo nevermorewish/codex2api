@@ -194,6 +194,66 @@ test("HTTP dashboard adds, saves and reloads custom audit models without ban con
         .count(),
       0,
     );
+    // Shared settings have one editor; navigating tabs preserves the draft.
+    assert.equal(
+      await page
+        .getByRole("switch", { name: "审计失败时放行", exact: true })
+        .count(),
+      0,
+    );
+    await page.getByText("审计服务故障自动放行：", { exact: false }).waitFor();
+    const summary = page.getByRole("region", { name: "统一审核配置" });
+    assert.equal(await summary.getByRole("combobox").count(), 0);
+    assert.equal(await summary.getByRole("switch").count(), 0);
+    await page.getByRole("link", { name: "前往审核策略设置" }).click();
+    await page.getByLabel("审核模式", { exact: true }).click();
+    await page.getByRole("option", { name: "异步观察", exact: true }).click();
+    await page
+      .getByRole("link", { name: "自定义模型审计", exact: true })
+      .click();
+    assert.ok((await summary.innerText()).includes("异步观察"));
+    const prompt = page.getByRole("textbox", {
+      name: "自定义审核提示词",
+      exact: true,
+    });
+    const savePrompt = page.getByRole("button", {
+      name: "保存审核提示词",
+      exact: true,
+    });
+    await prompt.fill(
+      "Return JSON only. Custom audit prompt persistence test.",
+    );
+    const previousUpdates = updates;
+    await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/risk-control/config") &&
+          response.request().method() === "PUT",
+      ),
+      savePrompt.click(),
+    ]);
+    await page.waitForFunction(() => {
+      const button = [...document.querySelectorAll("button")].find((b) =>
+        b.textContent.includes("保存审核提示词"),
+      );
+      return button?.disabled;
+    });
+    assert.equal(updates, previousUpdates + 1);
+    assert.equal(saved.mode, "observe");
+    assert.equal(
+      saved.model_audit.system_prompt,
+      "Return JSON only. Custom audit prompt persistence test.",
+    );
+    await page.reload();
+    await summary.waitFor();
+    assert.equal(await prompt.inputValue(), saved.model_audit.system_prompt);
+    assert.equal(await savePrompt.isDisabled(), true);
+    assert.ok((await summary.innerText()).includes("异步观察"));
+    await page.getByRole("link", { name: "前往审核策略设置" }).click();
+    assert.equal(
+      await page.getByLabel("审核模式", { exact: true }).innerText(),
+      "异步观察",
+    );
     await page.getByRole("link", { name: "历史 Hash", exact: true }).click();
     assert.equal(
       await page.getByText("已封禁调用方 API Keys", { exact: true }).count(),

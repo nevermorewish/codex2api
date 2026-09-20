@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func auditTestNode(id, endpoint string) AuditNode {
@@ -74,13 +75,12 @@ func TestRiskControlModelAuditChunksAndFailurePolicy(t *testing.T) {
 		t.Fatalf("chunks %+v calls %d", d, calls.Load())
 	}
 	c.Audit.Nodes = nil
-	d = s.evaluate(context.Background(), Input{Text: "test"}, c)
-	if !d.Blocked || d.Status != 503 || d.Flagged {
-		t.Fatalf("fail-closed %+v", d)
-	}
-	c.Audit.FailOpen = true
-	if d = s.evaluate(context.Background(), Input{Text: "test"}, c); d.Blocked || d.Action != "error" {
-		t.Fatalf("fail-open %+v", d)
+	for _, legacyFailOpen := range []bool{false, true} {
+		c.Audit.FailOpen = legacyFailOpen
+		d = s.evaluate(context.Background(), Input{Text: "test"}, c)
+		if d.Blocked || d.Status != 0 || d.Flagged || d.Action != "error" || d.Error == "" {
+			t.Fatalf("node outage must fail open, legacy setting %v: %+v", legacyFailOpen, d)
+		}
 	}
 }
 func TestRiskControlModelAuditContract(t *testing.T) {
@@ -138,5 +138,41 @@ func TestRiskControlModelAuditRejectsRedirectAndMalformedOutput(t *testing.T) {
 			t.Errorf("accepted invalid completion %s", raw)
 		}
 		server.Close()
+	}
+}
+
+func TestRiskControlModelAuditFailuresAlwaysAllow(t *testing.T) {
+	for _, scenario := range []string{"http_503", "unauthorized", "invalid_json", "timeout", "connection"} {
+		t.Run(scenario, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch scenario {
+				case "http_503":
+					w.WriteHeader(http.StatusServiceUnavailable)
+				case "unauthorized":
+					w.WriteHeader(http.StatusUnauthorized)
+				case "invalid_json":
+					writeAuditCompletion(w, "not JSON")
+				case "timeout":
+					// Bound the test handler even if the server has not consumed the request body.
+					time.Sleep(200 * time.Millisecond)
+				}
+			}))
+			defer server.Close()
+			if scenario == "connection" {
+				server.Close()
+			}
+			c := DefaultConfig()
+			c.Audit.FailOpen = false // Old stored configs must not restore failure blocking.
+			c.Audit.Nodes = []AuditNode{auditTestNode("failed", server.URL)}
+			c.Audit.Nodes[0].TimeoutMS = 100
+			for _, mode := range []string{"pre_block", "observe"} {
+				c.Mode = mode
+				s := &Service{}
+				d := s.evaluate(context.Background(), Input{Text: "hello"}, c)
+				if d.Blocked || d.Flagged || d.Status != 0 || d.Message != "" || d.Action != "error" || d.Error == "" || s.failures.Load() != 1 {
+					t.Fatalf("%s must allow with diagnostics: %+v", mode, d)
+				}
+			}
+		})
 	}
 }

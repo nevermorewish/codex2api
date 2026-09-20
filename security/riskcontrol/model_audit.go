@@ -40,7 +40,8 @@ type AuditConfig struct {
 	Categories     []string    `json:"categories"`
 	BlockThreshold float64     `json:"block_threshold"`
 	FlagThreshold  float64     `json:"flag_threshold"`
-	FailOpen       bool        `json:"fail_open"`
+	// Deprecated: retained for old clients; audit failures always fail open.
+	FailOpen bool `json:"fail_open"`
 }
 type AuditResult struct {
 	Risk       string   `json:"risk"`
@@ -54,9 +55,10 @@ type AuditResult struct {
 }
 
 func DefaultAuditConfig() AuditConfig {
-	return AuditConfig{Nodes: []AuditNode{}, SystemPrompt: DefaultAuditPrompt, Categories: append([]string{}, AuditCategories...), BlockThreshold: .7, FlagThreshold: .4}
+	return AuditConfig{FailOpen: true, Nodes: []AuditNode{}, SystemPrompt: DefaultAuditPrompt, Categories: append([]string{}, AuditCategories...), BlockThreshold: .7, FlagThreshold: .4}
 }
 func (a *AuditConfig) Validate() error {
+	a.FailOpen = true
 	// Compatibility with older code constructing Config literals.
 	if a.SystemPrompt == "" && a.Nodes == nil {
 		*a = DefaultAuditConfig()
@@ -276,13 +278,9 @@ func (s *Service) evaluateAudit(ctx context.Context, input Input, c Config) Deci
 	finish := func(d Decision) Decision { d.LatencyMS = time.Since(start).Milliseconds(); return d }
 	fail := func(err error) Decision {
 		s.failures.Add(1)
-		d := Decision{Action: "error", Error: err.Error()}
-		if !c.Audit.FailOpen && c.Mode == "pre_block" {
-			d.Blocked = true
-			d.Status = 503
-			d.Message = "内容审计暂时不可用，请稍后重试"
-		}
-		return finish(d)
+		// A failed reviewer is not a content-policy hit. Keep the diagnostic,
+		// but let the request continue through its normal upstream route.
+		return finish(Decision{Action: "error", Error: err.Error()})
 	}
 	nodes := []AuditNode{}
 	chunkSize := 400000

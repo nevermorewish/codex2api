@@ -50,10 +50,16 @@ func TestRiskControlDirectFallbackRouting(t *testing.T) {
 	ApplyRuntimeSettings(settings)
 	service := keywordRiskService(t)
 	for _, endpoint := range []string{"/v1/responses", "/v1/responses/compact", "/v1/chat/completions", "/v1/messages"} {
-		for _, scenario := range []string{"hit", "streaming", "clean", "switch_off", "disabled", "empty", "model_mismatch", "fallback_failure"} {
+		for _, scenario := range []string{"hit", "streaming", "clean", "switch_off", "disabled", "empty", "model_mismatch", "fallback_failure", "audit_failure"} {
 			t.Run(endpoint+"/"+scenario, func(t *testing.T) {
 				cfg := service.Config()
 				cfg.FallbackOnBlock = scenario != "switch_off"
+				cfg.Strategy = "keyword_only"
+				if scenario == "audit_failure" {
+					cfg.Strategy = "api_only"
+					cfg.Audit.Nodes = nil
+					cfg.Audit.FailOpen = false
+				}
 				if err := service.Update(context.Background(), cfg); err != nil {
 					t.Fatal(err)
 				}
@@ -124,7 +130,7 @@ func TestRiskControlDirectFallbackRouting(t *testing.T) {
 				}
 				wantPrimary, wantFallback, wantStatus := int32(0), int32(1), 200
 				switch scenario {
-				case "clean":
+				case "clean", "audit_failure":
 					wantPrimary, wantFallback = 1, 0
 				case "switch_off", "disabled", "empty", "model_mismatch":
 					wantFallback, wantStatus = 0, 403
@@ -361,7 +367,7 @@ func TestRiskControlNonBlockingAndErrorsDoNotForceFallback(t *testing.T) {
 	h := &Handler{riskControl: service, fallbackPool: pool}
 	failedAudit := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) }))
 	defer failedAudit.Close()
-	for _, scenario := range []string{"off", "disabled", "observe", "fail_open", "fail_closed", "selected_primary"} {
+	for _, scenario := range []string{"off", "disabled", "observe", "fail_open", "legacy_fail_closed", "selected_primary"} {
 		t.Run(scenario, func(t *testing.T) {
 			cfg := riskcontrol.DefaultConfig()
 			cfg.Enabled = true
@@ -374,7 +380,7 @@ func TestRiskControlNonBlockingAndErrorsDoNotForceFallback(t *testing.T) {
 				cfg.Enabled = false
 			case "observe":
 				cfg.Mode = "observe"
-			case "fail_open", "fail_closed":
+			case "fail_open", "legacy_fail_closed":
 				cfg.Engine = "chat"
 				cfg.Strategy = "api_only"
 				cfg.Audit.FailOpen = scenario == "fail_open"
@@ -390,12 +396,12 @@ func TestRiskControlNonBlockingAndErrorsDoNotForceFallback(t *testing.T) {
 			if _, ok := c.Get(contextRiskControlFallback); ok {
 				t.Fatalf("%s incorrectly forced fallback: %+v", scenario, d)
 			}
-			wantBlocked := scenario == "fail_closed" || scenario == "selected_primary"
+			wantBlocked := scenario == "selected_primary"
 			if d.Blocked != wantBlocked {
 				t.Fatalf("decision=%+v", d)
 			}
-			if scenario == "fail_closed" && d.Status != 503 {
-				t.Fatalf("lost review failure status: %+v", d)
+			if (scenario == "fail_open" || scenario == "legacy_fail_closed") && (d.Status != 0 || d.Action != "error" || d.Error == "") {
+				t.Fatalf("audit failure must allow with diagnostics: %+v", d)
 			}
 		})
 	}

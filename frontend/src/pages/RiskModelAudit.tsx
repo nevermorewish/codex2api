@@ -14,10 +14,11 @@ import {
   Trash2,
   FlaskConical,
   RefreshCw,
+  Save,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+import { Link } from "react-router-dom";
 import { Switch } from "@/components/ui/switch";
 import { DraftNumberInput } from "@/components/ui/draft-number-input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -77,10 +78,16 @@ export default function RiskModelAudit({
   config,
   view,
   onChange,
+  onSave,
+  saving,
+  dirty,
 }: {
   config: RiskConfig;
   view: RiskConfigView;
   onChange: (config: RiskConfig) => void;
+  onSave: () => Promise<void>;
+  saving: boolean;
+  dirty: boolean;
 }) {
   const { t } = useTranslation();
   const tr = (key: string) => t("riskControl.modelAudit." + key);
@@ -149,41 +156,63 @@ export default function RiskModelAudit({
     <div className="space-y-5">
       {confirmDialog}
       <Section title={tr("title")} description={tr("intro")}>
-        <div className="grid gap-5 md:grid-cols-2">
-          <Field label={t("riskControl.text038")}>
-            <Select
-              value={config.mode}
-              onValueChange={(v) =>
-                onChange({ ...config, mode: v as RiskConfig["mode"] })
-              }
-              options={[
-                { value: "off", label: t("riskControl.text039") },
-                { value: "observe", label: t("riskControl.text028") },
-                { value: "pre_block", label: t("riskControl.text040") },
-              ]}
-            />
-          </Field>
-          <Field label={t("riskControl.text041")}>
-            <Select
-              value={config.keyword_blocking_mode}
-              onValueChange={(v) =>
-                onChange({
-                  ...config,
-                  keyword_blocking_mode:
-                    v as RiskConfig["keyword_blocking_mode"],
-                })
-              }
-              options={[
-                { value: "keyword_only", label: t("riskControl.text043") },
-                { value: "keyword_and_api", label: t("riskControl.text042") },
-                { value: "api_only", label: t("riskControl.text044") },
-              ]}
-            />
-          </Field>
+        <div
+          role="region"
+          aria-label={tr("sharedPolicy")}
+          className="space-y-3"
+        >
+          <p className="text-sm text-muted-foreground">
+            {tr("sharedPolicyHint")}
+          </p>
+          <dl className="grid gap-4 text-sm md:grid-cols-3">
+            <div>
+              <dt className="text-muted-foreground">
+                {t("riskControl.text037")}
+              </dt>
+              <dd>
+                {t(
+                  config.enabled
+                    ? "riskControl.text026"
+                    : "riskControl.text027",
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">
+                {t("riskControl.text038")}
+              </dt>
+              <dd>
+                {t(
+                  config.mode === "off"
+                    ? "riskControl.text039"
+                    : config.mode === "observe"
+                      ? "riskControl.text028"
+                      : "riskControl.text040",
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">
+                {t("riskControl.text041")}
+              </dt>
+              <dd>
+                {t(
+                  config.keyword_blocking_mode === "keyword_only"
+                    ? "riskControl.text043"
+                    : config.keyword_blocking_mode === "api_only"
+                      ? "riskControl.text044"
+                      : "riskControl.text042",
+                )}
+              </dd>
+            </div>
+          </dl>
+          <Link
+            className="inline-block text-sm text-primary underline underline-offset-4"
+            to="/risk-control/policy"
+          >
+            {tr("editSharedPolicy")}
+          </Link>
         </div>
-        {toggle(t("riskControl.text037"), config.enabled, (v) =>
-          onChange({ ...config, enabled: v }),
-        )}
         <p className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
           {tr("activationHint")}
         </p>
@@ -484,9 +513,7 @@ export default function RiskModelAudit({
               />
             </Field>
             <p className="text-xs text-muted-foreground">{tr("queueHint")}</p>
-            {toggle(tr("failOpen"), a.fail_open, (v) =>
-              patch({ fail_open: v }),
-            )}
+            <p className="rounded-lg bg-muted p-3 text-sm">{tr("failOpen")}</p>
             {toggle(tr("storePass"), config.record_non_hits, (v) =>
               onChange({ ...config, record_non_hits: v }),
             )}
@@ -581,6 +608,15 @@ export default function RiskModelAudit({
             count: Array.from(a.system_prompt).length,
           })}
         </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button disabled={saving || !dirty} onClick={() => void onSave()}>
+            <Save className="size-4" />
+            {saving ? t("riskControl.text020") : tr("savePrompt")}
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            {tr("savePromptHint")}
+          </p>
+        </div>
         <pre className="overflow-x-auto rounded-lg bg-muted p-3 text-xs">
           {
             '{"risk":"safe|controversial|unsafe","confidence":0.8,"categories":["violence"],"reason":"..."}'

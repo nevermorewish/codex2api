@@ -370,6 +370,9 @@ export default function RiskControl() {
         <RiskModelAudit
           config={form}
           view={config}
+          onSave={save}
+          saving={busy}
+          dirty={dirty}
           onChange={(next) => {
             setForm(next);
             setDirty(true);

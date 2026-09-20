@@ -313,7 +313,8 @@ func (s *Service) Test(ctx context.Context, input Input) (Decision, error) {
 }
 func (s *Service) TestKeyword(text string) string { return s.current.Load().matcher.Match(text) }
 func (s *Service) record(ctx context.Context, r Request, c Config, d *Decision) {
-	if !d.Flagged && !c.RecordNonHits {
+	// Review failures remain visible even when routine pass logging is off.
+	if !d.Flagged && d.Action != "error" && !c.RecordNonHits {
 		return
 	}
 	e := Event{ID: newEventID(), CreatedAt: time.Now().UnixMilli(), APIKeyID: r.APIKeyID, APIKeyName: r.APIKeyName, Endpoint: r.Endpoint, Model: r.Model, Mode: c.Mode, InputHash: inputPolicyHash(c, r.Input), Excerpt: Redact(r.Input.Text), Decision: *d}

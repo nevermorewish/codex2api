@@ -117,6 +117,7 @@ func unique(items []string, fold bool) []string {
 // NormalizeRetiredSettings accepts old stored configs and old admin clients,
 // but never keeps hidden scope restrictions, caller bans or mail delivery active.
 func (c *Config) NormalizeRetiredSettings() {
+	c.Audit.FailOpen = true
 	c.Engine = "chat"
 	c.BaseURL, c.Model, c.ProxyURL = "", "", ""
 	c.APIKeys, c.Thresholds = nil, nil

@@ -21,7 +21,9 @@ test('risk center follows shared controls, routes and localization contracts',()
 test('custom model audit exposes pool, policy, prompt and dry-run with shared controls',()=>{
  const page=readFileSync(new URL('../pages/RiskModelAudit.tsx',import.meta.url),'utf8')
  assert.doesNotMatch(page,/<select[\s>]|<Input\s+type="number"|window\.confirm/)
- for(const token of ['api.testModelAudit','system_prompt','block_threshold','flag_threshold','fail_open','max_input_chars','clear_api_key','ArrowUp','ArrowDown','useConfirmDialog','<DraftNumberInput','<Switch','<Select'])assert.ok(page.includes(token),token)
+ for(const token of ['api.testModelAudit','system_prompt','block_threshold','flag_threshold','tr("failOpen")','max_input_chars','clear_api_key','ArrowUp','ArrowDown','useConfirmDialog','<DraftNumberInput','<Switch','onSave()','tr("savePrompt")'])assert.ok(page.includes(token),token)
+ assert.doesNotMatch(page, /<Select|mode: v|enabled: v|keyword_blocking_mode:|patch\(\{ fail_open/)
+ assert.ok(page.includes('to="/risk-control/policy"'))
  const locales=['zh','zh-TW','en'].map(name=>JSON.parse(readFileSync(new URL('../locales/'+name+'.json',import.meta.url),'utf8')).riskControl.modelAudit)
  for(const locale of locales) {
    assert.deepEqual(Object.keys(locale),Object.keys(locales[0]))

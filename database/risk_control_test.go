@@ -266,8 +266,8 @@ func TestRiskControlFailureAndTestNoSideEffects(t *testing.T) {
 	defer s.Close()
 	c := riskcontrol.DefaultConfig()
 	c.Enabled = true
-	c.RecordNonHits = true
-	c.Audit.FailOpen = true
+	c.RecordNonHits = false
+	c.Audit.FailOpen = false
 	c.Strategy = "api_only"
 	if err = s.Update(ctx, c); err != nil {
 		t.Fatal(err)
@@ -277,6 +277,13 @@ func TestRiskControlFailureAndTestNoSideEffects(t *testing.T) {
 		t.Fatalf("fail-open: %+v", d)
 	}
 	before, _ := db.RiskStats(ctx)
+	if before.Total != 1 || before.Blocked != 0 || before.Hashes != 0 {
+		t.Fatalf("audit error must be recorded without blocking or hash: %+v", before)
+	}
+	logs, err := db.RiskLogs(ctx, riskcontrol.LogFilter{})
+	if err != nil || len(logs.Items) != 1 || logs.Items[0].Action != "error" || logs.Items[0].Error == "" {
+		t.Fatalf("missing audit failure reason: %+v %v", logs, err)
+	}
 	_, _ = s.Test(ctx, riskcontrol.Input{Text: "test"})
 	after, _ := db.RiskStats(ctx)
 	if before != after {
@@ -473,5 +480,36 @@ func TestRiskControlLegacyEngineKeepsCustomPool(t *testing.T) {
 	}
 	if s.Config().Engine != "chat" || s.Config().Audit.Nodes[0].APIKey != "keep-this-secret" {
 		t.Fatal("legacy client changed active pool")
+	}
+}
+
+func TestRiskControlLegacyFailClosedConfigLoadsAsFailOpen(t *testing.T) {
+	db := riskTestDB(t)
+	ctx := context.Background()
+	c := riskcontrol.DefaultConfig()
+	c.Enabled = true
+	c.Audit.FailOpen = false
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bypass SaveRiskConfig to simulate a config written by an older server.
+	_, err = db.conn.ExecContext(ctx, `INSERT INTO risk_control_config(id,payload) VALUES(1,$1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload`, string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := db.LoadRiskConfig(ctx)
+	if err != nil || !loaded.Audit.FailOpen {
+		t.Fatalf("legacy config: %+v %v", loaded, err)
+	}
+	if err := db.SaveRiskConfig(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.conn.QueryRowContext(ctx, `SELECT payload FROM risk_control_config WHERE id=1`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var stored riskcontrol.Config
+	if err := json.Unmarshal(raw, &stored); err != nil || !stored.Audit.FailOpen {
+		t.Fatalf("stored config: %+v %v", stored, err)
 	}
 }
