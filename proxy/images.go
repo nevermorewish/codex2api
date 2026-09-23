@@ -1173,6 +1173,11 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 }
 
 func (h *Handler) ImagesGenerations(c *gin.Context) {
+	releaseImage, admitted := admitDirectImageExecution(c)
+	if !admitted {
+		return
+	}
+	defer releaseImage()
 	defer beginRelayRequest(c)()
 	rawBody, err := readRawRequestBody(c)
 	if err != nil {
@@ -1253,6 +1258,11 @@ func (h *Handler) ImagesGenerations(c *gin.Context) {
 }
 
 func (h *Handler) ImagesEdits(c *gin.Context) {
+	releaseImage, admitted := admitDirectImageExecution(c)
+	if !admitted {
+		return
+	}
+	defer releaseImage()
 	defer beginRelayRequest(c)()
 	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
 	if strings.HasPrefix(contentType, "application/json") {
@@ -1605,7 +1615,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 	defer stopRetryDeadline()
 	stopRetryKeepalive := installContinuousRetrySSEKeepalive(c, stream, "text/event-stream")
 	defer stopRetryKeepalive()
-		activateContinuousRetryKeepalive(c.Request.Context())
+	activateContinuousRetryKeepalive(c.Request.Context())
 	maxRetries := h.getMaxRetries()
 	maxRateLimitRetries := h.getMaxRateLimitRetries()
 	generalRetries := 0

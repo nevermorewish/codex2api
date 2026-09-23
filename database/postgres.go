@@ -29,6 +29,8 @@ const grokStateBackfillInitTimeout = 5 * time.Minute
 
 // AccountRow 数据库中的账号行
 type AccountRow struct {
+	GrokPlanDisplay         *GrokPlanDisplay
+	GrokModels              *GrokModelSummary
 	ID                      int64
 	CredentialGeneration    int64
 	CredentialFamilyID      string
@@ -251,8 +253,8 @@ const (
 	maxUsageLogFlushIntervalSeconds     = 300
 
 	postgresMaxBindParams       = 65535
-	usageLogInsertColumnCount   = 68
-	maxUsageLogInsertRowsPerSQL = 900 // 68 cols * 900 = 61200 < 65535 PG bind limit
+	usageLogInsertColumnCount   = 70
+	maxUsageLogInsertRowsPerSQL = 900 // 70 cols * 900 = 63000 < 65535 PG bind limit
 
 	// usageLogBufferHardLimit 内存缓冲的硬上限。PG 长时间不可用时（维护、主从切换、
 	// 磁盘写满）失败批次会一直被放回缓冲区，没有上限的话内存一路涨到 OOM——那会把
@@ -298,27 +300,31 @@ func NormalizeUsageLogFlushIntervalSeconds(n int) int {
 // usageLogEntry 日志缓冲条目
 type usageLogEntry struct {
 	UserBilling
-	RequestID              string
-	UpstreamRequestID      string
-	UpstreamProxyID        int64
-	UpstreamProxyName      string
-	InjectedTurnState      string
-	UpstreamTurnState      string
-	StoreUsageLog          bool
-	AccountID              int64
-	CredentialGeneration   int64
-	Channel                string
-	ClientIP               string
-	ClientUserAgent        string
-	UpstreamUserAgent      string
-	UserAgentOverridden    bool
-	TurnStateOverridden    bool
-	TurnStateRewriteNote   string
-	InternalReason         string
-	ParentRequestID        string
-	Endpoint               string
-	Model                  string
-	EffectiveModel         string
+	RequestID            string
+	UpstreamRequestID    string
+	UpstreamProxyID      int64
+	UpstreamProxyName    string
+	InjectedTurnState    string
+	UpstreamTurnState    string
+	StoreUsageLog        bool
+	AccountID            int64
+	CredentialGeneration int64
+	Channel              string
+	ClientIP             string
+	ClientUserAgent      string
+	UpstreamUserAgent    string
+	UserAgentOverridden  bool
+	TurnStateOverridden  bool
+	TurnStateRewriteNote string
+	InternalReason       string
+	ParentRequestID      string
+	Endpoint             string
+	Model                string
+	EffectiveModel       string
+	// UpstreamResponseModel is the model name reported by the upstream response.
+	UpstreamResponseModel string
+	// UpstreamModelMismatch is nil when upstream did not report a model.
+	UpstreamModelMismatch  *bool
 	PromptTokens           int
 	CompletionTokens       int
 	TotalTokens            int
@@ -457,6 +463,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		if err := db.migrate(ctx); err != nil {
 			return nil, fmt.Errorf("数据库迁移失败: %w", err)
 		}
+		if err := db.ensureCodexTurnStateTemplateSchema(ctx); err != nil {
+			return nil, fmt.Errorf("初始化 Turn-State 模板表失败: %w", err)
+		}
 		if err := db.ensureQualityTestSchema(ctx); err != nil {
 			return nil, fmt.Errorf("初始化检测记录表失败: %w", err)
 		}
@@ -488,6 +497,11 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		}
 		if err := db.ensurePromptConversationLocksTable(ctx); err != nil {
 			return nil, fmt.Errorf("创建提示词会话锁表失败: %w", err)
+		}
+		if err := db.ensureImageAssetRetentionSchema(ctx); err != nil {
+			backgroundTaskCancel()
+			_ = conn.Close()
+			return nil, fmt.Errorf("initialize image asset retention: %w", err)
 		}
 	}
 	if err := db.ensureProxyRiskScoringTables(ctx); err != nil {
@@ -2978,6 +2992,8 @@ func continuousRetryPolicySelectQuery(forUpdate bool) string {
 // database 包不能反向依赖 auth，故此处独立实现）。
 func NormalizeCodexFingerprintDefaultMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "single_machine_multi_window":
+		return "single_machine_multi_window"
 	case "device":
 		return "device"
 	case "session":
@@ -4256,6 +4272,8 @@ type UsageLog struct {
 	Endpoint               string    `json:"endpoint"`
 	Model                  string    `json:"model"`
 	EffectiveModel         string    `json:"effective_model"`
+	UpstreamResponseModel  string    `json:"upstream_response_model,omitempty"`
+	UpstreamModelMismatch  *bool     `json:"upstream_model_mismatch,omitempty"`
 	PromptTokens           int       `json:"prompt_tokens"`
 	CompletionTokens       int       `json:"completion_tokens"`
 	TotalTokens            int       `json:"total_tokens"`
@@ -4330,13 +4348,14 @@ type UsageLog struct {
 // 整条批量 INSERT 回滚，失败的 batch 又会被原样放回缓冲区头部，下一轮继续失败——
 // 单条脏数据就能永久堵死整个日志写入。因此写入前按列宽截断。
 const (
-	usageLogChannelMaxLen    = 16  // channel
-	usageLogImageSizeMaxLen  = 32  // image_size
-	usageLogShortTextMaxLen  = 64  // client_ip / api_key_masked / upstream_error_kind
-	usageLogTextMaxLen       = 100 // endpoint / model / *_service_tier / reasoning_effort ...
-	usageLogRequestIDMaxLen  = 128 // parent_request_id
-	usageLogTurnStateMaxLen  = 4096
-	usageLogAPIKeyNameMaxLen = 255 // api_key_name
+	usageLogChannelMaxLen       = 16  // channel
+	usageLogImageSizeMaxLen     = 32  // image_size
+	usageLogShortTextMaxLen     = 64  // client_ip / api_key_masked / upstream_error_kind
+	usageLogTextMaxLen          = 100 // endpoint / model / *_service_tier / reasoning_effort ...
+	upstreamResponseModelMaxLen = 200
+	usageLogRequestIDMaxLen     = 128 // parent_request_id
+	usageLogTurnStateMaxLen     = 4096
+	usageLogAPIKeyNameMaxLen    = 255 // api_key_name
 )
 
 // clampUsageLogText 按字符数截断：PostgreSQL varchar(n) 限制的是字符而非字节，
@@ -4425,6 +4444,8 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		Endpoint:               clampUsageLogText(log.Endpoint, usageLogTextMaxLen),
 		Model:                  clampUsageLogText(log.Model, usageLogTextMaxLen),
 		EffectiveModel:         clampUsageLogText(log.EffectiveModel, usageLogTextMaxLen),
+		UpstreamResponseModel:  clampUsageLogText(log.UpstreamResponseModel, upstreamResponseModelMaxLen),
+		UpstreamModelMismatch:  log.UpstreamModelMismatch,
 		PromptTokens:           log.PromptTokens,
 		CompletionTokens:       log.CompletionTokens,
 		TotalTokens:            log.TotalTokens,
@@ -4503,18 +4524,22 @@ type UsageLogInput struct {
 	// credential snapshot that issued it. Zero is legacy/unscoped traffic.
 	CredentialGeneration int64
 	// Channel 是处理该请求的上游渠道（codex/grok），写入时固化，空值表示未知。
-	Channel                string
-	ClientIP               string
-	ClientUserAgent        string
-	UpstreamUserAgent      string
-	UserAgentOverridden    bool
-	TurnStateOverridden    bool
-	TurnStateRewriteNote   string
-	InternalReason         string
-	ParentRequestID        string
-	Endpoint               string
-	Model                  string
-	EffectiveModel         string
+	Channel              string
+	ClientIP             string
+	ClientUserAgent      string
+	UpstreamUserAgent    string
+	UserAgentOverridden  bool
+	TurnStateOverridden  bool
+	TurnStateRewriteNote string
+	InternalReason       string
+	ParentRequestID      string
+	Endpoint             string
+	Model                string
+	EffectiveModel       string
+	// UpstreamResponseModel is the model name reported by the upstream response.
+	UpstreamResponseModel string
+	// UpstreamModelMismatch is nil when upstream did not report a model.
+	UpstreamModelMismatch  *bool
 	PromptTokens           int
 	CompletionTokens       int
 	TotalTokens            int
@@ -4866,20 +4891,20 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 	logsToStore := storedUsageLogs(batch)
 	if len(logsToStore) > 0 {
 		stmt, err := tx.PrepareContext(ctx,
-			`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
+			`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, upstream_response_model, upstream_model_mismatch, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
 				  input_tokens, output_tokens, reasoning_tokens, first_token_ms, ws_acquire_ms, reasoning_effort, inbound_endpoint, upstream_endpoint, stream, compact, has_compaction_history, ultra, cached_tokens, image_input_tokens, image_output_tokens, cached_image_input_tokens, cache_write_5m_tokens, cache_write_1h_tokens, service_tier,
 				  requested_service_tier, actual_service_tier, billing_service_tier,
 				  api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
 				  is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
 				  client_user_agent, upstream_user_agent, user_agent_overridden, turn_state_overridden, turn_state_rewrite_note, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, injected_turn_state, upstream_turn_state, user_billing_mode, image_unit_price, billed_image_count, fallback_reason)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68)`)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70)`)
 		if err != nil {
 			return fmt.Errorf("准备语句: %w", err)
 		}
 		defer stmt.Close()
 
 		for _, e := range logsToStore {
-			if _, err := stmt.ExecContext(ctx, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
+			if _, err := stmt.ExecContext(ctx, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, nullableUpstreamResponseModel(e.UpstreamResponseModel), nullableUpstreamModelMismatch(e.UpstreamModelMismatch), e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
 				e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.FirstTokenMs, e.WsAcquireMs, e.ReasoningEffort, e.InboundEndpoint, e.UpstreamEndpoint, e.Stream, e.Compact, e.HasCompactionHistory, e.Ultra, e.CachedTokens, e.ImageInputTokens, e.ImageOutputTokens, e.CachedImageInputTokens, e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.ServiceTier,
 				e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
 				e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
@@ -4952,6 +4977,20 @@ func (db *DB) batchInsertLogs(ctx context.Context, batch []usageLogEntry) error 
 	return nil
 }
 
+func nullableUpstreamResponseModel(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}
+
+func nullableUpstreamModelMismatch(value *bool) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
 // batchInsertLogsChunk 插入单批日志（内部辅助函数）
 func (db *DB) batchInsertLogsChunk(ctx context.Context, execer sqlExecer, batch []usageLogEntry) error {
 	if len(batch) == 0 {
@@ -4969,7 +5008,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, execer sqlExecer, batch 
 			placeholders[i] = fmt.Sprintf("$%d", argIdx+i)
 		}
 		valueStrings = append(valueStrings, "("+strings.Join(placeholders, ", ")+")")
-		valueArgs = append(valueArgs, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
+		valueArgs = append(valueArgs, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, nullableUpstreamResponseModel(e.UpstreamResponseModel), nullableUpstreamModelMismatch(e.UpstreamModelMismatch), e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
 			e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.FirstTokenMs, e.WsAcquireMs, e.ReasoningEffort, e.InboundEndpoint, e.UpstreamEndpoint, e.Stream, e.Compact, e.HasCompactionHistory, e.Ultra, e.CachedTokens, e.ImageInputTokens, e.ImageOutputTokens, e.CachedImageInputTokens, e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.ServiceTier,
 			e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
 			e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
@@ -4978,7 +5017,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, execer sqlExecer, batch 
 		argIdx += usageLogInsertColumnCount
 	}
 
-	query := fmt.Sprintf(`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
+	query := fmt.Sprintf(`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, upstream_response_model, upstream_model_mismatch, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
 		input_tokens, output_tokens, reasoning_tokens, first_token_ms, ws_acquire_ms, reasoning_effort, inbound_endpoint, upstream_endpoint, stream, compact, has_compaction_history, ultra, cached_tokens, image_input_tokens, image_output_tokens, cached_image_input_tokens, cache_write_5m_tokens, cache_write_1h_tokens, service_tier,
 		requested_service_tier, actual_service_tier, billing_service_tier,
 		api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
@@ -6078,31 +6117,32 @@ type UsageLogPage struct {
 
 // UsageLogFilter 日志查询过滤条件
 type UsageLogFilter struct {
-	RequestID             string
-	UpstreamRequestID     string
-	Start                 time.Time
-	End                   time.Time
-	Page                  int
-	PageSize              int
-	Email                 string // LIKE 模糊匹配
-	Model                 string // 精确匹配
-	Endpoint              string // 精确匹配 inbound_endpoint
-	APIKeyID              *int64 // nil=全部
-	AccountID             *int64 // nil=全部
-	FastOnly              *bool  // nil=全部, true=仅fast, false=仅非fast
-	StreamOnly            *bool  // nil=全部, true=仅stream, false=仅sync
-	CompactOnly           *bool  // nil=全部, true=本次触发压缩, false=本次未触发压缩
-	CompactionHistoryOnly *bool  // nil=全部, true=携带压缩历史, false=未携带压缩历史
-	ErrorOnly             bool
-	IncludeCanceled       bool
-	StatusCode            int
-	StatusFamily          string
-	ErrorKind             string
-	Query                 string
-	Channel               string // 上游渠道（codex/grok），空=全部
-	RetryOnly             *bool  // nil=全部, true=仅重试请求, false=仅首次请求
-	ViaWebsocketOnly      *bool  // nil=全部, true=仅 WebSocket, false=仅 HTTP
-	UltraOnly             *bool  // nil=全部, true=仅 Codex Ultra 档, false=仅非 Ultra
+	RequestID                 string
+	UpstreamRequestID         string
+	Start                     time.Time
+	End                       time.Time
+	Page                      int
+	PageSize                  int
+	Email                     string // LIKE 模糊匹配
+	Model                     string // 精确匹配
+	Endpoint                  string // 精确匹配 inbound_endpoint
+	APIKeyID                  *int64 // nil=全部
+	AccountID                 *int64 // nil=全部
+	FastOnly                  *bool  // nil=全部, true=仅fast, false=仅非fast
+	StreamOnly                *bool  // nil=全部, true=仅stream, false=仅sync
+	CompactOnly               *bool  // nil=全部, true=本次触发压缩, false=本次未触发压缩
+	CompactionHistoryOnly     *bool  // nil=全部, true=携带压缩历史, false=未携带压缩历史
+	ErrorOnly                 bool
+	IncludeCanceled           bool
+	StatusCode                int
+	StatusFamily              string
+	ErrorKind                 string
+	Query                     string
+	Channel                   string // 上游渠道（codex/grok），空=全部
+	RetryOnly                 *bool  // nil=全部, true=仅重试请求, false=仅首次请求
+	ViaWebsocketOnly          *bool  // nil=全部, true=仅 WebSocket, false=仅 HTTP
+	UltraOnly                 *bool  // nil=全部, true=仅 Codex Ultra 档, false=仅非 Ultra
+	UpstreamModelMismatchOnly *bool  // nil=全部, true=仅模型不一致, false=仅一致
 }
 
 // HasDimensionFilter 报告过滤条件里是否带有"维度"约束(账号/密钥/模型/端点/搜索词/形态开关等)。
@@ -6113,7 +6153,7 @@ func (f UsageLogFilter) HasDimensionFilter() bool {
 		f.Model != "" || f.Endpoint != "" || f.APIKeyID != nil || f.AccountID != nil ||
 		f.FastOnly != nil || f.StreamOnly != nil || f.CompactOnly != nil ||
 		f.CompactionHistoryOnly != nil || f.RetryOnly != nil || f.ViaWebsocketOnly != nil ||
-		f.UltraOnly != nil || f.Query != ""
+		f.UltraOnly != nil || f.UpstreamModelMismatchOnly != nil || f.Query != ""
 }
 
 // DimensionKey 把维度条件压成稳定字符串,供缓存键区分不同筛选组合。无维度条件时返回空串。
@@ -6160,6 +6200,7 @@ func (f UsageLogFilter) DimensionKey() string {
 	writeBool("retry", f.RetryOnly)
 	writeBool("ws", f.ViaWebsocketOnly)
 	writeBool("ultra", f.UltraOnly)
+	writeBool("mismatch", f.UpstreamModelMismatchOnly)
 	writeStr("q", f.Query)
 	return b.String()
 }
@@ -6242,6 +6283,10 @@ func usageLogDimensionWhere(f UsageLogFilter, nextIdx int) ([]string, []interfac
 	if f.UltraOnly != nil {
 		p := addArg(*f.UltraOnly)
 		parts = append(parts, fmt.Sprintf(`COALESCE(u.ultra, false) = %s`, p))
+	}
+	if f.UpstreamModelMismatchOnly != nil {
+		p := addArg(*f.UpstreamModelMismatchOnly)
+		parts = append(parts, fmt.Sprintf(`COALESCE(u.upstream_model_mismatch, false) = %s`, p))
 	}
 	if f.Query != "" {
 		p := addArg("%" + f.Query + "%")
