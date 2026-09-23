@@ -559,7 +559,6 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx = BeginCodexTurnStateTemplateAttempt(ctx)
 	headers = headers.Clone()
 	if headers == nil {
 		headers = make(http.Header)
@@ -572,7 +571,8 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 
 	// Payload 规则改写：在 WS/HTTP 分叉前统一应用，两条上游路径共享改写结果。
 	// 生图请求跳过——其 instructions/工具由网关自行构造，改写会破坏桥接协议。
-	if !responsesBodyRequestsImageGeneration(requestBody) {
+	detectorProbe := isCodexDetectorRequest(ctx)
+	if !responsesBodyRequestsImageGeneration(requestBody) && !detectorProbe {
 		RecordObservedInstructions(requestBody, headers)
 		requestBody = ApplyPayloadRulesToBody(requestBody, gjson.GetBytes(requestBody, "model").String(), headers, PayloadRuleIdentityFromContext(ctx))
 		// 规则改写发生在各 handler 的 service_tier 净化之后，规则注入的 flex/auto 等
@@ -599,18 +599,14 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if account.IsCodexAgentIdentity() {
 		wantWebsocket = false
 	}
-	telemetryAttempt := beginCodexTelemetry(codexTelemetryRequest{
-		account: account, body: requestBody, sessionID: sessionID, proxyOverride: proxyOverride,
-		apiKey: apiKey, deviceCfg: deviceCfg, headers: headers,
-	})
-	defer func() { telemetryAttempt.observeResult(upstreamResponse, upstreamErr) }()
-	if dedicated := CodexTurnStateRefreshProxy(ctx, account); dedicated != "" {
-		proxyOverride = dedicated
+	var telemetryAttempt *codexTelemetryAttempt
+	if !detectorProbe {
+		telemetryAttempt = beginCodexTelemetry(codexTelemetryRequest{
+			account: account, body: requestBody, sessionID: sessionID, proxyOverride: proxyOverride,
+			apiKey: apiKey, deviceCfg: deviceCfg, headers: headers,
+		})
 	}
-
-	// 凭据级 turn state 强制注入：模型已由入口映射/规则定稿，传输方式也已定。
-	// 未配置的账号这里是空操作。
-	ctx, requestBody, headers = prepareCodexTurnStateInjection(ctx, account, requestBody, headers, wantWebsocket && WebsocketExecuteFunc != nil)
+	defer func() { telemetryAttempt.observeResult(upstreamResponse, upstreamErr) }()
 	poolRouteKey := ""
 	if wantWebsocket {
 		sessionID = strings.TrimSpace(sessionID)
@@ -776,14 +772,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		}
 
 		// ==================== 请求头（伪装 Codex CLI） ====================
-		// Outbound turn-state order: Guard (caller) → auto template Apply →
-		// account custom headers → manual credential inject last (ops override).
-		// 按最终请求体中的精确上游 model 查找模板。
-		outboundHeaders := headers.Clone()
-		ApplyCodexTurnStateTemplate(ctx, outboundHeaders, account, strings.TrimSpace(gjson.GetBytes(requestBody, "model").String()))
-		applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, outboundHeaders)
-		// 凭据级 turn state 注入在账号自定义头之后落定：自定义头与自动模板都不该顶掉它。
-		applyCodexTurnStateInjectionHeader(ctx, req.Header)
+		applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers)
 		// Content-Encoding 在通用头装配之后设置：真实客户端也是在编码完成时才补这个头
 		// （codex-rs/http-client/src/request.rs prepare_encoded_json），且账号自定义头
 		// 不该有能力声明一个与实际字节不符的编码。
@@ -823,8 +812,6 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 			}
 			return nil, ErrUpstream(0, "请求上游失败", err)
 		}
-		ConfirmCodexTurnStateTemplate(ctx, req.Header, account, gjson.GetBytes(requestBody, "model").String())
-		CaptureCodexTurnStateTemplate(ctx, account, gjson.GetBytes(requestBody, "model").String(), resp.Header)
 		return resp, nil
 	}
 
@@ -1068,7 +1055,6 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx = BeginCodexTurnStateTemplateAttempt(ctx)
 	headers = headers.Clone()
 	if headers == nil {
 		headers = make(http.Header)
@@ -1113,9 +1099,6 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	headers = PrepareCodexFingerprintHeaders(account, headers, requestBody)
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
-	// 凭据级 turn state 强制注入：compact 与普通轮共用同一条回合状态。
-	ctx, requestBody, headers = prepareCodexTurnStateInjection(ctx, account, requestBody, headers, false)
-
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	cacheKey := existingCacheKey
 	if sessionID != "" {
@@ -1136,10 +1119,7 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		return nil, ErrInternalError("创建请求失败", err)
 	}
 
-	// compact: same order — template Apply then manual credential inject last.
-	ApplyCodexTurnStateTemplate(ctx, headers, account, strings.TrimSpace(gjson.GetBytes(requestBody, "model").String()))
 	applyCodexRequestHeaders(req, account, accessToken, cacheKey, apiKey, deviceCfg, headers)
-	applyCodexTurnStateInjectionHeader(ctx, req.Header)
 	// routing hint 由网关按最终出站 body 合成，须在账号自定义头之后设置。
 	ApplyCodexRoutingHint(req.Header, account, requestBody)
 
@@ -1157,8 +1137,6 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		return nil, ErrUpstream(0, "请求上游失败", err)
 	}
 
-	ConfirmCodexTurnStateTemplate(ctx, req.Header, account, gjson.GetBytes(requestBody, "model").String())
-	CaptureCodexTurnStateTemplate(ctx, account, gjson.GetBytes(requestBody, "model").String(), resp.Header)
 	return resp, nil
 }
 

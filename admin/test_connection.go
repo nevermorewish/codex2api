@@ -147,6 +147,12 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	prompt := c.Query("prompt")
+	hasPrompt := quality == nil && c.Request.URL.Query().Has("prompt")
+	if hasPrompt && (strings.TrimSpace(prompt) == "" || len([]rune(prompt)) > auth.MaxTestContentRunes) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("测试内容不能为空，且不能超过 %d 个字符", auth.MaxTestContentRunes)})
+		return
+	}
 	claudeSecurityCfg := h.store.ClaudeSecurityConfig()
 	payload := h.buildAccountConnectionTestPayload(c.Request.Context(), account, testModel, claudeSecurityCfg)
 	if quality != nil {
@@ -154,6 +160,12 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
+		}
+	} else if hasPrompt {
+		if isClaudeAccount {
+			payload = buildClaudeConnectionTestPayloadWithContent(testModel, prompt, claudeSecurityCfg)
+		} else {
+			payload = buildTestPayloadWithContent(testModel, prompt)
 		}
 	}
 
@@ -198,7 +210,6 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	} else if isOpenAIResponsesAccount {
 		resp, reqErr = proxy.ExecuteRelayStyleRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), nil)
 	} else {
-		c.Request = c.Request.WithContext(proxy.WithCodexTurnStateAdminProbe(c.Request.Context()))
 		resp, reqErr = proxy.ExecuteRequest(c.Request.Context(), account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
 	}
 	if reqErr != nil {
@@ -1012,20 +1023,6 @@ func (h *Handler) connectionTestModelForAccount(ctx context.Context, account *au
 		return antigravityConnectionTestModel(account, requested, defaults...)
 	}
 	if account == nil || !account.IsRelayStyle() {
-		if account != nil {
-			_, scope, _ := account.CodexTurnStateConfig()
-			if strings.TrimSpace(scope) != "" {
-				if requested != "" && !proxy.CodexTurnStateModelAllowed(account, requested) {
-					return "", fmt.Errorf("测试模型不在账号限定模型范围内: %s", requested)
-				}
-				if requested == "" {
-					for _, candidate := range h.codexTurnStateRefreshModels(ctx, account) {
-						return candidate, nil
-					}
-					return "", fmt.Errorf("账号限定范围内没有可用的测试模型")
-				}
-			}
-		}
 		if requested == "" {
 			return h.connectionTestModel(ctx), nil
 		}
@@ -1641,7 +1638,6 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {
-		testCtx = proxy.WithCodexTurnStateAdminProbe(testCtx)
 		resp, err = proxy.ExecuteRequest(testCtx, acc, payload, "", h.store.ResolveProxyForAccount(acc), "", nil, nil)
 	}
 	if err != nil {
@@ -1786,7 +1782,6 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {
-		testCtx = proxy.WithCodexTurnStateAdminProbe(testCtx)
 		resp, err = proxy.ExecuteRequest(testCtx, acc, payload, "", h.store.ResolveProxyForAccount(acc), "", nil, nil)
 	}
 	if err != nil {

@@ -1713,7 +1713,6 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	observeRelayRequest(c, input)
 	populateClientIPFromRequest(c, input)
 	populateUserAgentMetaFromRequest(c, input)
-	populateTurnStateTemplateMetaFromRequest(c, input)
 	populateWsAcquireFromRequest(c, input)
 	populateUpstreamTrace(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
@@ -3312,7 +3311,6 @@ func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFu
 	allowAnonymous := h.cfg != nil && h.cfg.AllowAnonymousV1
 	return func(c *gin.Context) {
 		attachUserAgentAudit(c)
-		attachTurnStateTemplateAudit(c)
 		attachWsAcquireAudit(c)
 		attachUpstreamTrace(c, h.store)
 		// 如果没有配置任何密钥
@@ -4362,7 +4360,6 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 				upstreamCtx, upstreamCancel := newDrainableUpstreamContext(c.Request.Context(), upstreamDrainTimeout)
 				readCtx := upstreamResponseReadContext(c.Request.Context(), upstreamCtx, continuousRetryPolicy)
-				upstreamCtx = WithCodexClientModel(upstreamCtx, model)
 				lastUpstreamCancel = upstreamCancel
 				ttftGuard := (*firstTokenTimeoutGuard)(nil)
 				if isStream {
@@ -5176,7 +5173,6 @@ func (h *Handler) Responses(c *gin.Context) {
 			upstreamCtx, upstreamCancel := newDrainableUpstreamContext(c.Request.Context(), upstreamDrainTimeout)
 			readCtx := upstreamResponseReadContext(c.Request.Context(), upstreamCtx, continuousRetryPolicy)
 			upstreamCtx = context.WithValue(upstreamCtx, encryptedContentSessionKey{}, sessionIdentity.affinityID)
-			upstreamCtx = WithCodexClientModel(upstreamCtx, model)
 			// 身份按 attempt 附加实际选中账号维度：account_* 门随重试换号重新匹配（issue #410）。
 			attemptIdentity := ruleIdentity.WithSelectedAccount(account, h.store)
 			upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
@@ -5204,7 +5200,6 @@ func (h *Handler) Responses(c *gin.Context) {
 			guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
 			endLiveAttempt = beginRelayAttempt(c, account, attemptEffectiveModel, isStream, useWebsocket, attempt+1)
 			// 292 模板替换/注入：必须在 guard 之后、出站 Execute 之前。
-			ApplyCodexTurnStateTemplate(upstreamCtx, downstreamHeaders, account, attemptEffectiveModel)
 			resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 			})
@@ -6647,7 +6642,6 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			var resp *http.Response
 			var reqErr error
 			guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
-			ApplyCodexTurnStateTemplate(c.Request.Context(), downstreamHeaders, account, attemptEffectiveModel)
 			if compactViaResponses {
 				upstreamEndpointLabel = "/v1/responses"
 				resp, reqErr = executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
@@ -7313,7 +7307,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			upstreamCtx, upstreamCancel := newDrainableUpstreamContext(c.Request.Context(), upstreamDrainTimeout)
 			readCtx := upstreamResponseReadContext(c.Request.Context(), upstreamCtx, continuousRetryPolicy)
 			upstreamCtx = context.WithValue(upstreamCtx, encryptedContentSessionKey{}, sessionIdentity.affinityID)
-			upstreamCtx = WithCodexClientModel(upstreamCtx, model)
 			upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
 			lastUpstreamCancel = upstreamCancel
 			feishuWatch := newFeishuFirstTokenWatch(upstreamCtx, database.UsageLogInput{
@@ -7375,7 +7368,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				endLiveAttempt = beginRelayAttempt(c, account, attemptEffectiveModel, isStream, useWebsocket, attempt+1)
 				upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
 				guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
-				ApplyCodexTurnStateTemplate(upstreamCtx, downstreamHeaders, account, attemptEffectiveModel)
 				resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 					return ExecuteRequest(upstreamCtx, account, upstreamBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 				})

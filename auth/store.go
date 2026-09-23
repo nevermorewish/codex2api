@@ -216,13 +216,6 @@ type Account struct {
 	// 改写请求体 environment_context 里的时区与日期（见 proxy/codex_environment_context.go）；
 	// 空 = 不绑定、透传下游值。Claude 账号沿用同一凭据键做身份标签。
 	Timezone string
-	// CodexTurnState* 见 codex_turn_state.go：凭据级 X-Codex-Turn-State 强制注入的值、
-	// 模型名单与设置时刻。空值 = 不注入。
-	CodexTurnStateProxyURL string
-	CodexTurnStateDisabled bool
-	CodexTurnState         string
-	CodexTurnStateModels   string
-	CodexTurnStateSetAt    time.Time
 	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go:Claude Code 出站身份头
 	// 收敛模式(preserve/force;空=跟随全局默认)。
 	ClaudeFingerprintMode string
@@ -262,11 +255,15 @@ type Account struct {
 	GrokLivePlanObservedAt time.Time
 	GrokLivePlanExpiresAt  time.Time
 	GrokLivePlanKnown      bool
-	GrokAccessAllowed      *bool
-	GrokAccessExpiresAt    time.Time
-	GrokBillingExhausted   bool
-	GrokBillingExpiresAt   time.Time
-	GrokFactsGeneration    int64
+	// GrokDisplayPlan is settings.subscription_tier_display. Like the display
+	// column it is a hint only; it never passes an authorization gate.
+	GrokDisplayPlan          string
+	GrokDisplayPlanExpiresAt time.Time
+	GrokAccessAllowed        *bool
+	GrokAccessExpiresAt      time.Time
+	GrokBillingExhausted     bool
+	GrokBillingExpiresAt     time.Time
+	GrokFactsGeneration      int64
 	// grokRouting 是按账号、凭据 generation 隔离的模型目录与协议能力快照。
 	// 目录本身由控制面同步并持久化；执行路径只读取这份不可变副本，不现场访问上游。
 	grokRouting     *GrokRoutingState
@@ -5574,11 +5571,6 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		ResponsesUpstreamTransport:   responsesUpstreamTransport,
 		CodexFingerprintMode:         codexFingerprintMode,
 		Timezone:                     accountTimezone,
-		CodexTurnStateProxyURL:       strings.TrimSpace(row.GetCredential(CodexTurnStateProxyURLCredentialKey)),
-		CodexTurnStateDisabled:       row.GetCredentialBool(CodexTurnStateDisabledCredentialKey),
-		CodexTurnState:               strings.TrimSpace(row.GetCredential(CodexTurnStateCredentialKey)),
-		CodexTurnStateModels:         NormalizeCodexTurnStateModels(row.GetCredential(CodexTurnStateModelsCredentialKey)),
-		CodexTurnStateSetAt:          ParseCodexTurnStateSetAt(row.GetCredential(CodexTurnStateSetAtCredentialKey)),
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeAuthKind:               claudeAuthKind,
 		ClaudeBaseURL:                row.GetCredential(ClaudeBaseURLCredentialKey),
@@ -6008,7 +6000,6 @@ func (s *Store) reconcileDispatchState(ctx context.Context) (bool, error) {
 			allowedAPIKeyIDs := normalizeAllowedAPIKeyIDs(row.GetCredentialInt64Slice("allowed_api_key_ids"))
 			acc.mu.Lock()
 			acc.UpstreamRequestIDHeader = row.GetCredential(UpstreamRequestIDHeaderCredentialKey)
-			acc.setCodexTurnStateFromRowLocked(row)
 			accountMetadataChanged := !int64SliceEqual(normalizeAllowedGroupIDs(acc.GroupIDs), groupIDs) ||
 				!int64SliceEqual(normalizeAllowedAPIKeyIDs(acc.AllowedAPIKeyIDs), allowedAPIKeyIDs)
 			if accountMetadataChanged {

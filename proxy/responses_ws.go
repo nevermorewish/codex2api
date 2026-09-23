@@ -381,9 +381,6 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	resetPromptRequestSecurityFrame(c)
 	resetPromptPolicyRequestCorrelationID(c)
 	resetUpstreamRequestTrace(c)
-	// Turn-state audit is request-scoped via HTTP middleware; multi-turn WS reuses
-	// the same gin.Context/request, so install a fresh slot per response.create.
-	attachFreshTurnStateTemplateAudit(c)
 	quotaParentRequest := c.Request
 	if err := h.refreshAPIKeyModelRequestQuotaTurn(c); err != nil {
 		return writeResponsesWSError(conn, apiKeyModelRequestError(err).apiErr)
@@ -859,7 +856,6 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		upstreamCtx = context.WithValue(upstreamCtx, encryptedContentSessionKey{}, sessionIdentity.affinityID)
 		upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
 		guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
-		ApplyCodexTurnStateTemplate(upstreamCtx, downstreamHeaders, account, effectiveModel)
 		upstreamSessionID := resolveUpstreamSessionID(apiKeyID, sessionIdentity.upstreamSeed, sessionIdentity.explicitUpstreamID, useWebsocket)
 		endLiveAttempt = beginRelayAttempt(c, account, attemptEffectiveModel, true, useWebsocket, attempt+1)
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
